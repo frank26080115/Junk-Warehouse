@@ -1,0 +1,14 @@
+{
+  "name": "junk-warehouse",
+  "private": true,
+  "workspaces": ["frontend"],
+  "scripts": {
+    "setup": "npm run -w frontend install && node -e \"console.log('Frontend deps installed')\"",
+    "db:up": "docker compose up -d db",
+    "db:down": "docker compose down",
+    "dev:backend": "bash scripts/dev.sh backend",
+    "dev:frontend": "bash scripts/dev.sh frontend",
+    "dev": "bash scripts/dev.sh all",
+    "lint": "bash scripts/lint-all.sh"
+  }
+}

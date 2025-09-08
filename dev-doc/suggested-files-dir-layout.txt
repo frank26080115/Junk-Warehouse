@@ -1,0 +1,44 @@
+your-project/
+├─ README.md
+├─ .gitignore
+├─ .editorconfig
+├─ .pre-commit-config.yaml          # optional but recommended
+├─ .env.example                     # all shared env vars (no secrets)
+├─ .env                             # local overrides (gitignored)
+├─ compose.yml                      # docker compose for Postgres (and pgAdmin optional)
+├─ Makefile                         # convenience tasks (Unix); see scripts/win for Windows
+├─ package.json                     # root scripts to orchestrate dev tasks
+├─ scripts/
+│  ├─ dev.ps1                       # Windows “run both servers”
+│  ├─ dev.sh                        # *nix “run both servers”
+│  ├─ db_wait.sh                    # wait-for-Postgres helper
+│  └─ lint-all.sh
+├─ infra/
+│  ├─ sql/                          # raw SQL (bootstrap/seed)
+│  └─ migrations/                   # Alembic versions (generated)
+├─ backend/
+│  ├─ pyproject.toml                # Poetry/UV/PDM (pick one) OR requirements.txt
+│  ├─ requirements.txt              # (if not using pyproject.toml)
+│  ├─ .env.example                  # backend-only vars (FLASK_*, DB_*)
+│  ├─ app/
+│  │  ├─ __init__.py
+│  │  ├─ main.py                    # create_app(), register_blueprints()
+│  │  ├─ routes/
+│  │  │  └─ api.py
+│  │  ├─ services/
+│  │  └─ models/
+│  ├─ wsgi.py                       # for production servers (gunicorn/uwsgi)
+│  └─ alembic.ini
+├─ frontend/
+│  ├─ package.json
+│  ├─ vite.config.ts                # or webpack
+│  ├─ src/
+│  │  ├─ main.tsx
+│  │  ├─ app/
+│  │  │  ├─ api.ts                  # API base URL from env
+│  │  │  └─ ...
+│  │  └─ components/
+│  └─ public/
+└─ tests/
+   ├─ backend/
+   └─ frontend/

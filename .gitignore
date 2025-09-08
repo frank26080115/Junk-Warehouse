@@ -137,3 +137,32 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Suggested by ChatGPT
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.coverage
+.pytest_cache/
+
+# Node
+node_modules/
+pnpm-lock.yaml
+npm-debug.log*
+dist/
+build/
+
+# Env / local
+.env
+backend/.env
+frontend/.env.local
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
