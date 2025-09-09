@@ -7,6 +7,9 @@ from dotenv import load_dotenv
 
 import logging
 from app.logging_setup import start_log
+from .errors import register_error_handlers
+import helpers
+import db
 
 # Load backend/.env explicitly (does nothing if file doesn't exist)
 DOTENV_PATH = Path(__file__).resolve().parents[1] / ".env"
@@ -18,15 +21,14 @@ log = logging.getLogger(__name__)
 def create_app():
     app = Flask(__name__)
     CORS(app)
-    db_url = os.getenv("DATABASE_URL", "postgresql+psycopg://app:app@127.0.0.1:5432/app")
-    engine = create_engine(db_url, pool_pre_ping=True, future=True)
+    register_error_handlers(app)
     return app
 
 app = create_app()
 
 @app.get("/api/health")
 def health():
-    with engine.connect() as conn:
+    with db.get_db_conn() as conn:
         conn.execute(text("select 1"))
     return jsonify(ok=True)
 
