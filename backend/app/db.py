@@ -180,7 +180,7 @@ def dispose_engine() -> None:
         _ENGINE = None
 
 
-def get_db_item_as_dict(engine: Engine, table: str, uuid):
+def get_db_item_as_dict(engine: Engine, table: str, uuid, id_col_name:str = "id"):
     """
     Fetch a single row by UUID from `table` using SQLAlchemy and return it as a dict.
 
@@ -211,7 +211,7 @@ def get_db_item_as_dict(engine: Engine, table: str, uuid):
     metadata = MetaData()
     target = Table(tbl, metadata, autoload_with=engine, schema=schema)
 
-    stmt = select(target).where(target.c.id == pk).limit(1)
+    stmt = select(target).where(target.c[id_col_name] == pk).limit(1)
 
     with Session(engine) as session:
         result = session.execute(stmt).mappings().first()  # mappings() gives dict-like rows
@@ -228,6 +228,7 @@ def update_db_row_by_dict(
     uuid: Optional[Union[str, "uuid.UUID"]],
     data: Union[str, Mapping[str, Any], Any],
     fuzzy: bool = True,
+    id_col_name: str = "id"
 ):
     """
     Insert or update a row in 'table' using a dict-like payload.
@@ -259,8 +260,8 @@ def update_db_row_by_dict(
             return helpers.flask_return_wrap({"ok": False, "error": "Unsupported data type for 'data'"}, 400)
 
     # 2) Pick up id from payload if uuid is None
-    if uuid is None and "id" in payload:
-        uuid = payload.get("id")
+    if uuid is None and id_col_name in payload:
+        uuid = payload.get(id_col_name)
 
     # 3) reflect table & columns
     md = MetaData()
@@ -290,7 +291,7 @@ def update_db_row_by_dict(
         pk_name = pk_cols[0].name
     else:
         # fallback preference: 'id' if present, else first PK col, else 'id'
-        pk_name = "id" if "id" in columns_set else (pk_cols[0].name if pk_cols else "id")
+        pk_name = id_col_name if id_col_name in columns_set else (pk_cols[0].name if pk_cols else id_col_name)
 
     # 7) Insert or update?
     is_insert = isinstance(uuid, str) and (uuid.lower() == "new" or uuid.lower() == "insert")
