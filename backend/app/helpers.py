@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import re
 
 def normalize_pg_uuid(s: str) -> str:
@@ -149,3 +151,262 @@ def html_to_base64_datauri(
     data_uri = f"data:text/html;charset={charset};base64,{b64}"
     return b64, data_uri
 
+try:
+    from flask import jsonify as _jsonify  # type: ignore
+
+    def flask_return_wrap(payload: dict, code: int):
+        return _jsonify(payload), code
+except Exception:  # pragma: no cover
+    def flask_return_wrap(payload: dict, code: int):
+        return payload, code
+
+import re
+
+def fuzzy_norm_key(s: str) -> str:
+    """lowercase and remove non-alphanumerics so 'User-Name' ~ 'username'."""
+    return re.sub(r"[^a-z0-9]+", "", s.lower())
+
+
+def fuzzy_levenshtein_at_most(a: str, b: str, limit: int = 2) -> int:
+    """
+    Levenshtein distance with an early-exit 'limit'.
+    Returns a distance <= limit, or limit+1 if it exceeds the limit.
+    """
+    la, lb = len(a), len(b)
+    if abs(la - lb) > limit:
+        return limit + 1
+    # DP row
+    prev = list(range(lb + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        min_row = cur[0]
+        for j, cb in enumerate(b, 1):
+            cost = 0 if ca == cb else 1
+            v = min(
+                cur[j - 1] + 1,   # insertion
+                prev[j] + 1,      # deletion
+                prev[j - 1] + cost,  # substitution
+            )
+            cur.append(v)
+            if v < min_row:
+                min_row = v
+        if min_row > limit:
+            return limit + 1
+        prev = cur
+    return prev[-1]
+
+
+def fuzzy_apply_fuzzy_keys(data: dict[str, Any], columns: set[str], table_name: str, limit: int = 2) -> dict[str, Any]:
+    import logging
+    log = logging.getLogger(__name__)
+
+    """
+    For each key in data, find best column match by edit distance (<= limit).
+    Rename key if it doesn't cause a duplicate and hasn’t already been claimed.
+    Log all mismatches at debug level.
+    """
+    if not data:
+        return data
+
+    col_norm = {c: _norm_key(c) for c in columns}
+    claimed: set[str] = set()
+    out: dict[str, Any] = {}
+
+    for k, v in data.items():
+        if k in columns:
+            # Exact match; keep and mark claimed (so fuzzies don't steal it)
+            out[k] = v
+            claimed.add(k)
+            continue
+
+        nk = _norm_key(k)
+        best_col: Optional[str] = None
+        best_dist = limit + 1
+
+        for col, ncol in col_norm.items():
+            if col in claimed:
+                continue
+            d = _levenshtein_at_most(nk, ncol, limit=limit)
+            if d < best_dist:
+                best_dist = d
+                best_col = col
+
+        if best_col is not None and best_dist <= limit:
+            if best_col in out:
+                log.debug("fuzzy: '%s' -> '%s' (dist=%d) SKIPPED (would duplicate key)", k, best_col, best_dist)
+                out[k] = v
+            else:
+                log.debug("fuzzy: '%s' -> '%s' (dist=%d) on table '%s'", k, best_col, best_dist, table_name)
+                out[best_col] = v
+                claimed.add(best_col)
+        else:
+            log.debug("fuzzy: no acceptable match for key '%s' on table '%s'", k, table_name)
+            out[k] = v
+
+    return out
+
+
+from __future__ import annotations
+
+from datetime import datetime, date, timezone, timedelta
+from decimal import Decimal
+from typing import Any, Optional, Union
+
+try:
+    # Python 3.9+ stdlib timezones
+    from zoneinfo import ZoneInfo  # type: ignore[attr-defined]
+except Exception:  # pragma: no cover
+    ZoneInfo = None  # type: ignore
+
+try:
+    # Nice-to-have parser (RFC2822, many formats)
+    from dateutil import parser as dateutil_parser  # type: ignore
+except Exception:  # pragma: no cover
+    dateutil_parser = None  # type: ignore
+
+
+def _tz_from_name(name: str):
+    if name.upper() == "UTC":
+        return timezone.utc
+    if ZoneInfo is not None:
+        try:
+            return ZoneInfo(name)
+        except Exception:
+            pass
+    # Fallback: UTC if unknown tz name
+    return timezone.utc
+
+
+def _ensure_aware(dt: datetime, default_tz: str) -> datetime:
+    """Make a datetime timezone-aware (attach default_tz if naive)."""
+    if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
+        return dt.replace(tzinfo=_tz_from_name(default_tz))
+    return dt
+
+
+def _from_epoch_numeric(x: Union[int, float, Decimal]) -> datetime:
+    """Interpret numeric epochs in seconds / ms / µs / ns."""
+    # Use absolute value for scale detection
+    val = float(x)
+    aval = abs(val)
+    # thresholds roughly: s ~ 1e9..1e10 (2001..2286), ms ~ 1e12, µs ~ 1e15, ns ~ 1e18
+    if aval >= 1e18:
+        # nanoseconds
+        seconds = val / 1e9
+    elif aval >= 1e15:
+        # microseconds
+        seconds = val / 1e6
+    elif aval >= 1e11:
+        # milliseconds
+        seconds = val / 1e3
+    else:
+        # seconds (handles fractional seconds too)
+        seconds = val
+    return datetime.fromtimestamp(seconds, tz=timezone.utc)
+
+
+def to_timestamptz(
+    value: Any,
+    *,
+    return_datetime: bool = False,
+    default_tz: str = "UTC",
+) -> Optional[Union[str, datetime]]:
+    """
+    Coerce many input types into a Postgres timestamptz-ready value.
+
+    - If return_datetime=False (default): returns ISO 8601 string in UTC, e.g. "2025-09-10T12:34:56.789012Z".
+    - If return_datetime=True: returns a timezone-aware datetime in UTC (good for SQLAlchemy/psycopg).
+
+    Accepted inputs:
+      * datetime (aware or naive)  -> attach default_tz if naive
+      * date                       -> midnight in default_tz
+      * int/float/Decimal          -> Unix epoch (auto-detect s/ms/µs/ns)
+      * str:
+          - "now", "utcnow" -> current time in UTC
+          - "today"         -> midnight today in default_tz
+          - "yesterday"/"tomorrow"
+          - ISO 8601 strings (supports trailing 'Z')
+          - RFC2822/etc. if python-dateutil is available
+      * None or ""                 -> None (NULL)
+
+    On failure, raises ValueError.
+    """
+    if value is None:
+        return None
+
+    # Empty strings -> NULL
+    if isinstance(value, str) and value.strip() == "":
+        return None
+
+    dt_utc: Optional[datetime] = None
+
+    # datetime / date
+    if isinstance(value, datetime):
+        dt_utc = _ensure_aware(value, default_tz).astimezone(timezone.utc)
+    elif isinstance(value, date):
+        dtn = datetime(value.year, value.month, value.day)
+        dt_utc = _ensure_aware(dtn, default_tz).astimezone(timezone.utc)
+
+    # numeric epochs
+    elif isinstance(value, (int, float, Decimal)):
+        dt_utc = _from_epoch_numeric(value)
+
+    # strings
+    elif isinstance(value, str):
+        s = value.strip()
+
+        # quick keywords
+        lower = s.lower()
+        if lower in ("now", "utcnow"):
+            dt_utc = datetime.now(tz=timezone.utc)
+        elif lower in ("today",):
+            # today at 00:00 in default tz -> UTC
+            local_midnight = datetime.now(_tz_from_name(default_tz)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            dt_utc = local_midnight.astimezone(timezone.utc)
+        elif lower in ("yesterday",):
+            local_midnight = datetime.now(_tz_from_name(default_tz)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            ) - timedelta(days=1)
+            dt_utc = local_midnight.astimezone(timezone.utc)
+        elif lower in ("tomorrow",):
+            local_midnight = datetime.now(_tz_from_name(default_tz)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            ) + timedelta(days=1)
+            dt_utc = local_midnight.astimezone(timezone.utc)
+        else:
+            # Try dateutil (broad formats)
+            if dateutil_parser is not None:
+                try:
+                    parsed = dateutil_parser.parse(s)  # type: ignore[attr-defined]
+                    dt_utc = _ensure_aware(parsed, default_tz).astimezone(timezone.utc)
+                except Exception:
+                    dt_utc = None
+
+            # Fallback: ISO 8601 via fromisoformat (supports "+00:00"; handle 'Z' manually)
+            if dt_utc is None:
+                try:
+                    iso = s.replace("Z", "+00:00") if s.endswith("Z") else s
+                    parsed = datetime.fromisoformat(iso)
+                    dt_utc = _ensure_aware(parsed, default_tz).astimezone(timezone.utc)
+                except Exception:
+                    # Last resort: maybe it's a numeric epoch in a string
+                    try:
+                        num = float(s)
+                        dt_utc = _from_epoch_numeric(num)
+                    except Exception:
+                        pass
+
+    # Unknown type?
+    if dt_utc is None:
+        raise ValueError(f"Cannot interpret value as timestamptz: {value!r}")
+
+    if return_datetime:
+        return dt_utc
+
+    # Return an ISO string with 'Z' (Postgres accepts this fine)
+    iso = dt_utc.isoformat()
+    if iso.endswith("+00:00"):
+        iso = iso[:-6] + "Z"
+    return iso

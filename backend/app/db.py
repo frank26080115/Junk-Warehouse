@@ -5,15 +5,18 @@ import json
 import logging
 import os
 import threading
+import re
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote_plus
 import uuid as _uuid
+from typing import Dict
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, MetaData, Table, select, text
 from sqlalchemy.engine import Engine, Connection
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import NoSuchTableError
 
 import helpers
 
@@ -217,3 +220,138 @@ def get_db_item_as_dict(engine: Engine, table: str, uuid):
         raise LookupError(f"No row found in {table!r} with id={pk}")
 
     return dict(result)
+
+
+def update_db_row_by_dict(
+    engine: Engine,
+    table: str,
+    uuid: Optional[Union[str, "uuid.UUID"]],
+    data: Union[str, Mapping[str, Any], Any],
+    fuzzy: bool = True,
+):
+    """
+    Insert or update a row in 'table' using a dict-like payload.
+    - 'uuid' = "new" → INSERT; else UPDATE row whose primary key (or 'id') equals uuid.
+    - If uuid is None and 'id' exists in data, uuid := data['id'].
+    - If 'data' is a string, it's parsed as JSON first.
+    - If 'fuzzy' is True, rename keys to best-matching column names when edit distance <= 2.
+      One column can only be matched once; log mismatches at debug level.
+    - Keys not present as columns are dropped (with debug logs). No sanitization done.
+    - Returns (json, http_code) like a Flask handler; falls back to (dict, http_code) if Flask isn't present.
+    """
+    # 1) normalize data -> dict
+    if isinstance(data, str):
+        try:
+            payload = json.loads(data)
+            if not isinstance(payload, Mapping):
+                return helpers.flask_return_wrap({"ok": False, "error": "JSON must be an object"}, 400)
+            payload = dict(payload)
+        except Exception as e:
+            log.debug("bad JSON payload: %s", e)
+            return helpers.flask_return_wrap({"ok": False, "error": "Invalid JSON string"}, 400)
+    elif isinstance(data, Mapping):
+        payload = dict(data)
+    else:
+        # last resort: try to cast to dict (e.g., ImmutableDict)
+        try:
+            payload = dict(data)  # type: ignore[call-arg]
+        except Exception:
+            return helpers.flask_return_wrap({"ok": False, "error": "Unsupported data type for 'data'"}, 400)
+
+    # 2) Pick up id from payload if uuid is None
+    if uuid is None and "id" in payload:
+        uuid = payload.get("id")
+
+    # 3) reflect table & columns
+    md = MetaData()
+    try:
+        t: Table = Table(table, md, autoload_with=engine)
+    except Exception:
+        return helpers.flask_return_wrap({"ok": False, "error": f"Unknown table '{table}'"}, 400)
+
+    column_names = [c.name for c in t.columns]
+    columns_set = set(column_names)
+
+    # 4) fuzzy remap keys (<=2 edits) before filtering
+    if fuzzy:
+        payload = helpers.fuzzy_apply_fuzzy_keys(payload, columns_set, table_name=table, limit=2)
+
+    # 5) filter to known columns; log drops
+    filtered: dict[str, Any] = {}
+    for k, v in payload.items():
+        if k in columns_set:
+            filtered[k] = v
+        else:
+            log.debug("dropping unknown key '%s' (not a column of %s)", k, table)
+
+    # 6) determine primary key column to target
+    pk_cols = list(t.primary_key.columns)
+    if len(pk_cols) == 1:
+        pk_name = pk_cols[0].name
+    else:
+        # fallback preference: 'id' if present, else first PK col, else 'id'
+        pk_name = "id" if "id" in columns_set else (pk_cols[0].name if pk_cols else "id")
+
+    # 7) Insert or update?
+    is_insert = isinstance(uuid, str) and (uuid.lower() == "new" or uuid.lower() == "insert")
+
+    if not is_insert and (uuid is None or (isinstance(uuid, str) and uuid.strip() == "")):
+        return helpers.flask_return_wrap({"ok": False, "error": "uuid required for update (or pass 'new' to insert)"}, 400)
+
+    if isinstance(uuid, str):
+        uuid = str(normalize_pg_uuid(uuid))
+
+    # Don’t allow updating the PK itself (keep where-clause the source of truth)
+    if not is_insert and pk_name in filtered:
+        if str(filtered[pk_name]) != str(uuid):
+            log.debug("removing '%s' from update payload to avoid PK change", pk_name)
+        filtered.pop(pk_name, None)
+
+    # 8) execute with RETURNING * to get the row back
+    with engine.begin() as conn:
+        try:
+            if is_insert:
+                stmt = t.insert().values(**filtered).returning(t)
+                row = conn.execute(stmt).mappings().first()
+                if row is None:
+                    return helpers.flask_return_wrap({"ok": False, "error": "insert failed (no row returned)"}, 400)
+                return helpers.flask_return_wrap({"ok": True, "data": dict(row)}, 201)
+
+            # UPDATE path
+            pk_col = t.c.get(pk_name)  # type: ignore[attr-defined]
+            if pk_col is None:
+                return helpers.flask_return_wrap({"ok": False, "error": f"Primary key column '{pk_name}' not found"}, 400)
+
+            stmt = t.update().where(pk_col == uuid).values(**filtered).returning(t)
+            row = conn.execute(stmt).mappings().first()
+            if row is None:
+                return helpers.flask_return_wrap({"ok": False, "error": "not found"}, 404)
+            return helpers.flask_return_wrap({"ok": True, "data": dict(row)}, 200)
+        except Exception as e:
+            log.exception("DB write failed on table '%s'", table)
+            # surfacing DB error text can be useful during dev; trim in prod if needed
+            return helpers.flask_return_wrap({"ok": False, "error": "database error", "detail": str(e)}, 400)
+
+
+def get_column_types(engine: Engine, table: str) -> Dict[str, str]:
+    """
+    Return a mapping of column name -> SQL type (as string) for the given table.
+    Supports 'schema.table' or just 'table'.
+
+    Example:
+        types = get_column_types(engine, "public.users")
+        # -> {"id": "INTEGER", "email": "VARCHAR(255)", ...}
+    """
+    schema = None
+    table_name = table
+    if "." in table:
+        schema, table_name = table.split(".", 1)
+
+    md = MetaData()
+    try:
+        t = Table(table_name, md, schema=schema, autoload_with=engine)
+    except NoSuchTableError:
+        raise ValueError(f"Table not found: {table!r}") from None
+
+    return {col.name: str(col.type) for col in t.columns}
+
