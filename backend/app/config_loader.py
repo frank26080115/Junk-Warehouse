@@ -10,7 +10,8 @@ from zoneinfo import ZoneInfo  # Python 3.9+
 import logging
 log = logging.getLogger(__name__)
 
-CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "appconfig.json"
+CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
+CONFIG_PATH = CONFIG_DIR / "appconfig.json"
 
 def load_app_config() -> dict:
     try:

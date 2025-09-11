@@ -11,9 +11,10 @@ from app.logging_setup import start_log
 from .errors import register_error_handlers
 from .static_server import bp_overlay, get_public_html_path
 from .imagehandler import bp_image
+from .user_login import bp as bp_auth
 import helpers
 import db
-from config_loader import CONFIG_PATH
+from config_loader import CONFIG_PATH, CONFIG_DIR
 
 # Load backend/.env explicitly (does nothing if file doesn't exist)
 DOTENV_PATH = Path(__file__).resolve().parents[1] / ".env"
@@ -29,6 +30,7 @@ def create_app():
     app = Flask(__name__)
     CORS(app)
 
+    app.register_blueprint(bp_auth)
     app.register_blueprint(bp_overlay)
     app.register_blueprint(bp_image)
 
@@ -46,6 +48,12 @@ def create_app():
     except Exception:
         app.logger.warning("Unknown timezone %r; falling back to UTC", tz_name)
         app.config["TZ"] = ZoneInfo("UTC")
+
+    try:
+        secrets = json.loads((CONFIG_DIR / "secrets.json").read_text(encoding="utf-8"))
+        app.config["SECRET_KEY"] = secrets["user_password_salt"]
+    except Exception as ex:
+        app.logger.error(f"Unable to load user_password_salt. Exception: {ex:r}")
 
     register_error_handlers(app)
     return app
