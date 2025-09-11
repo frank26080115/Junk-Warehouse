@@ -1,6 +1,7 @@
 # backend/app/config_loader.py
 from __future__ import annotations
 
+# NOTE: this file is an obsolete note, it's not really used right now, as the Flask app will load it into itself on creation
 # NOTE: on Windows, use `pip install tzdata`
 
 import json

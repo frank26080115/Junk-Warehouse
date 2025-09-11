@@ -9,6 +9,8 @@ from zoneinfo import ZoneInfo
 import logging
 from app.logging_setup import start_log
 from .errors import register_error_handlers
+from .static_server import bp_overlay, get_public_html_path
+from .imagehandler import bp_image
 import helpers
 import db
 from config_loader import CONFIG_PATH
@@ -17,12 +19,18 @@ from config_loader import CONFIG_PATH
 DOTENV_PATH = Path(__file__).resolve().parents[1] / ".env"
 load_dotenv(DOTENV_PATH, override=False)
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DIST_DIR = REPO_ROOT / "frontend" / "dist"
+
 start_log(app_name="backend")
 log = logging.getLogger(__name__)
 
 def create_app():
     app = Flask(__name__)
     CORS(app)
+
+    app.register_blueprint(bp_overlay)
+    app.register_blueprint(bp_image)
 
     # Load JSON (silently ignore if missing/bad)
     try:
@@ -42,6 +50,7 @@ def create_app():
     register_error_handlers(app)
     return app
 
+
 app = create_app()
 
 @app.get("/api/health")
@@ -50,7 +59,6 @@ def health():
         conn.execute(text("select 1"))
     return jsonify(ok=True)
 
-@app.get("/config.json")
+@app.get("/api/config.json")
 def config_json():
-    path = pathlib.Path("../config/appconfig.json")
-    return jsonify(json.loads(path.read_text()))
+    return jsonify(json.loads(CONFIG_PATH.read_text()))

@@ -15,21 +15,15 @@ from werkzeug.utils import secure_filename
 from PIL import Image, UnidentifiedImageError
 
 from .db import get_db_conn
+from .static_server import get_public_html_path
 
 log = logging.getLogger(__name__)
-images_bp = Blueprint("images", __name__)
+bp_image = Blueprint("images", __name__)
 
 # Acceptable file extensions (Pillow can read more; keep this conservative)
 ALLOWED_EXTENSIONS = {
     "png", "jpg", "jpeg", "webp", "gif" #, "bmp", "tif", "tiff"
 }
-
-# Derive project root from this file location:
-#   .../<project_root>/backend/app/imagehandler.py
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
-TMP_DIR = PROJECT_ROOT / "frontend" / "public" / "tmp"
-IMGS_ROOT = PROJECT_ROOT / "frontend" / "public" / "imgs"
 
 MAX_BASENAME_LEN = 64
 THUMB_MAX_DIM = 400
@@ -44,24 +38,27 @@ def _ext_ok(filename: str) -> bool:
 
 
 def _ensure_dirs() -> None:
+    TMP_DIR = get_public_html_path() / "tmp"
+    IMGS_ROOT = get_public_html_path() / "imgs"
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     IMGS_ROOT.mkdir(parents=True, exist_ok=True)
+    return TMP_DIR, IMGS_ROOT
 
 
 def _today_str() -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
 
-def _latest_or_new_img_dir() -> Path:
+def _latest_or_new_img_dir(imgs_root: Path) -> Path:
     """
     Use the last (sorted) subdirectory under IMGS_ROOT.
     If none exist, create today's.
     If chosen dir has > MAX_FILES_PER_DIR files, create a new today's dir.
     """
     _ensure_dirs()
-    subdirs = sorted([p for p in IMGS_ROOT.iterdir() if p.is_dir()], key=lambda p: p.name)
+    subdirs = sorted([p for p in imgs_root.iterdir() if p.is_dir()], key=lambda p: p.name)
     if not subdirs:
-        target = IMGS_ROOT / _today_str()
+        target = imgs_root / _today_str()
         target.mkdir(exist_ok=True)
         return target
 
@@ -72,7 +69,7 @@ def _latest_or_new_img_dir() -> Path:
         file_count = 0
 
     if file_count > MAX_FILES_PER_DIR:
-        target = IMGS_ROOT / _today_str()
+        target = imgs_root / _today_str()
         target.mkdir(exist_ok=True)
 
     return target
@@ -196,7 +193,7 @@ def _validate_uuid(u: str) -> uuid.UUID:
         raise BadRequest(f"Invalid item_id \"{u}\", must be a UUID string, exception: {ex.message})")
 
 
-@images_bp.post("/img_upload")
+@bp_image.post("/img_upload")
 def img_upload():
     """
     POST /img_upload
@@ -206,14 +203,14 @@ def img_upload():
     - Required:
         * item_id: UUID string referencing items.id
     """
-    _ensure_dirs()
-
     # Validate presence of item_id
     item_id = request.form.get("item_id", "").strip()
     return handle_img_upload(item_id)
 
 
 def handle_img_upload(item_id:str):
+    tmp_dir, imgs_root = _ensure_dirs()
+
     if not item_id:
         return jsonify(error="Missing required field 'item_id'"), 400
     try:
@@ -238,12 +235,12 @@ def handle_img_upload(item_id:str):
             if not _ext_ok(original_name):
                 raise UnsupportedMedia("Unsupported file type")
             original_name = _truncate_basename(original_name)
-            tmp_name = _unique_name(TMP_DIR, original_name)
-            tmp_path = TMP_DIR / tmp_name
+            tmp_name = _unique_name(tmp_dir, original_name)
+            tmp_path = tmp_dir / tmp_name
             upload.save(tmp_path)
         else:
             source_url = url
-            tmp_path = _download_to_tmp(url, TMP_DIR)
+            tmp_path = _download_to_tmp(url, tmp_dir)
             original_name = tmp_path.name  # already secured/truncated
 
         # Probe image
@@ -261,7 +258,7 @@ def handle_img_upload(item_id:str):
 
     # Pick permanent directory
     try:
-        target_dir = _latest_or_new_img_dir()
+        target_dir = _latest_or_new_img_dir(imgs_root)
         dir_name = target_dir.name  # YYYY-MM-DD
     except Exception as e:
         log.exception("Failed to select/create target image directory")
@@ -366,6 +363,6 @@ def handle_img_upload(item_id:str):
         },
     ), 201
 
-@images_bp.get("/img_upload")
+@bp_image.get("/img_upload")
 def img_upload_2():
     return img_upload()
