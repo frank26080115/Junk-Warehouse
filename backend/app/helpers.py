@@ -246,8 +246,6 @@ def fuzzy_apply_fuzzy_keys(data: dict[str, Any], columns: set[str], table_name: 
     return out
 
 
-from __future__ import annotations
-
 from datetime import datetime, date, timezone, timedelta
 from decimal import Decimal
 from typing import Any, Optional, Union

@@ -22,6 +22,7 @@ import os
 import socket
 import subprocess
 import sys
+import platform
 import time
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -85,7 +86,8 @@ class SPAHandler(SimpleHTTPRequestHandler):
 def run_build(frontend_dir: Path) -> None:
     print(f"⏳ Building frontend in {frontend_dir} …")
     try:
-        subprocess.run(["npm", "run", "build"], cwd=str(frontend_dir), check=True)
+        npm = "npm.cmd" if platform.system() == "Windows" else "npm"
+        subprocess.run([npm, "run", "build"], cwd=str(frontend_dir), check=True)
     except FileNotFoundError:
         raise SystemExit("Error: 'npm' not found on PATH.")
     except subprocess.CalledProcessError as e:
@@ -197,7 +199,7 @@ def main():
     # Maybe ensure backend is running
     backend_proc: subprocess.Popen | None = None
     be_host, be_port = args.backend_host, args.backend_port
-    if args.ensure-backend:
+    if args.ensure_backend:
         if http_ok(f"http://{be_host}:{be_port}{args.backend_health}") or is_port_open(be_host, be_port):
             print(f"✅ Backend already running on {be_host}:{be_port}")
         else:

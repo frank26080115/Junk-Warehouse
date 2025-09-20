@@ -18,7 +18,7 @@ from sqlalchemy.engine import Engine, Connection
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import NoSuchTableError
 
-import helpers
+import app.helpers
 
 log = logging.getLogger(__name__)
 
@@ -39,8 +39,10 @@ def _load_env_once() -> None:
     """Load env files if present. Safe to call multiple times."""
     # Load backend/.env first (app runtime), then root .env (compose), without overwriting existing env
     if BACKEND_ENV.exists():
+        log.debug("loading /backend/.env")
         load_dotenv(BACKEND_ENV, override=False)
     if ROOT_ENV.exists():
+        log.debug("loading root/.env")
         load_dotenv(ROOT_ENV, override=False)
 
 
@@ -60,6 +62,7 @@ def _from_db_json() -> dict[str, str]:
         return {}
     try:
         data = json.loads(OPTIONAL_DB_JSON.read_text(encoding="utf-8"))
+        log.debug(f"db cfg loaded json file {OPTIONAL_DB_JSON}")
         if not isinstance(data, dict):
             return {}
         # normalize keys to str
@@ -93,12 +96,18 @@ def _build_db_url() -> str:
         "DB_PORT": os.getenv("DB_PORT") or os.getenv("PGPORT") or "5432",
     }
 
+    #log.debug("db cfg from .env:")
+    #log.debug(cfg)
+
     # Fill any missing from optional JSON (non-secret)
     if any(v is None for v in cfg.values()):
         json_fallback = _from_db_json()
         for k in cfg:
             if cfg[k] is None and k in json_fallback:
                 cfg[k] = json_fallback[k]
+
+    #log.debug("db cfg after json:")
+    #log.debug(cfg)
 
     # Final sanity / defaults
     user = cfg["DB_USER"] or "app"

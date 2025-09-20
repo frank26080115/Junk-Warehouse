@@ -2,7 +2,9 @@
 from __future__ import annotations
 from pathlib import Path
 from flask import Blueprint, send_from_directory, abort, Response
-from app.main import REPO_ROOT, DIST_DIR
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DIST_DIR = REPO_ROOT / "frontend" / "dist"
 
 bp_overlay = Blueprint("overlay", __name__)
 
