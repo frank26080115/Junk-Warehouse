@@ -11,19 +11,19 @@ from typing import Optional
 from urllib.parse import quote_plus
 import uuid as _uuid
 from typing import Dict
-
+from flask import g
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, MetaData, Table, select, text
 from sqlalchemy.engine import Engine, Connection
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, scoped_session, sessionmaker
 from sqlalchemy.exc import NoSuchTableError
-
 import app.helpers
 
 log = logging.getLogger(__name__)
 
 # Module-level singletons
 _ENGINE: Optional[Engine] = None
+_SESSION_LOCAL: Optional[Session] = None
 _INIT_LOCK = threading.Lock()
 
 # Resolve paths based on this file's location:
@@ -129,6 +129,7 @@ def get_engine() -> Engine:
     Creates it on first use, thread-safe.
     """
     global _ENGINE
+    global _SESSION_LOCAL
     if _ENGINE is not None:
         return _ENGINE
 
@@ -155,6 +156,7 @@ def get_engine() -> Engine:
             pool_pre_ping=pool_pre_ping,
             future=True,  # explicit for 2.x style
         )
+        _SESSION_LOCAL = scoped_session(sessionmaker(bind=_ENGINE))
         return _ENGINE
 
 
@@ -170,6 +172,24 @@ def get_db_conn() -> Connection:
     return get_engine().connect()
 
 
+def get_or_create_session() -> Session:
+    """
+    Return the current request's Session if it exists, otherwise
+    create one from the scoped_session and attach it to g.
+    """
+    global _SESSION_LOCAL
+    if _SESSION_LOCAL is None:
+        #raise RuntimeError("DB not initialized; call init_engine() first")
+        if not get_engine():
+            raise RuntimeError("Unable to automatically initialize DB engine for DB session")
+
+    s = getattr(g, "db", None)
+    if s is None:
+        s = _SESSION_LOCAL()      # returns current thread's Session (creates if absent)
+        g.db = s                  # stash for the rest of this request
+    return s
+
+
 def ping_db() -> bool:
     """Quick health check."""
     try:
@@ -183,10 +203,18 @@ def ping_db() -> bool:
 
 def dispose_engine() -> None:
     """Close all pooled connections (useful in tests or graceful shutdown)."""
-    global _ENGINE
+    global _ENGINE, _SESSION_LOCAL
     if _ENGINE is not None:
         _ENGINE.dispose()
         _ENGINE = None
+    if _SESSION_LOCAL:
+        _SESSION_LOCAL.remove()
+
+
+def db_cleanup(_exc):
+    global _SESSION_LOCAL
+    if _SESSION_LOCAL:
+        _SESSION_LOCAL.remove()
 
 
 def get_db_item_as_dict(engine: Engine, table: str, uuid, id_col_name:str = "id"):
@@ -364,4 +392,3 @@ def get_column_types(engine: Engine, table: str) -> Dict[str, str]:
         raise ValueError(f"Table not found: {table!r}") from None
 
     return {col.name: str(col.type) for col in t.columns}
-

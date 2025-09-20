@@ -140,6 +140,8 @@ def start_backend_subprocess(
         cmd.append("--no-reload")
     if no_debugger:
         cmd.append("--no-debugger")
+    else:
+        cmd.append("--debug")
 
     env = os.environ.copy()
     # If you rely on backend/.env being loaded by your app code, no need to do anything here.
@@ -183,6 +185,7 @@ def main():
     ap.add_argument("--backend-port", type=int, default=5000, help="Backend port to check/start (default: 5000)")
     ap.add_argument("--backend-app", default="app.main:app", help="Flask app path for --app (default: app.main:app)")
     ap.add_argument("--backend-health", default="/api/health", help="Health path to probe (default: /api/health)")
+    ap.add_argument("--backend-debug", action="store_true", help="Tells Flask to use the --debug flag")
 
     args = ap.parse_args()
 
@@ -209,7 +212,7 @@ def main():
                 port=be_port,
                 app_path=args.backend_app,
                 no_reload=True,
-                no_debugger=True,
+                no_debugger=not args.backend_debug,
             )
             print("⏳ Waiting for backend to become ready…")
             if wait_for_backend(be_host, be_port, args.backend_health, timeout_s=30.0):

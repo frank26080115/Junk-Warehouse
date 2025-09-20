@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 from logging.handlers import RotatingFileHandler
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 class DateSizeRotatingFileHandler(RotatingFileHandler):
     """
@@ -88,7 +89,7 @@ def start_log(
     if log_dir is None:
         log_dir = os.getenv("LOG_DIR", None)
     if log_dir is None:
-        log_dir = Path.cwd() / "var" / "log"
+        log_dir = REPO_ROOT / "var" / "logs"
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
 

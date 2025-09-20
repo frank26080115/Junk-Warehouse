@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 from zoneinfo import ZoneInfo
-
+import json
 import logging
 from app.logging_setup import start_log
 from .errors import register_error_handlers
@@ -69,10 +69,14 @@ app = create_app()
 
 @app.get("/api/health")
 def health():
-    with db.get_db_conn() as conn:
-        conn.execute(text("select 1"))
+    s = db.get_or_create_session()
+    s.execute(text("select 1"))
     return jsonify(ok=True)
 
 @app.get("/api/config.json")
 def config_json():
     return jsonify(json.loads(CONFIG_PATH.read_text()))
+
+@app.teardown_appcontext
+def db_cleanup(_exc):
+    db.db_cleanup(_exc)
