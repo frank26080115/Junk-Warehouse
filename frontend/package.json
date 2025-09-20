@@ -7,13 +7,16 @@
     "preview": "vite preview --port 5173"
   },
   "dependencies": {
+    "@popperjs/core": "^2.11.8",
+    "bootstrap": "^5.3.8",
+    "bootswatch": "^5.3.8",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "typescript": "^5.5.4",
-    "vite": "^5.4.0",
     "@types/react": "^18.2.66",
-    "@types/react-dom": "^18.2.22"
+    "@types/react-dom": "^18.2.22",
+    "typescript": "^5.5.4",
+    "vite": "^7.1.6"
   }
 }
