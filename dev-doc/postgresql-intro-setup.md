@@ -168,3 +168,11 @@ pg_restore -U postgres -d mydb mydb.dump
 3. `psql` or `pg_restore` → import into VPS database
 
 ---
+
+# Dumping just the table schema
+
+`export PGPASSWORD=YOUR_PASSWORD`
+
+`pg_dump -s -U junkwarehouse -h 127.0.0.1 -p 5432 -d junkwarehouse_db -N information_schema -N pg_catalog --no-owner --no-privileges -f schema.sql`
+
+NOTE: `junkwarehouse` is a user within the database, `PGPASSWORD` is the password for `junkwarehouse`, `junkwarehouse_db` is the database name, `schema.sql` is the output file path
