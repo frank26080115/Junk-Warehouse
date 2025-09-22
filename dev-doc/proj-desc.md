@@ -16,6 +16,7 @@ This project is a DIY home inventory database. Items can be both items and conta
 │   │   └───styles
 │   └───src
 │       ├───app
+│       │   └───components
 │       ├───pages
 │       └───styles
 └───scripts
