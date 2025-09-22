@@ -38,6 +38,8 @@ For the routing, the files `/frontend/index.html` and `/frontend/src/main.tsx` a
 | /admin                | Page to launch maintainance tasks from |
 | /login                | Page to enter user credientials and login |
 | /logout               | Visiting causes immediate logout of user |
+| /health               | Hello world test page that uses /api/health |
+| /test/<xyz>           | Test page that uses /api/test, passing back the query <xyz> |
 
 The Python Flask server will offer some API calls, most are using the url similar to `/api/functionname`
 
@@ -45,6 +47,7 @@ The Python Flask server will offer some API calls, most are using the url simila
 |----------|---------|
 | /api/health           | Hello world test of server |
 | /api/config           | Retrieves configuration JSON object |
+| /api/whoami           | returns ok and username if user is logged in, otherwise return error code saying not authorized |
 | /api/login            | User login |
 | /api/logout           | User logout |
 | /api/getitem          | Retrieves inventory item JSON object |

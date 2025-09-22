@@ -1,29 +1,59 @@
-import { useEffect, useState } from "react";
-import { ping } from "./api";
+import React, { Suspense, lazy } from "react";
+import { Routes, Route } from "react-router-dom";
+import Shell from "./Shell";
 
-export default function App() {
-  // 1) Three pieces of state for clarity
-  const [isLoading, setIsLoading] = useState(true);
-  const [data, setData] = useState<any>(null);
-  const [error, setError] = useState<string | null>(null);
+// Lazy page imports (code-splitting)
+const HomePage         = lazy(() => import("../pages/HomePage"));
+const SearchItemsPage  = lazy(() => import("../pages/SearchItemsPage"));
+const ItemNewPage      = lazy(() => import("../pages/ItemNewPage"));
+const ItemPage         = lazy(() => import("../pages/ItemPage"));
+const InvoicePage      = lazy(() => import("../pages/InvoicePage"));
+const LedgerSearchPage = lazy(() => import("../pages/LedgerSearchPage"));
+const AdminPage        = lazy(() => import("../pages/AdminPage"));
+const LoginPage        = lazy(() => import("../pages/LoginPage"));
+const LogoutAction     = lazy(() => import("../pages/LogoutAction"));
+const HealthPage       = lazy(() => import("../pages/HealthPage"));
+const TestPage         = lazy(() => import("../pages/TestPage"));
+const NotFoundPage     = lazy(() => import("../pages/NotFoundPage"));
 
-  // 2) Fetch once after first render
-  useEffect(() => {
-    let alive = true; // ignore result if component unmounts
-    ping()
-      .then((res) => { if (!alive) return; setData(res); })
-      .catch((err) => { if (!alive) return; setError(String(err)); })
-      .finally(() => { if (!alive) return; setIsLoading(false); });
-    return () => { alive = false; }; // cleanup
-  }, []);
-
-  // 3) Render paths (if/else is easiest to read)
-  if (isLoading) return <p>Backend ping: loading…</p>;
-  if (error)     return <p>Backend ping failed: <code>{error}</code></p>;
+const App: React.FC = () => {
   return (
-    <main className="container">
-      <h1>Hello, world 👋</h1>
-      <p>Backend ping result: <code>{JSON.stringify(data)}</code></p>
-    </main>
+    <Shell>
+      <Suspense fallback={<div className="p-3">Loading…</div>}>
+        <Routes>
+          {/* Home */}
+          <Route path="/" element={<HomePage />} />
+
+          {/* Item search */}
+          <Route path="/search" element={<SearchItemsPage />} />
+          <Route path="/search/:xyz" element={<SearchItemsPage />} />
+
+          {/* Items */}
+          <Route path="/item/new" element={<ItemNewPage />} />
+          <Route path="/item/:xyz" element={<ItemPage />} />
+
+          {/* Invoices */}
+          <Route path="/invoice/:uuid" element={<InvoicePage />} />
+
+          {/* Ledger / invoices search */}
+          <Route path="/ledger" element={<LedgerSearchPage />} />
+          <Route path="/ledger/:xyz" element={<LedgerSearchPage />} />
+
+          {/* Admin & Auth */}
+          <Route path="/admin" element={<AdminPage />} />
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/logout" element={<LogoutAction />} />
+
+          {/* Utilities */}
+          <Route path="/health" element={<HealthPage />} />
+          <Route path="/test/:xyz" element={<TestPage />} />
+
+          {/* 404 */}
+          <Route path="*" element={<NotFoundPage />} />
+        </Routes>
+      </Suspense>
+    </Shell>
   );
-}
+};
+
+export default App;
