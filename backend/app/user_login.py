@@ -138,7 +138,7 @@ def _refresh_permanent_session():
 
 # -------- Routes --------
 
-@bp.route("/login", methods=["POST"])
+@bp.route("/api/login", methods=["POST"])
 def login():
     """
     Body: JSON { "username": "...", "password": "..." }
@@ -182,7 +182,7 @@ def login():
     session.permanent = True  # enables rolling 30-day expiry
     return jsonify(ok=True, user_id=username), 200
 
-@bp.route("/logout", methods=["POST", "GET"])
+@bp.route("/api/logout", methods=["POST", "GET"])
 def logout():
     """
     Clears the login session.
@@ -191,7 +191,7 @@ def logout():
     # You can also session.clear() if you store more in the session.
     return jsonify(ok=True), 200
 
-@bp.route("/whoami", methods=["GET"])
+@bp.route("/api/whoami", methods=["GET"])
 def whoami():
     """
     Returns {"user_id": "..."} if authenticated, else 401.
@@ -199,4 +199,4 @@ def whoami():
     uid = session.get("user_id")
     if not uid:
         return jsonify(error="Not authenticated."), 401
-    return jsonify(user_id=uid), 200
+    return jsonify(ok=True, user_id=uid), 200
