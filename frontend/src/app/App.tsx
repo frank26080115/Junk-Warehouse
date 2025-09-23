@@ -5,7 +5,6 @@ import Shell from "./Shell";
 // Lazy page imports (code-splitting)
 const HomePage         = lazy(() => import("../pages/HomePage"));
 const SearchItemsPage  = lazy(() => import("../pages/SearchItemsPage"));
-const ItemNewPage      = lazy(() => import("../pages/ItemNewPage"));
 const ItemPage         = lazy(() => import("../pages/ItemPage"));
 const InvoicePage      = lazy(() => import("../pages/InvoicePage"));
 const LedgerSearchPage = lazy(() => import("../pages/LedgerSearchPage"));
@@ -29,7 +28,7 @@ const App: React.FC = () => {
           <Route path="/search/:xyz" element={<SearchItemsPage />} />
 
           {/* Items */}
-          <Route path="/item/new" element={<ItemNewPage />} />
+          <Route path="/item" element={<SearchItemsPage />} />
           <Route path="/item/:xyz" element={<ItemPage />} />
 
           {/* Invoices */}

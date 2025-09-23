@@ -1,0 +1,26 @@
+/* Right-align labels that are in Bootstrap grid columns */
+.form-label-leftright {
+  text-align: left;
+}
+
+.corner-actions {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  z-index: 1040; /* keep above other content */
+}
+
+/* Sticks inside the container and hugs its right edge */
+.actions-sticky {
+  position: sticky;   /* follows scroll, stays pinned at top when reached */
+  top: 1rem;          /* distance from top of viewport while stuck */
+  z-index: 1040;      /* above page content */
+}
+
+/* Make the inner row push the buttons to the right */
+.actions-row {
+  display: flex;
+  justify-content: flex-end; /* right-align within the container */
+  gap: 0.5rem;
+  padding-right: 1rem;       /* matches your desired inset from container edge */
+}

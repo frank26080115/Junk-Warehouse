@@ -8,6 +8,8 @@
 | 🍽️    | Fork and knife with plate   | &#127869;&#65039;     |
 | 🧻    | Toilet paper                | &#129531;             |
 | 📦    | Package / Box               | &#128230;             |
+| 🗃️    | Card file box               | &#128451;&#65039;     |
+| 🗂️    | Card index dividers         | &#128450;&#65039;     |
 | ✏️    | Pencil                      | &#9999;&#65039;       |
 | 📝    | Memo (note with pencil)     | &#128221;             |
 | 💾    | Floppy disk                 | &#128190;             |

@@ -52,13 +52,16 @@ The Python Flask server will offer some API calls, most are using the url simila
 | /api/login            | User login |
 | /api/logout           | User logout |
 | /api/getitem          | Retrieves inventory item JSON object |
-| /api/setitem          | Writes inventory item JSON object |
+| /api/saveitem         | Writes inventory item JSON object, returns updated JSON object |
+| /api/insertitem       | Inserts inventory item JSON object, returns updated JSON object |
 | /api/deleteitem       | Delete inventory item |
 | /api/getinvoice       | Retrieves invoice JSON object |
+| /api/getiteminvoices  | Retrieves all invoices for an inventory item |
 | /api/setinvoice       | Writes invoice JSON object |
 | /api/uploadinvoice    | Upload invoice file and create database entry for it |
 | /api/deleteinvoice    | Deletes an invoice |
 | /api/getimage         | Retrieves image JSON object (contains metadata and file path) |
+| /api/getitemimages    | Retrieves all image JSON objects for an inventory item |
 | /api/setimage         | Edit image JSON object (contains metadata and file path) |
 | /api/deleteimage      | Delete image object |
 | /api/linkitem         | Sets a relationship between inventory items |

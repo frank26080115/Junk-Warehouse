@@ -41,7 +41,15 @@ const Shell: React.FC<{ children: React.ReactNode }> = ({ children }) => (
         </Navbar.Collapse>
       </Container>
     </Navbar>
-    <Container className="pb-5">{children}</Container>
+    <Container
+        style={{
+          marginTop: 0,
+          marginBottom: 0,
+          paddingTop: 0,
+          paddingBottom: 0,
+        }}
+        className="pb-5"
+      >{children}</Container>
   </>
 );
 
