@@ -194,7 +194,7 @@ CREATE TABLE public.images (
     is_pano boolean DEFAULT false NOT NULL,
     is_360 boolean DEFAULT false NOT NULL,
     date_updated timestamp with time zone DEFAULT now() NOT NULL,
-    is_deleted boolean DEFAULT true NOT NULL,
+    is_deleted boolean DEFAULT false NOT NULL,
     CONSTRAINT images_dim_height_check CHECK ((dim_height >= 0)),
     CONSTRAINT images_dim_width_check CHECK ((dim_width >= 0))
 );
@@ -229,7 +229,7 @@ CREATE TABLE public.invoices (
     notes text DEFAULT ''::text NOT NULL,
     has_been_processed boolean DEFAULT false NOT NULL,
     snooze timestamp with time zone DEFAULT now() NOT NULL,
-    is_deleted boolean DEFAULT true NOT NULL
+    is_deleted boolean DEFAULT false NOT NULL
 );
 
 
