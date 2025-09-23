@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 
 import ImageGallery from "../app/components/ImageGallery";
 import SearchPanel from "../app/components/SearchPanel";
+import LedgerPanel from "../app/components/LedgerPanel";
 
 import "../styles/forms.css";
 
@@ -124,7 +125,7 @@ const ItemPage: React.FC = () => {
   const [item, setItem] = useState<ItemDto>({ ...EMPTY_ITEM, is_staging: isNewFromUrl ? true : EMPTY_ITEM.is_staging });
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string>("");
-  const [refreshToken, setRefreshToken] = useState<number>(0); // signal ImageGallery & SearchPanel
+  const [refreshToken, setRefreshToken] = useState<number>(0); // signal panels to refresh
 
   // Determine initial mode: edit if url is new OR item.is_staging
   const [isReadOnly, setIsReadOnly] = useState<boolean>(() => !isNewFromUrl); // temp until fetch completes
@@ -193,7 +194,7 @@ const ItemPage: React.FC = () => {
     if (!res.ok) throw new Error(`${endpoint} failed: ${res.status}`);
     const data: ItemDto = await res.json();
     setItem((prev) => ({ ...prev, ...data }));
-    // Nudge listeners (ImageGallery/SearchPanel) to refresh
+    // Nudge listeners to refresh
     setRefreshToken((x) => x + 1);
   }, [item]);
 
@@ -506,6 +507,14 @@ const ItemPage: React.FC = () => {
           <h2 className="h5 mb-0">Relationships/Links</h2>
         </div>
         <SearchPanel targetUuid={targetUuid} refreshToken={refreshToken} />
+      </div>
+
+      {/* Relevant Invoices */}
+      <div className="mb-4">
+        <div className="d-flex align-items-center justify-content-between mb-2">
+          <h2 className="h5 mb-0">Relevant Invoices</h2>
+        </div>
+        <LedgerPanel targetUuid={targetUuid} refreshToken={refreshToken} />
       </div>
 
       {/* Footer meta */}
