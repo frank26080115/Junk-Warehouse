@@ -1,0 +1,363 @@
+import logging
+import json
+import re
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+log = logging.getLogger(__name__)
+
+# --- helpers (same as before) ---
+def _coerce_literal(s: str) -> Any:
+    if s is None:
+        return None
+    s = s.strip()
+    if (len(s) >= 2) and ((s[0] == s[-1]) and s[0] in ("'", '"')):
+        return s[1:-1]
+    try:
+        return json.loads(s)
+    except Exception:
+        pass
+    try:
+        if re.fullmatch(r"[+-]?\d+", s):
+            return int(s)
+        if re.fullmatch(r"[+-]?\d*\.\d+", s):
+            return float(s)
+    except Exception:
+        pass
+    low = s.lower()
+    if low == "true":
+        return True
+    if low == "false":
+        return False
+    if low in ("none", "null"):
+        return None
+    return s
+
+def _is_iterable_but_not_str(x: Any) -> bool:
+    return isinstance(x, Iterable) and not isinstance(x, (str, bytes, bytearray))
+
+
+class DirectiveUnit:
+    _PATTERN = re.compile(r"^\\(?P<lhs>[^\s=]+)(?:=(?P<rhs>.+))?$", re.VERBOSE)
+
+    def __init__(self, token: str, context: Any):
+        self.context = context
+        self.raw = token
+        self.lhs: Optional[str] = None
+        self.rhs: Any = None
+        self.rhs_raw: Optional[str] = None
+        self._parse_error = False
+        m = self._PATTERN.match(token.strip())
+        if not m:
+            self._parse_error = True
+            log.warning("DirectiveUnit parse failed for token %r", token)
+            return
+        self.lhs = m.group("lhs").strip().lower()
+        self.rhs_raw = (m.group("rhs") or "").strip() if m.group("rhs") is not None else None
+        self.rhs = _coerce_literal(self.rhs_raw) if self.rhs_raw is not None else None
+
+    def has_value(self) -> bool:
+        return self.rhs_raw is not None
+
+    def parts(self, delim: str = ":") -> List[str]:
+        if not isinstance(self.rhs_raw, str):
+            return []
+        return [p for p in self.rhs_raw.split(delim) if p != ""]
+
+    def ensure_valid(self) -> bool:
+        return not self._parse_error and self.lhs is not None
+
+    def __repr__(self) -> str:
+        return f"DirectiveUnit(lhs={self.lhs!r}, rhs={self.rhs!r}, raw={self.raw!r})"
+
+
+# --------------------- FilterUnit ---------------------
+class FilterUnit:
+    _PATTERN = re.compile(r"^\?(?P<neg>!)?(?P<key>[^\s=\[<>]+)(?:(?P<op>[=\[<>])(?P<rhs>.+)?)?$", re.VERBOSE)
+    def __init__(self, token: str, parent_query: "SearchQuery", context: Any):
+        self.parent_query = parent_query
+        self.context = context
+        m = self._PATTERN.match(token.strip())
+        if not m:
+            self.negated = False; self.key = None; self.op = None; self.rhs = None
+            self._raw = token; self._parse_error = True
+            log.warning("FilterUnit parse failed for token %r", token); return
+        self._parse_error = False
+        self._raw = token
+        self.negated = bool(m.group("neg"))
+        self.key = m.group("key")
+        self.op = m.group("op")
+        rhs_raw = m.group("rhs")
+        if self.op is None:
+            self.rhs = None
+        else:
+            if self.op == "[" and rhs_raw is not None:
+                rhs_trim = rhs_raw.strip()
+                if rhs_trim.endswith("]"):
+                    rhs_trim = rhs_trim[:-1]
+                self.rhs = _coerce_literal(rhs_trim)
+            else:
+                self.rhs = _coerce_literal(rhs_raw)
+
+    def evaluate(self, row: Dict[str, Any]) -> bool:
+        try:
+            if self._parse_error or self.key is None:
+                log.error("Skipping invalid FilterUnit: %r", self._raw)
+                return False
+            handler = self.parent_query.predicates.get(self.key)
+            if handler:
+                result = bool(handler(row=row, op=self.op, rhs=self.rhs, context=self.context))
+                return (not result) if self.negated else result
+            value = row.get(self.key, None)
+            if self.op is None:
+                result = bool(value)
+            elif self.op == "=":
+                result = (value == self.rhs)
+            elif self.op == ">":
+                try:
+                    lv = float(value) if isinstance(value, (int, float, str)) and str(value).strip() != "" else value
+                    rv = float(self.rhs) if isinstance(self.rhs, (int, float, str)) and str(self.rhs).strip() != "" else self.rhs
+                    result = lv > rv if isinstance(lv, (int, float)) and isinstance(rv, (int, float)) else str(value) > str(self.rhs)
+                except Exception:
+                    log.exception("Failed '>' compare: value=%r rhs=%r", value, self.rhs); return False
+            elif self.op == "<":
+                try:
+                    lv = float(value) if isinstance(value, (int, float, str)) and str(value).strip() != "" else value
+                    rv = float(self.rhs) if isinstance(self.rhs, (int, float, str)) and str(self.rhs).strip() != "" else self.rhs
+                    result = lv < rv if isinstance(lv, (int, float)) and isinstance(rv, (int, float)) else str(value) < str(self.rhs)
+                except Exception:
+                    log.exception("Failed '<' compare: value=%r rhs=%r", value, self.rhs); return False
+            elif self.op == "[":
+                if value is None:
+                    result = False
+                elif _is_iterable_but_not_str(value):
+                    result = (self.rhs in value)
+                else:
+                    try:
+                        result = (self.rhs in value)
+                    except Exception:
+                        log.exception("Failed '[' membership: value=%r rhs=%r", value, self.rhs); return False
+            else:
+                log.warning("Unknown operator %r in token %r", self.op, self._raw); return False
+            return (not result) if self.negated else result
+        except Exception:
+            log.exception("FilterUnit evaluation error for token %r on row %r", self._raw, row)
+            return False
+
+    def __repr__(self) -> str:
+        return f"FilterUnit(raw={self._raw!r})"
+
+
+class SearchQuery:
+    """
+    Prefix (before first '?'):
+      - split by whitespace
+      - '\\...' -> DirectiveUnit
+      - everything else: attempt to extract UUIDs / short_ids / slugs; leftover terms feed free-text search
+
+    Suffix (from first '?'):
+      - same filter grammar: OR by '|', AND inside a chain (tokens starting with '?')
+    """
+
+    # case-insensitive regexes
+    _UUID_HYPHENED = re.compile(
+        r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    )
+    _UUID_COMPACT = re.compile(r"(?i)^[0-9a-f]{32}$")
+    _SHORT_ID     = re.compile(r"(?i)^[0-9a-f]{8}$")
+
+    def __init__(self, s: str, context: Any):
+        self.context = context
+        self.raw: str = s or ""
+
+        # Output fields you care about:
+        self.identifiers: List[str] = []      # ordered list of uuid/short_id (normalized)
+        self.query_terms: List[str] = []      # remaining terms for text search
+        self.query_text: str = ""             # " ".join(query_terms) after slug expansion
+        self.directive_units: List[DirectiveUnit] = []
+
+        self.filters_raw: str = ""
+        self._chains: List[List[FilterUnit]] = []
+        self.predicates: Dict[str, Any] = {}
+
+        prefix, self.filters_raw = self._split_query_and_filters(self.raw)
+        terms_raw, self.directive_units = self._parse_prefix(prefix)
+
+        # NEW: extract IDs and clean up terms (incl. slug expansion)
+        self.query_terms, self.identifiers = self._extract_ids_and_clean_terms(terms_raw)
+        self.query_text = " ".join(self.query_terms)
+
+        if self.filters_raw:
+            self._chains = self._parse_filter_chains(self.filters_raw)
+
+    @staticmethod
+    def _split_query_and_filters(s: str) -> Tuple[str, str]:
+        idx = s.find("?")
+        if idx == -1:
+            return s.strip(), ""
+        return s[:idx].strip(), s[idx:].strip()
+
+    def _parse_prefix(self, prefix: str) -> Tuple[List[str], List[DirectiveUnit]]:
+        if not prefix:
+            return [], []
+        terms: List[str] = []
+        directives: List[DirectiveUnit] = []
+        for tok in prefix.split():
+            if tok.startswith("\\") and len(tok) > 1:
+                try:
+                    directives.append(DirectiveUnit(tok, context=self.context))
+                except Exception:
+                    log.exception("Failed to create DirectiveUnit for token %r", tok)
+            else:
+                terms.append(tok)
+        return terms, directives
+
+    # ---------- NEW: ID extraction + slug handling ----------
+    @classmethod
+    def _uuid_canonical(cls, s: str) -> str:
+        """Normalize a UUID (with or without hyphens) to lowercase hyphenated canonical form."""
+        hex32 = s.replace("-", "").lower()
+        # assume already validated as 32 hex chars
+        return f"{hex32[0:8]}-{hex32[8:12]}-{hex32[12:16]}-{hex32[16:20]}-{hex32[20:32]}"
+
+    @classmethod
+    def _looks_like_uuid(cls, token: str) -> Optional[str]:
+        t = token.strip()
+        if cls._UUID_HYPHENED.match(t):
+            return cls._uuid_canonical(t)
+        if cls._UUID_COMPACT.match(t):
+            return cls._uuid_canonical(t)
+        return None
+
+    @classmethod
+    def _looks_like_short_id(cls, token: str) -> Optional[str]:
+        """Return normalized short_id (8 hex, lowercase) if the entire token is a short_id."""
+        t = token.strip()
+        if cls._SHORT_ID.match(t):
+            return t.lower()
+        return None
+
+    @staticmethod
+    def _slug_split_words(body: str) -> List[str]:
+        """
+        Convert the 'word-word--word' body to words:
+          - Single '-' -> space
+          - Double '--' -> literal hyphen
+        """
+        SENTINEL = "\u0000"
+        tmp = body.replace("--", SENTINEL)
+        tmp = tmp.replace("-", " ")
+        tmp = tmp.replace(SENTINEL, "-")
+        # Collapse multiple spaces then split
+        return [w for w in tmp.split() if w]
+
+    @classmethod
+    def _looks_like_slug_with_short_id(cls, token: str) -> Optional[Tuple[List[str], str]]:
+        """
+        If token matches '<body>-<short_id>' (last 8 hex after a hyphen),
+        return (words_from_body, normalized_short_id). Otherwise None.
+        """
+        t = token.strip()
+        if "-" not in t:
+            return None
+        # Ensure there's '-<8hex>' at the end
+        maybe_sid = t[-8:]
+        pre = t[:-8]
+        if len(pre) >= 1 and pre[-1] == "-" and cls._SHORT_ID.match(maybe_sid):
+            body = pre[:-1]  # drop the hyphen before the sid
+            words = cls._slug_split_words(body)
+            return (words, maybe_sid.lower())
+        return None
+
+    def _extract_ids_and_clean_terms(self, terms_in: List[str]) -> Tuple[List[str], List[str]]:
+        """
+        Scan tokens left-to-right, extract UUIDs / short_ids / slugs.
+        - UUIDs recognized first (so we don't pull short_ids out of them).
+        - Slug '...-deadbeef' yields words + short_id.
+        - Plain 8-hex tokens become short_ids.
+        - All extracted ID tokens are removed from free-text terms.
+        Returns (clean_terms, identifiers_in_order).
+        """
+        clean_terms: List[str] = []
+        ids: List[str] = []
+
+        for tok in terms_in:
+            # 1) UUID (hyphened or compact)
+            u = self._looks_like_uuid(tok)
+            if u:
+                ids.append(u)
+                continue
+
+            # 2) Slug with short_id at the end
+            slug_hit = self._looks_like_slug_with_short_id(tok)
+            if slug_hit:
+                words, sid = slug_hit
+                ids.append(sid)
+                clean_terms.extend(words)
+                continue
+
+            # 3) Plain short_id (exact 8 hex token)
+            sid = self._looks_like_short_id(tok)
+            if sid:
+                ids.append(sid)
+                continue
+
+            # 4) Otherwise keep as a regular term
+            clean_terms.append(tok)
+
+        return clean_terms, ids
+
+    # -------- filters (same as before) --------
+    def _parse_filter_chains(self, filters_raw: str) -> List[List[FilterUnit]]:
+        chains: List[List[FilterUnit]] = []
+        for chain_str in filters_raw.split("|"):
+            chain_str = chain_str.strip()
+            if not chain_str:
+                continue
+            tokens = chain_str.split()
+            units: List[FilterUnit] = []
+            for tok in tokens:
+                if tok.startswith("?"):
+                    try:
+                        units.append(FilterUnit(tok, parent_query=self, context=self.context))
+                    except Exception:
+                        log.exception("Failed to create FilterUnit for token %r", tok)
+                else:
+                    log.debug("Ignoring non-filter token in chain: %r", tok)
+            if units:
+                chains.append(units)
+        return chains
+
+    @property
+    def chains(self) -> List[List[FilterUnit]]:
+        return self._chains
+
+    def directives_as_kv(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {}
+        for du in self.directive_units:
+            if du.ensure_valid():
+                d[du.lhs] = du.rhs if du.has_value() else True
+        return d
+
+    def evaluate(self, row: Dict[str, Any]) -> bool:
+        try:
+            if not self._chains:
+                return True
+            for chain in self._chains:
+                try:
+                    if all(unit.evaluate(row) for unit in chain):
+                        return True
+                except Exception:
+                    log.exception("Error evaluating chain %r on row %r", chain, row)
+                    continue
+            return False
+        except Exception:
+            log.exception("SearchQuery.evaluate failed for row %r", row)
+            return False
+
+    def __repr__(self) -> str:
+        return (
+            f"SearchQuery(query_text={self.query_text!r}, "
+            f"identifiers={self.identifiers!r}, "
+            f"directive_units={self.directive_units!r}, "
+            f"chains={self._chains!r})"
+        )

@@ -12,6 +12,8 @@ from .errors import register_error_handlers
 from .static_server import bp_overlay, get_public_html_path
 from .imagehandler import bp_image
 from .user_login import bp as bp_auth
+from .items import bp as bp_items
+from .search import bp as bp_search
 import app.helpers as helpers
 import app.db as db
 from app.config_loader import CONFIG_PATH, CONFIG_DIR
@@ -39,6 +41,8 @@ def create_app():
     app.register_blueprint(bp_auth)
     app.register_blueprint(bp_overlay)
     app.register_blueprint(bp_image)
+    app.register_blueprint(bp_search)
+    app.register_blueprint(bp_items)
 
     # Load JSON (silently ignore if missing/bad)
     try:

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote_plus
 import uuid as _uuid
-from typing import Dict
+from typing import List, Dict, Any
 from flask import g
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, MetaData, Table, select, text
@@ -392,3 +392,69 @@ def get_column_types(engine: Engine, table: str) -> Dict[str, str]:
         raise ValueError(f"Table not found: {table!r}") from None
 
     return {col.name: str(col.type) for col in t.columns}
+
+
+def deduplicate_rows(
+    rows: List[Dict[str, Any]], 
+    key: str = "id", 
+    keep: str = "first"
+) -> List[Dict[str, Any]]:
+    """
+    Remove duplicate dict rows based on a given key.
+
+    Parameters
+    ----------
+    rows : List[Dict[str, Any]]
+        Input list of row dictionaries.
+    key : str, default "id"
+        Column name used as the primary key for uniqueness.
+    keep : {"first", "last"}, default "first"
+        Strategy for which duplicate to keep:
+        - "first": preserve the first occurrence of each key.
+        - "last": preserve the last occurrence of each key.
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        Deduplicated list of row dictionaries.
+    """
+    if keep not in {"first", "last"}:
+        raise ValueError("keep must be either 'first' or 'last'")
+
+    if keep == "first":
+        seen = set()
+        deduped: List[Dict[str, Any]] = []
+        for row in rows:
+            if key not in row:
+                deduped.append(row)
+                continue
+            value = row[key]
+            if value not in seen:
+                seen.add(value)
+                deduped.append(row)
+        return deduped
+
+    else:  # keep == "last"
+        # Build a mapping from key -> row (last one wins)
+        mapping: Dict[Any, Dict[str, Any]] = {}
+        with_no_key: List[Dict[str, Any]] = []
+        for row in rows:
+            if key not in row:
+                with_no_key.append(row)
+                continue
+            mapping[row[key]] = row
+
+        # Preserve order by re-walking input rows, but emit only final survivors
+        seen = set()
+        deduped: List[Dict[str, Any]] = []
+        for row in rows:
+            if key not in row:
+                continue  # already stored
+            value = row[key]
+            if value not in seen and mapping[value] is row:
+                seen.add(value)
+                deduped.append(row)
+
+        # Rows missing the key are always included, order preserved
+        deduped.extend(with_no_key)
+        return deduped
