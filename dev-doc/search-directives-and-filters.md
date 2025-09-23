@@ -28,7 +28,10 @@ A filter starts with `?`, or `?!` for inverted logic, and can optionally have a 
 | show:x    | return x number of results |
 | bydate    | order by creation date |
 | bydatem   | order by modification date |
+| byrand    | randomize sort |
 | orderrev  | reverse order |
+| smart     | use embeddings if possible |
+| dumb      | do not use embeddings |
 
 
 ## List of Filters
