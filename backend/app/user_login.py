@@ -11,7 +11,9 @@ from typing import Dict, Any, Optional, List
 from flask import Blueprint, request, session, jsonify, current_app
 from functools import wraps
 
-bp = Blueprint("auth", __name__, url_prefix="/auth")
+bp = Blueprint("auth", __name__, url_prefix="/api")
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Template you can copy into /config/users.json (keep this here for reference)
 USERS_JSON_TEMPLATE = {
@@ -26,13 +28,8 @@ USERS_JSON_TEMPLATE = {
 
 # -------- Utilities --------
 
-def _project_root() -> Path:
-    # /backend/app/user_login.py -> project root is two parents up from /backend
-    # Adjust if your runpath differs.
-    return Path(__file__).resolve().parents[2]
-
 def _users_json_path() -> Path:
-    return _project_root() / "config" / "users.json"
+    return REPO_ROOT / "config" / "users.json"
 
 def _load_users() -> List[Dict[str, str]]:
     """
@@ -138,7 +135,7 @@ def _refresh_permanent_session():
 
 # -------- Routes --------
 
-@bp.route("/api/login", methods=["POST"])
+@bp.route("/login", methods=["POST"])
 def login():
     """
     Body: JSON { "username": "...", "password": "..." }
@@ -182,7 +179,7 @@ def login():
     session.permanent = True  # enables rolling 30-day expiry
     return jsonify(ok=True, user_id=username), 200
 
-@bp.route("/api/logout", methods=["POST", "GET"])
+@bp.route("/logout", methods=["POST", "GET"])
 def logout():
     """
     Clears the login session.
@@ -191,7 +188,7 @@ def logout():
     # You can also session.clear() if you store more in the session.
     return jsonify(ok=True), 200
 
-@bp.route("/api/whoami", methods=["GET"])
+@bp.route("/whoami", methods=["GET"])
 def whoami():
     """
     Returns {"user_id": "..."} if authenticated, else 401.
