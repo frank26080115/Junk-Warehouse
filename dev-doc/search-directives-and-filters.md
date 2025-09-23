@@ -22,10 +22,9 @@ A filter starts with `?`, or `?!` for inverted logic, and can optionally have a 
 
 | directive | function |
 |-----------|----------|
-| orphans   | find items without relationships |
-| lost      | find items without containment relationships |
 | showall   | return as many results as possible |
 | show:x    | return x number of results |
+| page:x    | if too many results, return the x-th page |
 | bydate    | order by creation date |
 | bydatem   | order by modification date |
 | byrand    | randomize sort |
@@ -38,9 +37,13 @@ A filter starts with `?`, or `?!` for inverted logic, and can optionally have a 
 
 | filter | function |
 |--------|----------|
+| orphans     | find items without relationships |
+| uncontained | find items without containment relationships |
 | alarm       | find items that have an alarm set and have passed the alarm date |
 | staging     | find items with is_stagin flag set |
 | deleted     | find items with is_deleted flag set |
+| has_invoice | find items that has an invoice related |
+| has_image   | find items that has an image related |
 
 The above is not comprehensive
 
