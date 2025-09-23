@@ -12,8 +12,8 @@ from flask import Blueprint, jsonify, request
 from .user_login import login_required
 from .db import get_or_create_session
 from .search_expression import SearchQuery
-from .slugify import slugify
 from .helpers import fuzzy_levenshtein_at_most
+from .items import augment_item_dict
 
 from sqlalchemy import text
 
@@ -23,34 +23,6 @@ log = logging.getLogger(__name__)
 #   from app.search import bp as search_bp
 #   app.register_blueprint(search_bp)
 bp = Blueprint("search", __name__, url_prefix="/api")
-
-
-def get_thumbnail_for_item(db_session, item_uuid: str) -> str:
-    """
-    Placeholder: pick/compute a thumbnail URL for the item.
-    TODO: implement me to return a real URL (or empty string if none).
-    """
-    # TODO: Replace with actual logic (e.g., join to images, rank=0, build URL)
-    return ""
-
-
-def _row_to_dict(row: Dict[str, Any]) -> Dict[str, Any]:
-    """Normalize a SQL row Mapping -> JSON-serializable dict and inject meta."""
-    d = dict(row)
-
-    # Ensure UUID is JSON serializable
-    if "id" in d and d["id"] is not None:
-        d["id"] = str(d["id"])
-
-    # Add convenience fields
-    short_id = d.get("short_id") or 0
-    name = d.get("name") or ""
-    d["slug"] = slugify(name, short_id)
-
-    # Thumbnail hook
-    d["thumbnail"] = get_thumbnail_for_item(None, d["id"])
-
-    return d
 
 
 def _normalize_primary_key_column(primary_key_column: str) -> str:
@@ -188,7 +160,7 @@ def search_items(
 
             row = session.execute(direct_sql, {"identifier": uuid_candidate}).mappings().first()
             if row:
-                return [_row_to_dict(row)]
+                return [augment_item_dict(row)]
         else:
             short_id_values = _short_id_candidates(identifier)
             if short_id_values:
@@ -211,9 +183,9 @@ def search_items(
 
                     if comparison_text:
                         best_row = _pick_best_short_id_row(sid_rows, comparison_text)
-                        return [_row_to_dict(best_row)]
+                        return [augment_item_dict(best_row)]
 
-                    return [_row_to_dict(sid_rows[0])]
+                    return [augment_item_dict(sid_rows[0])]
 
     query_text = sq.query_text or raw_query  # fallback just in case
 
@@ -239,7 +211,7 @@ def search_items(
     log.debug("search_items: executing base text search with query=%r", query_text)
 
     rows = session.execute(base_sql, {"q": query_text, "limit": LIMIT}).mappings().all()
-    results.extend(_row_to_dict(r) for r in rows)
+    results.extend(augment_item_dict(r) for r in rows)
 
     # --- RELATION / TARGET-UUID ENHANCEMENT ---
     # This is intentionally *not* an else-if. The base search above should always take place.
