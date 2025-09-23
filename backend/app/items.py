@@ -154,19 +154,6 @@ def save_item_api():
             item_uuid = payload.get(ID_COL) or item_uuid
 
         if not item_uuid:
-            # As a fallback, try resolving by name/short_id from payload (best-effort)
-            # This is defensive; ideally clients provide id on save.
-            name = (payload.get("name") or "").strip() if isinstance(payload, Mapping) else ""
-            short_id = payload.get("short_id") if isinstance(payload, Mapping) else None
-            guess = None
-            if name:
-                guess = _resolve_item_by_xyz(name)
-            if not guess and short_id is not None:
-                guess = _resolve_item_by_xyz(str(short_id))
-            if guess:
-                item_uuid = guess.get(ID_COL)
-
-        if not item_uuid:
             return jsonify({"error": "Save succeeded but item ID could not be determined"}), 500
 
         db_row = get_db_item_as_dict(engine, TABLE, item_uuid, id_col_name=ID_COL)
@@ -263,23 +250,6 @@ def insert_item_api():
 
         # Try to determine the new item's id:
         new_id = payload.get(ID_COL)
-
-        if not new_id:
-            # Resolve by something stable from payload (best-effort):
-            # Prefer name + short_id if available; otherwise try name alone.
-            name = (payload.get("name") or "").strip()
-            short_id = payload.get("short_id")
-
-            guess = None
-            if name and short_id is not None:
-                guess = _resolve_item_by_xyz(f"{name} {short_id}")
-            if not guess and name:
-                guess = _resolve_item_by_xyz(name)
-            if not guess and short_id is not None:
-                guess = _resolve_item_by_xyz(str(short_id))
-
-            if guess:
-                new_id = guess.get(ID_COL)
 
         if not new_id:
             return jsonify({"error": "Insert succeeded but new item ID could not be determined"}), 500
