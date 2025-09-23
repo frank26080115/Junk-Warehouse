@@ -42,14 +42,40 @@ const Shell: React.FC<{ children: React.ReactNode }> = ({ children }) => (
       </Container>
     </Navbar>
     <Container
+      style={{
+        marginTop: 0,
+        marginBottom: 0,
+        paddingTop: 0,
+        paddingBottom: 0,
+      }}
+      className="pb-5"
+    >
+      {children}
+      <footer
         style={{
-          marginTop: 0,
-          marginBottom: 0,
-          paddingTop: 0,
-          paddingBottom: 0,
+          marginTop: "1.5rem",
+          paddingTop: "0.5rem",
+          borderTop: "1px solid rgba(0, 0, 0, 0.08)",
+          fontSize: "0.75rem",
+          display: "flex",
+          gap: "0.75rem",
+          flexWrap: "wrap",
+          color: "#6c757d",
         }}
-        className="pb-5"
-      >{children}</Container>
+      >
+        <a
+          href="http://github.com/frank26080115/Junk-Warehouse"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: "inherit", textDecoration: "none" }}
+        >
+          Junk-Warehouse @ GitHub
+        </a>
+        <a href="/help.md" style={{ color: "inherit", textDecoration: "none" }}>
+          🙋ℹ️
+        </a>
+      </footer>
+    </Container>
   </>
 );
 
