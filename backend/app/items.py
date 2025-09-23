@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping, Optional, Union, List
+from typing import Any, Callable, Dict, Mapping, Optional, Union, List
 import logging
 import random
 import uuid
@@ -13,7 +13,6 @@ from sqlalchemy.engine import Engine
 
 from .user_login import login_required
 from .db import get_engine, get_db_item_as_dict, update_db_row_by_dict
-from .search import search_items  # reuse your search to resolve xyz
 from .slugify import slugify
 
 log = logging.getLogger(__name__)
@@ -24,44 +23,71 @@ TABLE = "items"
 ID_COL = "id"
 
 
-def _get_thumbnail_for_item(item_uuid: str) -> str:
+def get_item_thumbnail(item_uuid: Optional[str], *, db_session: Any = None) -> str:
     """
     Placeholder: return a thumbnail URL for an item.
-    TODO: Implement actual lookup (e.g., images.rank = 0) and build a public URL.
+
+    Parameters
+    ----------
+    item_uuid : Optional[str]
+        Identifier for the item the thumbnail belongs to.
+    db_session : Any, optional
+        Optional database session/connection handle for future implementations.
     """
-    # TODO
+
+    # TODO: Implement lookup (e.g., join to images table and build public URL)
     return ""
 
 
-def _augment_item(d: Dict[str, Any]) -> Dict[str, Any]:
+def compute_item_slug(name: Any, short_id: Any) -> str:
+    """Return the canonical slug for an item."""
+    title = "" if name is None else str(name)
+    try:
+        sid_int = int(short_id) if short_id is not None else 0
+    except (TypeError, ValueError):
+        sid_int = 0
+    return slugify(title, sid_int)
+
+
+def augment_item_dict(
+    data: Mapping[str, Any],
+    *,
+    thumbnail_getter: Optional[Callable[[Optional[str]], str]] = None,
+) -> Dict[str, Any]:
     """
-    Add computed fields (slug, thumbnail) and normalize types for JSON.
-    Mirrors the behavior used in search results.
+    Convert an item row to a JSON-ready dict with derived fields.
+
+    This helper normalizes UUIDs, generates the slug, attaches a thumbnail,
+    and converts datetime objects to ISO strings.
     """
-    out = dict(d)
 
-    # Normalize UUID to string for JSON
-    if ID_COL in out and out[ID_COL] is not None:
-        out[ID_COL] = str(out[ID_COL])
+    out: Dict[str, Any] = dict(data)
 
-    # Compute slug (best-effort; short_id may be None/0)
-    name = out.get("name") or ""
-    short_id = out.get("short_id") or 0
-    out["slug"] = slugify(name, short_id)
+    raw_item_uuid = out.get(ID_COL)
+    if raw_item_uuid is not None:
+        out[ID_COL] = str(raw_item_uuid)
 
-    # Thumbnail
-    out["thumbnail"] = _get_thumbnail_for_item(out.get(ID_COL, ""))
+    name = out.get("name")
+    short_id = out.get("short_id")
+    out["slug"] = compute_item_slug(name, short_id)
 
-    # Datetime normalization (if your get_db_item_as_dict returns datetimes)
-    for k, v in list(out.items()):
-        # Very light-touch: ISO-ify datetimes if needed
-        if hasattr(v, "isoformat"):
+    getter = thumbnail_getter or (lambda uuid: get_item_thumbnail(uuid))
+    out["thumbnail"] = getter(out.get(ID_COL))
+
+    for key, value in list(out.items()):
+        if hasattr(value, "isoformat"):
             try:
-                out[k] = v.isoformat()
-            except Exception:
+                out[key] = value.isoformat()
+            except Exception:  # pragma: no cover - defensive guard
                 pass
 
     return out
+
+
+def _augment_item(d: Dict[str, Any]) -> Dict[str, Any]:
+    """Compatibility wrapper that delegates to :func:`augment_item_dict`."""
+
+    return augment_item_dict(d)
 
 
 def _resolve_item_by_xyz(xyz: str) -> Optional[Dict[str, Any]]:
@@ -74,7 +100,13 @@ def _resolve_item_by_xyz(xyz: str) -> Optional[Dict[str, Any]]:
         return None
 
     # Use the search pipeline you already have; top result wins
-    hits: List[Dict[str, Any]] = search_items(raw_query=xyz, target_uuid=None, context={"source": "getitem"})
+    from .search import search_items  # local import to avoid circular dependency
+
+    hits: List[Dict[str, Any]] = search_items(
+        raw_query=xyz,
+        target_uuid=None,
+        context={"source": "getitem"},
+    )
     if not hits:
         return None
 
