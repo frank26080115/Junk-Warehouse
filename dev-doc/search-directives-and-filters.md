@@ -1,0 +1,46 @@
+Directives superceeds all filters, they either dictate how the SQL is done, or how the results are presented.
+
+Filters are only performed on rows returned from the database.
+
+For example:
+
+"* \orphans \showall ?C ?D | ?!E ?F"
+
+With the "*" it means all items, no need for keyword search. The directive "orphans" will find items without relationships. "showall" will return a longer list than default. Conditions met must be "if ((C and D) or (not E and F))".
+
+As a weak rule, directives are probably used for where relationships matter
+
+## Directives
+
+A directive starts with `\` and can optionally have a left-hand-side and right-hand-side delimited by `:`
+
+## Filters
+
+A filter starts with `?`, or `?!` for inverted logic, and can optionally have a left-hand-side and right-hand-side delimited by a few conditional operators such as `=` `<` `>` `[`. The `[` is for "in", but the left hand side is the haystack.
+
+## List of Directives
+
+| directive | function |
+|-----------|----------|
+| orphans   | find items without relationships |
+| lost      | find items without containment relationships |
+| showall   | return as many results as possible |
+| show:x    | return x number of results |
+| bydate    | order by creation date |
+| bydatem   | order by modification date |
+| orderrev  | reverse order |
+
+
+## List of Filters
+
+| filter | function |
+|--------|----------|
+| alarm       | find items that have an alarm set and have passed the alarm date |
+| staging     | find items with is_stagin flag set |
+| deleted     | find items with is_deleted flag set |
+
+The above is not comprehensive
+
+Any boolean flag in the table column can be used for a filter, if the filter word when prepended with `is_` exists as a boolean table column, then it can be used as a filter. For example "staging" means check the `is_staging` column.
+
+If the filter looks like `has_<column>` then the column must have a non-null non-whitespace non-empty value.
