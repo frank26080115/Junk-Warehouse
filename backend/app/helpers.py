@@ -408,3 +408,27 @@ def to_timestamptz(
     if iso.endswith("+00:00"):
         iso = iso[:-6] + "Z"
     return iso
+
+import difflib
+
+def fuzzy_word_list_match(words, user_input):
+    """
+    Given a list of properly spelled words and a user input string,
+    return the closest match and its index in the list.
+
+    # Example usage:
+    dictionary = ["banana", "orange", "apple", "grapefruit"]
+    user_word = "applle"
+
+    match, idx = fuzzy_match(dictionary, user_word)
+    print(match, idx)  # → apple 2
+
+    """
+    # Get best matches from difflib
+    matches = difflib.get_close_matches(user_input, words, n=1, cutoff=0.6)
+    if not matches:
+        return None, -1  # no reasonable match found
+
+    best_match = matches[0]
+    index = words.index(best_match)
+    return best_match, index
