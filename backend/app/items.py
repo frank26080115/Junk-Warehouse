@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, Mapping, Optional, Union, List
 import logging
+import random
+import uuid
 
 from flask import Blueprint, jsonify, request
+from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from .user_login import login_required
@@ -185,32 +188,87 @@ def insert_item_api():
     Body: item JSON (can be partial; defaults handled in DB).
     Returns: the inserted item JSON (augmented).
     """
-    payload: Union[str, Mapping[str, Any], Any] = request.get_json(silent=True) or {}
-    if not payload:
+    raw_payload: Union[str, Mapping[str, Any], Any] = request.get_json(silent=True) or {}
+    if not raw_payload:
         return jsonify({"error": "Missing item payload"}), 400
+    if not isinstance(raw_payload, Mapping):
+        return jsonify({"error": "Item payload must be an object"}), 400
+
+    payload: Dict[str, Any] = dict(raw_payload)
 
     engine: Engine = get_engine()
     try:
-        # Insert path: pass uuid=None to your helper to create a new row
-        update_db_row_by_dict(
+        raw_uuid_val = payload.get(ID_COL)
+        normalized_uuid: Optional[str] = None
+        if raw_uuid_val:
+            try:
+                normalized_uuid = str(uuid.UUID(str(raw_uuid_val)))
+            except (ValueError, AttributeError, TypeError):
+                log.debug("insertitem: invalid id supplied; generating a new UUID", exc_info=False)
+        if normalized_uuid is None:
+            normalized_uuid = str(uuid.uuid4())
+        payload[ID_COL] = normalized_uuid
+
+        def _to_signed_32(value: int) -> int:
+            value &= 0xFFFFFFFF
+            return value - 0x100000000 if value >= 0x80000000 else value
+
+        uuid_obj = uuid.UUID(normalized_uuid)
+        preferred_unsigned = int(uuid_obj.hex[-8:], 16)
+        preferred_short_id = _to_signed_32(preferred_unsigned)
+        short_id_value = preferred_short_id
+
+        with engine.connect() as conn:
+            def short_id_in_use(candidate: int) -> bool:
+                result = conn.execute(
+                    text("SELECT 1 FROM items WHERE short_id = :sid LIMIT 1"),
+                    {"sid": candidate},
+                )
+                return result.first() is not None
+
+            if short_id_in_use(short_id_value):
+                log.debug(
+                    "short_id %d already in use; generating random replacement",
+                    short_id_value,
+                )
+                rng = random.SystemRandom()
+                unique_found = False
+                for _ in range(100):
+                    candidate_unsigned = rng.getrandbits(32)
+                    short_id_value = _to_signed_32(candidate_unsigned)
+                    if not short_id_in_use(short_id_value):
+                        unique_found = True
+                        break
+                if not unique_found:
+                    raise RuntimeError(
+                        "Unable to allocate unique short_id after multiple attempts"
+                    )
+
+        payload["short_id"] = short_id_value
+
+        # Insert path: tell helper explicitly to insert a new row
+        result = update_db_row_by_dict(
             engine=engine,
             table=TABLE,
-            uuid=None,
+            uuid="new",
             data=payload,
             fuzzy=True,
             id_col_name=ID_COL,
         )
 
+        if isinstance(result, tuple) and len(result) == 2:
+            resp, status = result
+            if status >= 400:
+                return resp, status
+
         # Try to determine the new item's id:
-        new_id = None
-        if isinstance(payload, Mapping):
-            new_id = payload.get(ID_COL) or new_id
+        new_id = payload.get(ID_COL)
 
         if not new_id:
             # Resolve by something stable from payload (best-effort):
             # Prefer name + short_id if available; otherwise try name alone.
-            name = (payload.get("name") or "").strip() if isinstance(payload, Mapping) else ""
-            short_id = payload.get("short_id") if isinstance(payload, Mapping) else None
+            name = (payload.get("name") or "").strip()
+            short_id = payload.get("short_id")
 
             guess = None
             if name and short_id is not None:
