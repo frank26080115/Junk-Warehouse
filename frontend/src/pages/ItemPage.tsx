@@ -198,7 +198,7 @@ const ItemPage: React.FC = () => {
     try {
       setLoading(true);
       setError("");
-      await commonSave("/api/saveitem");
+      await commonSave("/api/insertitem");
       setIsReadOnly(true); // after an explicit insert, land in read-only
     } catch (e: any) {
       console.error(e);
