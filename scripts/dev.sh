@@ -35,3 +35,15 @@ else
   FRONT_PID=$!
   wait $BACK_PID $FRONT_PID
 fi
+
+# python
+if ! cmp --silent requirements.txt .deps/requirements.txt.cache; then
+  python -m pip install -r requirements.txt
+  mkdir -p .deps && cp requirements.txt .deps/requirements.txt.cache
+fi
+
+# node
+if ! cmp --silent package-lock.json .deps/package-lock.json.cache; then
+  npm ci
+  mkdir -p .deps && cp package-lock.json .deps/package-lock.json.cache
+fi
