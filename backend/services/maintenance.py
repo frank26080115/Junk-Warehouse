@@ -108,7 +108,7 @@ def prune_images(target_directory: Union[Path, str]) -> Dict[str, int]:
     tables = _load_tables(engine, ("images", "item_images"))
     images_table = tables["images"]
     item_images_table = tables["item_images"]
-    target_dir_path = Path(target_directory)
+    target_dir_path = Path(target_directory).resolve()
 
     if not target_dir_path.exists():
         log.warning(
@@ -178,6 +178,15 @@ def prune_images(target_directory: Union[Path, str]) -> Dict[str, int]:
         relative_dir = Path(row.get("dir") or "")
         file_name = row.get("file_name") or ""
         file_path = (target_dir_path / relative_dir / file_name).resolve()
+        try:
+            file_path.relative_to(target_dir_path)
+        except ValueError:
+            log.warning(
+                "Skipping image file %s because it is outside of %s",
+                file_path,
+                target_dir_path,
+            )
+            continue
         if file_path in seen_paths:
             continue
         seen_paths.add(file_path)
