@@ -7,7 +7,7 @@ import LedgerPanel from "../app/components/LedgerPanel";
 
 import "../styles/forms.css";
 
-// Types that mirror your table columns + a few virtuals the backend returns (e.g., hyperlink)
+// Types that mirror your table columns + a few virtuals the backend returns (e.g., slug)
 export interface ItemDto {
   id?: string; // uuid
   short_id?: number; // integer
@@ -33,7 +33,7 @@ export interface ItemDto {
   date_purchased?: string | null; // ISO timestamp or null
   source?: string;
   // Virtuals from backend (not table columns)
-  hyperlink?: string; // slug URL for the 🔗
+  slug?: string; // used to build the permalink
 }
 
 const EMPTY_ITEM: ItemDto = {
@@ -58,7 +58,7 @@ const EMPTY_ITEM: ItemDto = {
   date_last_modified: null,
   date_purchased: null,
   date_reminder: null,
-  hyperlink: "",
+  slug: "",
 };
 
 function isBlank(x?: string | null): boolean {
@@ -167,6 +167,11 @@ const ItemPage: React.FC = () => {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [xyz]);
+
+  const permalink = useMemo(() => {
+    if (isBlank(item.slug)) return "";
+    return `/item/${item.slug}`;
+  }, [item.slug]);
 
   const shortIdHex = useMemo(() => {
     const n = item.short_id ?? 0;
@@ -295,9 +300,9 @@ const ItemPage: React.FC = () => {
           />
         </div>
         <div className="col-2 col-sm-2 col-lg-2 text-end">
-          {!isBlank(item.hyperlink) && (
+          {!isBlank(permalink) && (
             <a
-              href={item.hyperlink}
+              href={permalink}
               target="_blank"
               rel="noopener noreferrer"
               className="text-decoration-none fs-4"
