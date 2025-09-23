@@ -14,6 +14,7 @@ const LogoutAction     = lazy(() => import("../pages/LogoutAction"));
 const HealthPage       = lazy(() => import("../pages/HealthPage"));
 const TestPage         = lazy(() => import("../pages/TestPage"));
 const NotFoundPage     = lazy(() => import("../pages/NotFoundPage"));
+const HelpPage         = lazy(() => import("../pages/HelpPage"));
 
 const App: React.FC = () => {
   return (
@@ -46,6 +47,9 @@ const App: React.FC = () => {
           {/* Utilities */}
           <Route path="/health" element={<HealthPage />} />
           <Route path="/test/:xyz" element={<TestPage />} />
+
+          {/* Utilities */}
+          <Route path="/help" element={<HelpPage />} />
 
           {/* 404 */}
           <Route path="*" element={<NotFoundPage />} />

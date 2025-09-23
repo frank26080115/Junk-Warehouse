@@ -69,9 +69,9 @@ const Shell: React.FC<{ children: React.ReactNode }> = ({ children }) => (
           rel="noopener noreferrer"
           style={{ color: "inherit", textDecoration: "none" }}
         >
-          Junk-Warehouse @ GitHub
+          Junk-Warehouse <img src="/imgs/icons/github_white_sq.png" height="18" width="18" />
         </a>
-        <a href="/help.md" style={{ color: "inherit", textDecoration: "none" }}>
+        <a href="/help" target="_blank" style={{ color: "inherit", textDecoration: "none" }}>
           🙋ℹ️
         </a>
       </footer>
