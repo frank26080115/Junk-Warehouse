@@ -25,6 +25,7 @@ export interface ItemDto {
   metatext?: string;
   is_staging?: boolean;
   is_deleted?: boolean;
+  is_lost?: boolean;
   date_reminder?: string | null; // ISO timestamp or null
   product_code?: string;
   url?: string; // purchase url
@@ -51,6 +52,7 @@ const EMPTY_ITEM: ItemDto = {
   is_consumable: false,
   is_staging: true,
   is_deleted: false,
+  is_lost: false,
   date_creation: null,
   date_last_modified: null,
   date_purchased: null,
@@ -110,6 +112,7 @@ const booleanFlags = [
   { key: "is_consumable",     emoji: "🍽️", label: "Consumable" },
   { key: "is_staging",        emoji: "⏳", label: "Staging" },
   { key: "is_deleted",        emoji: "🗑️", label: "Deleted" },
+  { key: "is_lost",           emoji: "👻", label: "Lost" },
 ] as const;
 
 type FlagKey = typeof booleanFlags[number]["key"];
