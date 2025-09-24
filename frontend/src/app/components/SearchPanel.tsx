@@ -55,6 +55,9 @@ const API_ENDPOINTS: Record<
   },
 };
 
+const ITEM_NAME_MAX_LENGTH = 30;
+const INVOICE_LINE_MAX_LENGTH = 40;
+
 function isBlank(value?: string | null): boolean {
   return !value || value.trim().length === 0;
 }
@@ -65,39 +68,83 @@ function truncateText(value: string, max = 72): string {
   return `${value.slice(0, max - 1)}…`;
 }
 
+function formatDateToYMD(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) {
+    return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+  }
+
+  const parsed = new Date(trimmed);
+  if (!Number.isNaN(parsed.getTime())) {
+    const year = parsed.getFullYear();
+    const month = String(parsed.getMonth() + 1).padStart(2, "0");
+    const day = String(parsed.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  return trimmed;
+}
+
 function extractInvoiceLines(row: SearchRow): string[] {
-  if (Array.isArray(row.lines)) {
-    return row.lines.map((line) => String(line));
+  const normalize = (value: unknown): string => {
+    if (value == null) {
+      return "";
+    }
+    if (typeof value === "string") {
+      return value.trim();
+    }
+    return String(value).trim();
+  };
+
+  const lines: string[] = [];
+
+  const dateRaw = normalize((row as any).date);
+  const formattedDate = formatDateToYMD(dateRaw);
+  const hasBeenProcessed = (row as any).has_been_processed;
+  if (!isBlank(formattedDate)) {
+    let line = `📅 ${formattedDate}`;
+    if (hasBeenProcessed === false) {
+      line = `${line} ⏳`;
+    }
+    lines.push(line);
   }
 
-  const candidates = [
-    row.display,
-    row.summary,
-    row.description,
-    row.subject,
-    row.text,
-    row.details,
-  ];
+  const shopRaw = normalize((row as any).shop_name);
+  const orderRaw = normalize((row as any).order_number);
+  const shopLine = !isBlank(shopRaw) ? `🛒 ${shopRaw}` : "";
+  const orderLine = !isBlank(orderRaw) ? `🔢 ${orderRaw}` : "";
 
-  for (const candidate of candidates) {
-    if (candidate == null) {
-      continue;
+  if (!isBlank(shopRaw) && !isBlank(orderRaw)) {
+    if (shopRaw.length + orderRaw.length <= INVOICE_LINE_MAX_LENGTH) {
+      lines.push(`${shopLine} ${orderLine}`.trim());
+    } else {
+      lines.push(shopLine);
+      lines.push(orderLine);
     }
-
-    const raw = Array.isArray(candidate)
-      ? (candidate as unknown[]).map((item) => String(item)).join("\n")
-      : String(candidate);
-    if (isBlank(raw)) {
-      continue;
+  } else {
+    if (shopLine) {
+      lines.push(shopLine);
     }
-
-    return raw
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
+    if (orderLine) {
+      lines.push(orderLine);
+    }
   }
 
-  return [String(row.pk)];
+  const subjectRaw = normalize((row as any).subject);
+  if (!isBlank(subjectRaw)) {
+    lines.push(`✉ ${truncateText(subjectRaw, INVOICE_LINE_MAX_LENGTH)}`);
+  }
+
+  if (lines.length === 0) {
+    lines.push(String(row.pk));
+  }
+
+  return lines;
 }
 const SearchPanel: React.FC<SearchPanelProps> = ({
   displayedTitle,
@@ -485,6 +532,21 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
     [normalizedTable],
   );
 
+  const buildInvoiceHref = useCallback((row: SearchRow): string => {
+    const directHref = (row as any).href;
+    if (typeof directHref === "string" && !isBlank(directHref)) {
+      return directHref;
+    }
+    const url = (row as any).url;
+    if (typeof url === "string" && !isBlank(url)) {
+      return url;
+    }
+    if (typeof row.pk === "string" && !isBlank(row.pk)) {
+      return `/invoice/${row.pk}`;
+    }
+    return "#";
+  }, []);
+
   const renderItemName = useCallback(
     (row: SearchRow) => {
       const candidates = [
@@ -502,11 +564,48 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
       if (!raw) {
         raw = row.pk;
       }
-      const truncated = truncateText(raw);
+      const truncated = truncateText(raw, ITEM_NAME_MAX_LENGTH);
+      const emojiParts: string[] = [];
+      const isCollection = Boolean((row as any).is_collection);
+      const isContainer = Boolean((row as any).is_container);
+      const isFixedLocation = Boolean((row as any).is_fixed_location);
+      const isLost = Boolean((row as any).is_lost);
+      const isStaging = Boolean((row as any).is_staging);
+      const isConsumable = Boolean((row as any).is_consumable);
+
+      if (isCollection) {
+        emojiParts.push("🗃️");
+      } else if (isContainer) {
+        emojiParts.push("📦");
+      } else if (isFixedLocation) {
+        emojiParts.push("🛏️");
+      }
+
+      if (isLost) {
+        emojiParts.push("👻");
+      }
+      if (isStaging) {
+        emojiParts.push("⏳");
+      }
+      // === Consumable emoji logic START ===
+      if (isConsumable) {
+        emojiParts.push("🍽️");
+      }
+      // === Consumable emoji logic END ===
+
+      const decorated = emojiParts.length
+        ? `${truncated} ${emojiParts.join("")}`
+        : truncated;
+
       const href = buildItemHref(row);
       return (
-        <a href={href} className="text-decoration-none text-break" title={raw}>
-          {truncated}
+        <a
+          href={href}
+          className="text-decoration-none"
+          title={raw}
+          style={{ display: "inline-block", whiteSpace: "nowrap" }}
+        >
+          {decorated}
         </a>
       );
     },
@@ -518,6 +617,11 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
       const explicit = (row as any).relation_icon;
       if (typeof explicit === "string" && !isBlank(explicit)) {
         return explicit;
+      }
+
+      const isAssociated = (row as any).is_associated;
+      if (typeof isAssociated === "boolean") {
+        return isAssociated ? "🔗" : "⚫";
       }
 
       const assocRaw =
@@ -796,6 +900,8 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
                   const thumbnail = resolveThumbnail(row);
                   const invoiceLines =
                     normalizedTable === "invoices" ? extractInvoiceLines(row) : [];
+                  const invoiceHref =
+                    normalizedTable === "invoices" ? buildInvoiceHref(row) : "";
 
                   return (
                     <tr key={row.pk} style={{ backgroundColor: rowShade }}>
@@ -810,24 +916,31 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
                       </td>
 
                       {normalizedTable === "items" && !smallMode && (
-                        <td style={{ width: "4.5rem" }}>
-                          {thumbnail ? (
-                            <img
-                              src={thumbnail}
-                              alt=""
-                              className="img-fluid rounded"
-                              style={{
-                                maxWidth: "64px",
-                                maxHeight: "64px",
-                                objectFit: "cover",
-                              }}
-                            />
-                          ) : (
-                            <div
-                              className="border rounded bg-light"
-                              style={{ width: "64px", height: "64px" }}
-                            />
-                          )}
+                        <td style={{ width: "7rem" }}>
+                          <div
+                            className="d-flex justify-content-center align-items-center"
+                            style={{ width: "100px", height: "100px" }}
+                          >
+                            {thumbnail ? (
+                              <img
+                                src={thumbnail}
+                                alt=""
+                                className="rounded"
+                                style={{
+                                  width: "100%",
+                                  height: "100%",
+                                  maxWidth: "100px",
+                                  maxHeight: "100px",
+                                  objectFit: "cover",
+                                }}
+                              />
+                            ) : (
+                              <div
+                                className="border rounded bg-light w-100 h-100"
+                                style={{ width: "100%", height: "100%" }}
+                              />
+                            )}
+                          </div>
                         </td>
                       )}
 
@@ -849,11 +962,20 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
                         {normalizedTable === "items" ? (
                           renderItemName(row)
                         ) : (
-                          <div className="small text-body">
+                          <a
+                            href={invoiceHref || undefined}
+                            className="small text-body text-decoration-none"
+                            style={{ display: "inline-block", whiteSpace: "nowrap" }}
+                          >
                             {invoiceLines.map((line, idx) => (
-                              <div key={`${row.pk}-line-${idx}`}>{line}</div>
+                              <div
+                                key={`${row.pk}-line-${idx}`}
+                                style={{ whiteSpace: "nowrap" }}
+                              >
+                                {line}
+                              </div>
                             ))}
-                          </div>
+                          </a>
                         )}
                       </td>
                     </tr>
@@ -991,9 +1113,15 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
                   className="btn btn-primary btn-sm"
                   onClick={handleSetAssociation}
                   disabled={isBusy || !selectedCount}
-                  aria-label="Save association"
+                  aria-label={
+                    normalizedTable === "invoices"
+                      ? "Create relationship"
+                      : "Save association"
+                  }
                 >
-                  <span aria-hidden>💾</span>
+                  <span aria-hidden>
+                    {normalizedTable === "invoices" ? "🔗" : "💾"}
+                  </span>
                 </button>
                 <button
                   type="button"
