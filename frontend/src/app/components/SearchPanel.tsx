@@ -55,6 +55,8 @@ const API_ENDPOINTS: Record<
   },
 };
 
+const ITEM_NAME_MAX_LENGTH = 30;
+
 function isBlank(value?: string | null): boolean {
   return !value || value.trim().length === 0;
 }
@@ -502,11 +504,48 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
       if (!raw) {
         raw = row.pk;
       }
-      const truncated = truncateText(raw);
+      const truncated = truncateText(raw, ITEM_NAME_MAX_LENGTH);
+      const emojiParts: string[] = [];
+      const isCollection = Boolean((row as any).is_collection);
+      const isContainer = Boolean((row as any).is_container);
+      const isFixedLocation = Boolean((row as any).is_fixed_location);
+      const isLost = Boolean((row as any).is_lost);
+      const isStaging = Boolean((row as any).is_staging);
+      const isConsumable = Boolean((row as any).is_consumable);
+
+      if (isCollection) {
+        emojiParts.push("🗃️");
+      } else if (isContainer) {
+        emojiParts.push("📦");
+      } else if (isFixedLocation) {
+        emojiParts.push("🛏️");
+      }
+
+      if (isLost) {
+        emojiParts.push("👻");
+      }
+      if (isStaging) {
+        emojiParts.push("⏳");
+      }
+      // === Consumable emoji logic START ===
+      if (isConsumable) {
+        emojiParts.push("🍽️");
+      }
+      // === Consumable emoji logic END ===
+
+      const decorated = emojiParts.length
+        ? `${truncated} ${emojiParts.join("")}`
+        : truncated;
+
       const href = buildItemHref(row);
       return (
-        <a href={href} className="text-decoration-none text-break" title={raw}>
-          {truncated}
+        <a
+          href={href}
+          className="text-decoration-none"
+          title={raw}
+          style={{ display: "inline-block", whiteSpace: "nowrap" }}
+        >
+          {decorated}
         </a>
       );
     },
@@ -810,24 +849,31 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
                       </td>
 
                       {normalizedTable === "items" && !smallMode && (
-                        <td style={{ width: "4.5rem" }}>
-                          {thumbnail ? (
-                            <img
-                              src={thumbnail}
-                              alt=""
-                              className="img-fluid rounded"
-                              style={{
-                                maxWidth: "64px",
-                                maxHeight: "64px",
-                                objectFit: "cover",
-                              }}
-                            />
-                          ) : (
-                            <div
-                              className="border rounded bg-light"
-                              style={{ width: "64px", height: "64px" }}
-                            />
-                          )}
+                        <td style={{ width: "7rem" }}>
+                          <div
+                            className="d-flex justify-content-center align-items-center"
+                            style={{ width: "100px", height: "100px" }}
+                          >
+                            {thumbnail ? (
+                              <img
+                                src={thumbnail}
+                                alt=""
+                                className="rounded"
+                                style={{
+                                  width: "100%",
+                                  height: "100%",
+                                  maxWidth: "100px",
+                                  maxHeight: "100px",
+                                  objectFit: "cover",
+                                }}
+                              />
+                            ) : (
+                              <div
+                                className="border rounded bg-light w-100 h-100"
+                                style={{ width: "100%", height: "100%" }}
+                              />
+                            )}
+                          </div>
                         </td>
                       )}
 
