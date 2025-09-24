@@ -13,7 +13,8 @@ from .user_login import login_required
 from .db import deduplicate_rows, get_or_create_session
 from .search_expression import SearchQuery
 from .helpers import fuzzy_levenshtein_at_most
-from .items import augment_item_dict, compute_item_slug
+from .items import augment_item_dict
+from .slugify import slugify
 from .static_server import get_public_html_path
 
 from sqlalchemy import bindparam, text
@@ -109,7 +110,7 @@ def _finalize_item_rows(rows: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any
 
     * ``id`` values are coerced to ``str``
     * ``pk`` mirrors the ``id`` value (when present)
-    * ``slug`` is regenerated using :func:`compute_item_slug`
+    * ``slug`` is regenerated using :func:`backend.app.slugify.slugify`
     * duplicates are removed via :func:`deduplicate_rows` using ``pk``
     """
 
@@ -128,7 +129,7 @@ def _finalize_item_rows(rows: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any
         else:
             row_dict.pop("pk", None)
 
-        row_dict["slug"] = compute_item_slug(
+        row_dict["slug"] = slugify(
             row_dict.get("name"),
             row_dict.get("short_id"),
         )

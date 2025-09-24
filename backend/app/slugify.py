@@ -1,5 +1,5 @@
 import re
-from typing import Iterable, List, Optional
+from typing import Any, Iterable, List, Optional
 
 # You can extend this later
 DEFAULT_STOPWORDS = {"a", "an", "the", "this", "that", "these", "those"}
@@ -8,9 +8,17 @@ DEFAULT_STOPWORDS = {"a", "an", "the", "this", "that", "these", "those"}
 _POSSESSIVE_RE = re.compile(r"['’]s\b", re.IGNORECASE)
 
 
-def slugify(title: str, short_id: int, stopwords: Optional[Iterable[str]] = None, charlimit: int = 40) -> str:
+def slugify(
+    title: Any,
+    short_id: Any,
+    stopwords: Optional[Iterable[str]] = None,
+    charlimit: int = 40,
+) -> str:
     """
     Build a URL slug from a free-text title and a 32-bit integer short_id.
+
+    The title is coerced to ``str`` and the ``short_id`` is coerced to ``int``;
+    values that cannot be parsed as integers fall back to ``0``.
 
     Rules:
       - lowercase everything
@@ -25,8 +33,14 @@ def slugify(title: str, short_id: int, stopwords: Optional[Iterable[str]] = None
     if stopwords is None:
         stopwords = DEFAULT_STOPWORDS
 
+    title_text = "" if title is None else str(title)
+    try:
+        sid_int = int(short_id) if short_id is not None else 0
+    except (TypeError, ValueError):
+        sid_int = 0
+
     # 0) normalize case + strip possessives
-    s = (title or "").lower()
+    s = title_text.lower()
     s = _POSSESSIVE_RE.sub("", s)
 
     # 1) tokenize into [word | SPACE | HYPH]; ignore other punctuation
@@ -88,7 +102,7 @@ def slugify(title: str, short_id: int, stopwords: Optional[Iterable[str]] = None
     title_portion = _join_with_soft_limit(segments, limit=charlimit).rstrip("-")
 
     # 5) append short_id as 8 lowercase hex
-    sid = f"{(short_id & 0xFFFFFFFF):08x}"
+    sid = f"{(sid_int & 0xFFFFFFFF):08x}"
     return f"{title_portion}-{sid}" if title_portion else f"-{sid}"
 
 

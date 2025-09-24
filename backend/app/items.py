@@ -40,16 +40,6 @@ def get_item_thumbnail(item_uuid: Optional[str], *, db_session: Any = None) -> s
     return ""
 
 
-def compute_item_slug(name: Any, short_id: Any) -> str:
-    """Return the canonical slug for an item."""
-    title = "" if name is None else str(name)
-    try:
-        sid_int = int(short_id) if short_id is not None else 0
-    except (TypeError, ValueError):
-        sid_int = 0
-    return slugify(title, sid_int)
-
-
 def augment_item_dict(
     data: Mapping[str, Any],
     *,
@@ -70,7 +60,7 @@ def augment_item_dict(
 
     name = out.get("name")
     short_id = out.get("short_id")
-    out["slug"] = compute_item_slug(name, short_id)
+    out["slug"] = slugify(name, short_id)
 
     getter = thumbnail_getter or (lambda uuid: get_item_thumbnail(uuid))
     out["thumbnail"] = getter(out.get(ID_COL))
