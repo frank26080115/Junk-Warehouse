@@ -193,9 +193,7 @@ CREATE TABLE public.invoice_items (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     item_id uuid NOT NULL,
     invoice_id uuid NOT NULL,
-    rank integer DEFAULT 0 NOT NULL,
-    date_updated timestamp with time zone DEFAULT now() NOT NULL,
-    has_been_processed boolean DEFAULT false NOT NULL
+    date_updated timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
