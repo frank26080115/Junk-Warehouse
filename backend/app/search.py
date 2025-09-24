@@ -451,7 +451,18 @@ def search_items(
             else:
                 continue
 
-            relation_map.setdefault(other_id, relation.get("assoc_type", -1))
+            assoc_type_value = relation.get("assoc_type")
+            if assoc_type_value is None:
+                assoc_type_value = -1
+
+            existing_value = relation_map.get(other_id)
+            if existing_value is None:
+                relation_map[other_id] = assoc_type_value
+            elif existing_value < 0:
+                if assoc_type_value >= 0:
+                    relation_map[other_id] = assoc_type_value
+            elif assoc_type_value >= 0:
+                relation_map[other_id] = existing_value | assoc_type_value
 
         for item in results:
             pk_value = item.get("pk") or item.get("id")
