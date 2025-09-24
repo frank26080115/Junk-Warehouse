@@ -1,14 +1,21 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { useParams } from "react-router-dom";
 
+import SearchPanel from "../app/components/SearchPanel";
+
 const SearchItemsPage: React.FC = () => {
-  const { xyz } = useParams(); // optional
-  // Prefill your actual search input from xyz if present
+  const { xyz } = useParams<{ xyz?: string }>();
+  const prefilled = useMemo(() => (xyz ? decodeURIComponent(xyz) : ""), [xyz]);
+
   return (
-    <div>
-      <h1>Search Items</h1>
-      <p>Prefilled query: <code>{xyz ?? ""}</code></p>
-      {/* TODO: render real search UI */}
+    <div className="container-lg py-4" style={{ maxWidth: "960px" }}>
+      <h1 className="h3 mb-4">Search Items</h1>
+      <SearchPanel
+        displayedTitle="Inventory items"
+        prefilledQuery={prefilled}
+        tableName="items"
+        allowDelete
+      />
     </div>
   );
 };

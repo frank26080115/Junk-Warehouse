@@ -3,7 +3,6 @@ import { useNavigate, useParams } from "react-router-dom";
 
 import ImageGallery from "../app/components/ImageGallery";
 import SearchPanel from "../app/components/SearchPanel";
-import LedgerPanel from "../app/components/LedgerPanel";
 
 import "../styles/forms.css";
 
@@ -522,7 +521,7 @@ const ItemPage: React.FC = () => {
         <div className="d-flex align-items-center justify-content-between mb-2">
           <h2 className="h5 mb-0">Relationships/Links</h2>
         </div>
-        <SearchPanel targetUuid={targetUuid} refreshToken={refreshToken} />
+        <SearchPanel targetUuid={targetUuid} refreshToken={refreshToken} tableName="items" />
       </div>
 
       {/* Relevant Invoices */}
@@ -530,7 +529,7 @@ const ItemPage: React.FC = () => {
         <div className="d-flex align-items-center justify-content-between mb-2">
           <h2 className="h5 mb-0">Relevant Invoices</h2>
         </div>
-        <LedgerPanel targetUuid={targetUuid} refreshToken={refreshToken} />
+        <SearchPanel targetUuid={targetUuid} refreshToken={refreshToken} tableName="invoices" />
       </div>
 
       {/* Footer meta */}
