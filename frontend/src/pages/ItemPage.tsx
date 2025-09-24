@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 
 import ImageGallery from "../app/components/ImageGallery";
 import SearchPanel from "../app/components/SearchPanel";
@@ -120,6 +120,7 @@ type FlagKey = typeof booleanFlags[number]["key"];
 
 const ItemPage: React.FC = () => {
   const { xyz } = useParams(); // id/slug/short-id or "new"
+  const navigate = useNavigate();
   const isNewFromUrl = xyz === "new";
 
   const [item, setItem] = useState<ItemDto>({ ...EMPTY_ITEM, is_staging: isNewFromUrl ? true : EMPTY_ITEM.is_staging });
@@ -189,25 +190,35 @@ const ItemPage: React.FC = () => {
     setItem((prev) => ({ ...prev, [key]: !prev[key] } as ItemDto));
   }, [isReadOnly]);
 
-  const commonSave = useCallback(async (endpoint: string) => {
+  const commonSave = useCallback(async (endpoint: string, options?: { stripIdentifiers?: boolean }) => {
+    const payload: Partial<ItemDto> = options?.stripIdentifiers
+      ? (() => {
+          const { id: _omitId, short_id: _omitShortId, ...rest } = item;
+          return rest;
+        })()
+      : item;
     // Save/Insert. Backend returns the authoritative updated object
     const res = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(item),
+      body: JSON.stringify(payload),
     });
     if (!res.ok) throw new Error(`${endpoint} failed: ${res.status}`);
     const data: ItemDto = await res.json();
     setItem((prev) => ({ ...prev, ...data }));
+    const slug = data.slug;
+    if (slug && slug.trim().length > 0 && slug !== xyz) {
+      navigate(`/item/${slug}`, { replace: true });
+    }
     // Nudge listeners to refresh
     setRefreshToken((x) => x + 1);
-  }, [item]);
+  }, [item, navigate, xyz]);
 
   const doInsert = useCallback(async () => {
     try {
       setLoading(true);
       setError("");
-      await commonSave("/api/insertitem");
+      await commonSave("/api/insertitem", { stripIdentifiers: true });
       setIsReadOnly(true); // after an explicit insert, land in read-only
     } catch (e: any) {
       console.error(e);
