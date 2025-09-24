@@ -19,6 +19,8 @@ from sqlalchemy import text
 
 log = logging.getLogger(__name__)
 
+DEFAULT_LIMIT = 50
+
 # Expose this blueprint from your app factory / main to register:
 #   from app.search import bp as search_bp
 #   app.register_blueprint(search_bp)
@@ -132,7 +134,16 @@ def search_items(
         return results
 
     # Parse the query and extract normalized free-text
-    sq = SearchQuery(s=raw_query, context=context)
+
+    if isinstance(context, dict):
+        sq_context = dict(context)
+    else:
+        sq_context = {}
+        if context is not None:
+            sq_context["payload"] = context
+    sq_context.setdefault("table", "items")
+    sq_context.setdefault("table_alias", "i")
+    sq = SearchQuery(s=raw_query, context=sq_context)
 
     if not target_uuid and len(sq.identifiers) == 1:
         identifier = sq.identifiers[0]
@@ -189,29 +200,82 @@ def search_items(
 
     query_text = sq.query_text or raw_query  # fallback just in case
 
-    # --- BASE TEXT SEARCH (placeholder you will extend later) ---
-    # For now: simple full-text search on items.textsearch using web-style operators.
-    # NOTE: Feel free to adjust filters (e.g., exclude staging) as your app needs.
-    base_sql = text(
-        """
-        SELECT
-            i.*
-        FROM items AS i
-        WHERE
-            NOT i.is_deleted
-            AND i.textsearch @@ websearch_to_tsquery('english', :q)
-        ORDER BY
-            ts_rank_cd(i.textsearch, websearch_to_tsquery('english', :q)) DESC,
-            i.date_last_modified DESC
-        LIMIT :limit
-        """
-    )
+    
+    # --- BASE TEXT SEARCH (dynamic SQL generation) ---
+    criteria = sq.get_sql_conditionals()
+    table_name = criteria.get("table", "items")
+    alias = criteria.get("table_alias") or "i"
+    ts_query_expr = "websearch_to_tsquery('english', :q)"
+    rank_expression = f"ts_rank_cd({alias}.textsearch, {ts_query_expr})"
 
-    LIMIT = 50  # tweak as desired or make a parameter
-    log.debug("search_items: executing base text search with query=%r", query_text)
+    where_clauses: List[str] = []
+    touched_columns = criteria.get("touched_columns") or set()
+    if "is_deleted" not in touched_columns:
+        where_clauses.append(f"NOT {alias}.is_deleted")
+    where_clauses.append(f"{alias}.textsearch @@ {ts_query_expr}")
+    for condition in criteria.get("where", []):
+        if condition:
+            where_clauses.append(condition)
 
-    rows = session.execute(base_sql, {"q": query_text, "limit": LIMIT}).mappings().all()
-    results.extend(augment_item_dict(r) for r in rows)
+    flags = criteria.get("flags") or {}
+    order_by_clauses: List[str] = list(criteria.get("order_by") or [])
+    if order_by_clauses:
+        if not flags.get("random_order"):
+            order_by_clauses.append(f"{rank_expression} DESC")
+    else:
+        base_direction = "ASC" if flags.get("reverse_default_order") else "DESC"
+        order_by_clauses.append(f"{rank_expression} {base_direction}")
+        order_by_clauses.append(f"{alias}.date_last_modified {base_direction}")
+
+    limit_value = criteria.get("limit")
+    limit_is_explicit = criteria.get("limit_is_explicit", False)
+    page_number = criteria.get("page")
+    show_all = flags.get("show_all", False)
+
+    if not limit_is_explicit:
+        limit_value = DEFAULT_LIMIT
+    elif show_all:
+        limit_value = None
+
+    offset_value: Optional[int] = None
+    if isinstance(page_number, int) and page_number > 1 and limit_value:
+        offset_value = (page_number - 1) * limit_value
+
+    sql_lines = [
+        "SELECT",
+        f"    {alias}.*",
+        f"FROM {table_name} AS {alias}",
+    ]
+    if where_clauses:
+        sql_lines.append("WHERE")
+        sql_lines.append(f"    {where_clauses[0]}")
+        for condition in where_clauses[1:]:
+            sql_lines.append(f"    AND {condition}")
+    if order_by_clauses:
+        sql_lines.append("ORDER BY")
+        for idx, clause in enumerate(order_by_clauses):
+            prefix = "    " if idx == 0 else "    , "
+            sql_lines.append(f"{prefix}{clause}")
+    if limit_value is not None:
+        sql_lines.append("LIMIT :limit")
+    if offset_value:
+        sql_lines.append("OFFSET :offset")
+
+    base_sql = text("\n".join(sql_lines))
+
+    sql_params: Dict[str, Any] = {"q": query_text}
+    sql_params.update(criteria.get("params", {}))
+    if limit_value is not None:
+        sql_params["limit"] = limit_value
+    if offset_value:
+        sql_params["offset"] = offset_value
+
+    rows = session.execute(base_sql, sql_params).mappings().all()
+
+    for row in rows:
+        row_dict = dict(row)
+        if sq.evaluate(row_dict):
+            results.append(augment_item_dict(row_dict))
 
     # --- RELATION / TARGET-UUID ENHANCEMENT ---
     # This is intentionally *not* an else-if. The base search above should always take place.
