@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 import logging
 import uuid
@@ -10,12 +10,13 @@ import uuid
 from flask import Blueprint, jsonify, request
 
 from .user_login import login_required
-from .db import get_or_create_session
+from .db import deduplicate_rows, get_or_create_session
 from .search_expression import SearchQuery
 from .helpers import fuzzy_levenshtein_at_most
-from .items import augment_item_dict
+from .items import augment_item_dict, compute_item_slug
+from .static_server import get_public_html_path
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 log = logging.getLogger(__name__)
 
@@ -100,6 +101,143 @@ def _pick_best_short_id_row(
     return min(rows, key=_distance)
 
 
+def _finalize_item_rows(rows: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    """Normalize search results with required metadata.
+
+    Each row is copied so that the original mappings returned by SQLAlchemy
+    remain untouched.  The helper enforces the following invariants:
+
+    * ``id`` values are coerced to ``str``
+    * ``pk`` mirrors the ``id`` value (when present)
+    * ``slug`` is regenerated using :func:`compute_item_slug`
+    * duplicates are removed via :func:`deduplicate_rows` using ``pk``
+    """
+
+    normalized: List[Dict[str, Any]] = []
+    for row in rows:
+        row_dict: Dict[str, Any] = dict(row)
+
+        identifier = row_dict.get("id")
+        if identifier is None and row_dict.get("pk") is not None:
+            identifier = row_dict.get("pk")
+
+        if identifier is not None:
+            identifier_str = str(identifier)
+            row_dict["id"] = identifier_str
+            row_dict["pk"] = identifier_str
+        else:
+            row_dict.pop("pk", None)
+
+        row_dict["slug"] = compute_item_slug(
+            row_dict.get("name"),
+            row_dict.get("short_id"),
+        )
+
+        normalized.append(row_dict)
+
+    if not normalized:
+        return normalized
+
+    return deduplicate_rows(normalized, key="pk")
+
+
+def _to_bool(value: Any) -> bool:
+    """Convert loose truthy/falsey values to :class:`bool`."""
+
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if not normalized:
+            return False
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
+
+
+def _build_thumbnail_public_url(dir_value: Any, file_name: Any) -> Optional[str]:
+    """Return a browser-accessible thumbnail path for an image row."""
+
+    raw_name = str(file_name or "").strip()
+    if not raw_name:
+        return None
+
+    raw_dir = str(dir_value or "").strip()
+    safe_dir = raw_dir.strip("/\\")
+    safe_name = raw_name.lstrip("/\\")
+
+    segments: List[str] = ["imgs"]
+    if safe_dir:
+        segments.append(safe_dir)
+    segments.append(safe_name)
+
+    base_path = get_public_html_path()
+    full_path = base_path
+    for segment in segments:
+        full_path = full_path / segment
+
+    try:
+        relative = full_path.relative_to(base_path)
+        return "/" + "/".join(relative.parts)
+    except ValueError:
+        return "/" + "/".join(segments)
+
+
+def _fetch_item_thumbnail_map(
+    session: Any, item_ids: Iterable[Any]
+) -> Dict[str, str]:
+    """Fetch thumbnail URLs for the provided item identifiers."""
+
+    unique_ids: List[str] = []
+    seen: set[str] = set()
+    for raw in item_ids:
+        if not raw:
+            continue
+        value = str(raw)
+        if value in seen:
+            continue
+        seen.add(value)
+        unique_ids.append(value)
+
+    if not unique_ids:
+        return {}
+
+    thumb_sql = text(
+        """
+        SELECT DISTINCT ON (ii.item_id)
+            ii.item_id,
+            img.dir,
+            img.file_name,
+            ii.rank,
+            img.date_updated,
+            img.id AS image_id
+        FROM item_images AS ii
+        JOIN images AS img ON img.id = ii.img_id
+        WHERE NOT img.is_deleted
+          AND ii.item_id IN :item_ids
+        ORDER BY
+            ii.item_id,
+            ii.rank ASC,
+            img.date_updated DESC,
+            img.id ASC
+        """
+    ).bindparams(bindparam("item_ids", expanding=True))
+
+    rows = session.execute(thumb_sql, {"item_ids": unique_ids}).mappings().all()
+
+    thumbnails: Dict[str, str] = {}
+    for row in rows:
+        identifier = row.get("item_id")
+        if identifier is None:
+            continue
+        url = _build_thumbnail_public_url(row.get("dir"), row.get("file_name"))
+        if not url:
+            continue
+        thumbnails[str(identifier)] = url
+
+    return thumbnails
+
+
 def search_items(
     raw_query: str,
     target_uuid: Optional[str] = None,
@@ -124,14 +262,16 @@ def search_items(
     Returns
     -------
     List[Dict[str, Any]]
-        A list of row dicts ready for JSON, each with added 'slug' and 'thumbnail'.
+        Deduplicated item dictionaries ready for JSON serialization.  Each
+        entry includes a ``pk`` (mirroring ``id``) and a ``slug`` computed via
+        :func:`backend.app.slugify.slugify`.
     """
     session = get_or_create_session()
     results: List[Dict[str, Any]] = []
 
     if not (raw_query and raw_query.strip()):
         log.info("search_items: empty query -> returning empty list")
-        return results
+        return _finalize_item_rows(results)
 
     # Parse the query and extract normalized free-text
 
@@ -171,7 +311,7 @@ def search_items(
 
             row = session.execute(direct_sql, {"identifier": uuid_candidate}).mappings().first()
             if row:
-                return [augment_item_dict(row)]
+                return _finalize_item_rows([augment_item_dict(row)])
         else:
             short_id_values = _short_id_candidates(identifier)
             if short_id_values:
@@ -194,9 +334,9 @@ def search_items(
 
                     if comparison_text:
                         best_row = _pick_best_short_id_row(sid_rows, comparison_text)
-                        return [augment_item_dict(best_row)]
+                        return _finalize_item_rows([augment_item_dict(best_row)])
 
-                    return [augment_item_dict(sid_rows[0])]
+                    return _finalize_item_rows([augment_item_dict(sid_rows[0])])
 
     query_text = sq.query_text or raw_query  # fallback just in case
 
@@ -292,7 +432,7 @@ def search_items(
 
         pass
 
-    return results
+    return _finalize_item_rows(results)
 
 
 @bp.route("/search", methods=["POST"])
@@ -303,7 +443,8 @@ def search_api():
     JSON body:
       {
         "q": "string",                # required
-        "target_uuid": "uuid-string"  # optional
+        "target_uuid": "uuid-string", # optional
+        "include_thumbnails": bool     # optional; default false
       }
 
     Response:
@@ -314,6 +455,7 @@ def search_api():
         data = request.get_json(silent=True) or {}
         raw_query = (data.get("q") or "").strip()
         target_uuid = data.get("target_uuid") or None
+        include_thumbnails = _to_bool(data.get("include_thumbnails"))
 
         # Context can include request info if you want it later
         ctx = {
@@ -326,6 +468,20 @@ def search_api():
             return jsonify(ok=True, data=[])
 
         items = search_items(raw_query=raw_query, target_uuid=target_uuid, context=ctx)
+
+        if include_thumbnails and items:
+            session = get_or_create_session()
+            thumbnail_map = _fetch_item_thumbnail_map(
+                session,
+                (item.get("pk") for item in items),
+            )
+            for item in items:
+                pk_value = item.get("pk")
+                thumbnail_url = None
+                if pk_value is not None:
+                    thumbnail_url = thumbnail_map.get(str(pk_value))
+                item["thumbnail"] = thumbnail_url or ""
+
         return jsonify(ok=True, data=items)
 
     except Exception as e:
