@@ -53,6 +53,12 @@
 | 👭    | Two women holding hands     | &#128109;             |
 | 💥    | Collision / Explosion       | &#128165;             |
 | 🔥    | Fire                        | &#128293;             |
+| 🔢    | Input numbers               | &#128290;             |
+| #️⃣    | Keycap number sign          | &#35;&#65039;&#8419;  |
+| 🪄    | Magic wand                  | &#129668;             |
+| 🤖    | Robot face                  | &#129302;             |
+| 🧙‍♂️    | Man mage / Wizard           | &#129497;&#65039;&#8205;&#9794;&#65039; |
+| 🧠    | Brain                       | &#129504;             |
 | ⬆️    | Up arrow                    | &#11014;&#65039;      |
 | ⬇️    | Down arrow                  | &#11015;&#65039;      |
 | ⬅️    | Left arrow                  | &#11013;&#65039;      |
