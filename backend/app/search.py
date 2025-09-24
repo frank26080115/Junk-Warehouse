@@ -421,17 +421,45 @@ def search_items(
     # --- RELATION / TARGET-UUID ENHANCEMENT ---
     # This is intentionally *not* an else-if. The base search above should always take place.
     if target_uuid:
-        # TODO: When a target item is provided, augment the results with:
-        #   - items related to the target (parents/children/containers/contents),
-        #   - or adjust ranking to prefer items proximate to the target in your graph.
-        # Potential approach:
-        #   1) Find related item IDs via your relation tables.
-        #   2) Run a second query (or join) to fetch/merge those items.
-        #   3) De-duplicate and possibly re-rank the combined results.
-        log.debug("search_items: target_uuid=%s provided (TODO enhance relation-aware search)", target_uuid)
-        # Example placeholder: no-op for now.
+        relation_sql = text("""
+        SELECT
+            r.item_id,
+            r.assoc_id,
+            r.assoc_type
+        FROM relationships AS r
+        WHERE
+            r.item_id = :target_uuid
+            OR r.assoc_id = :target_uuid
+        """)
+        relation_rows = session.execute(relation_sql, {"target_uuid": target_uuid}).mappings().all()
 
-        pass
+        target_str = str(target_uuid)
+        relation_map: Dict[str, int] = {}
+        for relation in relation_rows:
+            relation_item_id = relation.get("item_id")
+            relation_assoc_id = relation.get("assoc_id")
+            if relation_item_id is None or relation_assoc_id is None:
+                continue
+
+            item_id_str = str(relation_item_id)
+            assoc_id_str = str(relation_assoc_id)
+
+            if item_id_str == target_str:
+                other_id = assoc_id_str
+            elif assoc_id_str == target_str:
+                other_id = item_id_str
+            else:
+                continue
+
+            relation_map.setdefault(other_id, relation.get("assoc_type", -1))
+
+        for item in results:
+            pk_value = item.get("pk") or item.get("id")
+            assoc_type = -1
+            if pk_value is not None:
+                assoc_type = relation_map.get(str(pk_value), -1)
+            item["assoc_type"] = assoc_type
+
 
     return _finalize_item_rows(results)
 
