@@ -52,7 +52,6 @@ const AdminPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [itemsCutoff, setItemsCutoff] = useState<string>("");
   const [invoicesCutoff, setInvoicesCutoff] = useState<string>("");
-  const [imageDirectory, setImageDirectory] = useState<string>("");
 
   const busy = activeTask !== null;
 
@@ -145,12 +144,7 @@ const AdminPage: React.FC = () => {
   };
 
   const handlePruneImages = () => {
-    const trimmed = imageDirectory.trim();
-    if (!trimmed) {
-      setError("Please provide the target directory for image pruning.");
-      return;
-    }
-    runTask("prune_images", { target_directory: trimmed });
+    runTask("prune_images", {});
   };
 
   return (
@@ -179,7 +173,7 @@ const AdminPage: React.FC = () => {
           <label htmlFor="staging-items-cutoff">Cutoff date</label>
           <input
             id="staging-items-cutoff"
-            type="datetime-local"
+            type="date"
             value={itemsCutoff}
             onChange={(event) => setItemsCutoff(event.target.value)}
             disabled={busy}
@@ -207,7 +201,7 @@ const AdminPage: React.FC = () => {
           <label htmlFor="staging-invoices-cutoff">Cutoff date</label>
           <input
             id="staging-invoices-cutoff"
-            type="datetime-local"
+            type="date"
             value={invoicesCutoff}
             onChange={(event) => setInvoicesCutoff(event.target.value)}
             disabled={busy}
@@ -229,23 +223,12 @@ const AdminPage: React.FC = () => {
         <h2>{taskTitles.prune_images}</h2>
         <p>
           Removes database entries and files for images that are deleted or no longer
-          associated with any items.
+          associated with any items using the server's default image directory.
         </p>
-        <div style={inputGroupStyle}>
-          <label htmlFor="image-target-directory">Target directory</label>
-          <input
-            id="image-target-directory"
-            type="text"
-            placeholder="Absolute path to the image directory"
-            value={imageDirectory}
-            onChange={(event) => setImageDirectory(event.target.value)}
-            disabled={busy}
-          />
-        </div>
         <button
           type="button"
           onClick={handlePruneImages}
-          disabled={busy || imageDirectory.trim() === ""}
+          disabled={busy}
         >
           Run task
         </button>

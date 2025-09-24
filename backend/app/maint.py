@@ -67,16 +67,19 @@ def _execute_task(task_name: str, params: Mapping[str, Any]):
         cutoff = _ensure_datetime(cutoff_value)
         return maintenance.prune_stale_staging_invoices(cutoff)
     if task_name == "prune_images":
-        target_raw = (
-            params.get("target_directory")
-            or params.get("directory")
-            or params.get("path")
-        )
+        target_raw = None
+        for key in ("target_directory", "directory", "path"):
+            if key in params:
+                target_raw = params.get(key)
+                break
+
         if target_raw is None:
-            raise ValueError("The 'target_directory' parameter is required for prune_images.")
+            return maintenance.prune_images()
+
         target_text = str(target_raw).strip()
         if not target_text:
-            raise ValueError("The 'target_directory' parameter is required for prune_images.")
+            return maintenance.prune_images()
+
         return maintenance.prune_images(target_text)
     raise ValueError(f"Unknown task '{task_name}'.")
 
