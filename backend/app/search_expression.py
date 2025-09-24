@@ -1,9 +1,66 @@
 import logging
 import json
 import re
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 log = logging.getLogger(__name__)
+
+
+_TABLE_SCHEMAS: Dict[str, Dict[str, Any]] = {
+    "items": {
+        "default_alias": "i",
+        "column_types": {
+            "id": "uuid",
+            "short_id": "integer",
+            "name": "text",
+            "description": "text",
+            "remarks": "text",
+            "quantity": "text",
+            "date_creation": "timestamp",
+            "date_last_modified": "timestamp",
+            "is_container": "boolean",
+            "is_collection": "boolean",
+            "is_large": "boolean",
+            "is_small": "boolean",
+            "is_fixed_location": "boolean",
+            "is_consumable": "boolean",
+            "metatext": "text",
+            "textsearch": "tsvector",
+            "is_staging": "boolean",
+            "is_deleted": "boolean",
+            "is_lost": "boolean",
+            "date_reminder": "timestamp",
+            "product_code": "text",
+            "url": "text",
+            "date_purchased": "timestamp",
+            "source": "text",
+        },
+        "order_columns": {
+            "bydate": "date_creation",
+            "bydatem": "date_last_modified",
+        },
+    },
+    "invoices": {
+        "default_alias": "inv",
+        "column_types": {
+            "id": "uuid",
+            "date": "timestamp",
+            "order_number": "text",
+            "shop_name": "text",
+            "urls": "text",
+            "subject": "text",
+            "html": "text",
+            "notes": "text",
+            "has_been_processed": "boolean",
+            "snooze": "timestamp",
+            "is_deleted": "boolean",
+        },
+        "order_columns": {
+            "bydate": "date",
+            "bydatem": "date",
+        },
+    },
+}
 
 # --- helpers (same as before) ---
 def _coerce_literal(s: str) -> Any:
@@ -337,6 +394,275 @@ class SearchQuery:
             if du.ensure_valid():
                 d[du.lhs] = du.rhs if du.has_value() else True
         return d
+
+
+    def get_sql_conditionals(self) -> Dict[str, Any]:
+        table = "items"
+        alias: Optional[str] = None
+        if isinstance(self.context, dict):
+            ctx_table = self.context.get("table")
+            if isinstance(ctx_table, str) and ctx_table.strip():
+                table = ctx_table.strip().lower()
+            alias_value = self.context.get("table_alias")
+            if isinstance(alias_value, str) and alias_value.strip():
+                alias = alias_value.strip()
+        schema = _TABLE_SCHEMAS.get(table, _TABLE_SCHEMAS["items"])
+        if not alias:
+            alias = schema.get("default_alias", "t")
+        column_types: Dict[str, str] = schema.get("column_types", {})
+        boolean_columns: Set[str] = {name for name, typ in column_types.items() if typ == "boolean"}
+        text_columns: Set[str] = {name for name, typ in column_types.items() if typ == "text"}
+        comparable_columns: Set[str] = {
+            name for name, typ in column_types.items() if typ in ("integer", "numeric", "timestamp")
+        }
+        order_columns: Dict[str, str] = schema.get("order_columns", {})
+
+        params: Dict[str, Any] = {}
+        touched_columns: Set[str] = set()
+        residual_chains: List[List[FilterUnit]] = []
+        applied_filters: List[str] = []
+
+        def _new_param(value: Any) -> str:
+            name = f"sq_param_{len(params)}"
+            params[name] = value
+            return name
+
+        def _wrap_condition(condition: str, negated: bool) -> str:
+            return f"NOT ({condition})" if negated else condition
+
+        def _coerce_rhs_bool(value: Any) -> Optional[bool]:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                low = value.strip().lower()
+                if low in {"true", "1"}:
+                    return True
+                if low in {"false", "0"}:
+                    return False
+            if isinstance(value, (int, float)):
+                if value in (0, 1):
+                    return bool(value)
+            return None
+
+        def _condition_for_column(column: str, column_type: str, unit: FilterUnit) -> Optional[str]:
+            qualified = f"{alias}.{column}"
+            if column_type == "boolean":
+                if unit.op is None:
+                    return f"{qualified} = {'FALSE' if unit.negated else 'TRUE'}"
+                if unit.op == "=":
+                    if unit.rhs is None:
+                        if unit.negated:
+                            return f"{qualified} IS NOT NULL"
+                        return f"{qualified} IS NULL"
+                    rhs_bool = _coerce_rhs_bool(unit.rhs)
+                    if rhs_bool is None:
+                        return None
+                    param_name = _new_param(rhs_bool)
+                    if unit.negated:
+                        return f"{qualified} <> :{param_name}"
+                    return f"{qualified} = :{param_name}"
+                return None
+            if unit.op is None:
+                return None
+            if unit.op == "=":
+                if unit.rhs is None:
+                    if unit.negated:
+                        return f"{qualified} IS NOT NULL"
+                    return f"{qualified} IS NULL"
+                param_name = _new_param(unit.rhs)
+                if unit.negated:
+                    return f"{qualified} <> :{param_name}"
+                return f"{qualified} = :{param_name}"
+            if unit.op in (">", "<"):
+                if column in comparable_columns and unit.rhs is not None:
+                    param_name = _new_param(unit.rhs)
+                    condition = f"{qualified} {unit.op} :{param_name}"
+                    return _wrap_condition(condition, unit.negated)
+                return None
+            if unit.op == "[":
+                return None
+            return None
+
+        show_all = False
+        explicit_limit = False
+        limit_value: Optional[int] = None
+        page_number: Optional[int] = None
+        order_request: Optional[str] = None
+        random_order = False
+        reverse_toggle = False
+        mode: Optional[str] = None
+        directives_applied: List[str] = []
+
+        for directive_unit in self.directive_units:
+            if not directive_unit.ensure_valid():
+                continue
+            directive = (directive_unit.lhs or "").strip().lower()
+            directives_applied.append(directive)
+            if directive == "showall":
+                show_all = True
+                explicit_limit = True
+                limit_value = None
+            elif directive == "show":
+                try:
+                    count = int(directive_unit.rhs)
+                except (TypeError, ValueError):
+                    continue
+                if count > 0:
+                    limit_value = count
+                    explicit_limit = True
+            elif directive == "page":
+                try:
+                    page_val = int(directive_unit.rhs)
+                except (TypeError, ValueError):
+                    continue
+                if page_val >= 1:
+                    page_number = page_val
+            elif directive == "bydate":
+                order_request = "bydate"
+            elif directive == "bydatem":
+                order_request = "bydatem"
+            elif directive == "byrand":
+                random_order = True
+            elif directive == "orderrev":
+                reverse_toggle = not reverse_toggle
+            elif directive == "smart":
+                mode = "smart"
+            elif directive == "dumb":
+                mode = "dumb"
+
+        order_by: List[str] = []
+        reverse_default_order = False
+        if random_order:
+            order_by.append("random()")
+        else:
+            if order_request:
+                column_name = order_columns.get(order_request)
+                if column_name:
+                    direction = "ASC" if reverse_toggle else "DESC"
+                    order_by.append(f"{alias}.{column_name} {direction}")
+                    reverse_toggle = False
+            if not order_by and reverse_toggle:
+                reverse_default_order = True
+
+        flags: Dict[str, Any] = {
+            "show_all": show_all,
+            "random_order": random_order,
+            "reverse_default_order": reverse_default_order,
+        }
+        if mode:
+            flags["mode"] = mode
+        if directives_applied:
+            flags["directives"] = directives_applied
+
+        chain_sqls: List[str] = []
+
+        def _convert_filter_unit(unit: FilterUnit) -> Optional[str]:
+            if unit.key is None:
+                return None
+            key_norm = unit.key.strip().lower()
+            if not key_norm:
+                return None
+            if table == "items":
+                if key_norm == "orphans":
+                    condition = (
+                        f"NOT EXISTS (SELECT 1 FROM relationships AS r "
+                        f"WHERE r.item_id = {alias}.id OR r.assoc_id = {alias}.id)"
+                    )
+                    return _wrap_condition(condition, unit.negated)
+                if key_norm == "uncontained":
+                    condition = (
+                        f"NOT EXISTS (SELECT 1 FROM relationships AS r "
+                        f"WHERE r.assoc_type = 'containment' AND r.assoc_id = {alias}.id)"
+                    )
+                    return _wrap_condition(condition, unit.negated)
+                if key_norm == "alarm":
+                    condition = (
+                        f"({alias}.date_reminder IS NOT NULL AND {alias}.date_reminder <= now())"
+                    )
+                    touched_columns.add("date_reminder")
+                    return _wrap_condition(condition, unit.negated)
+                if key_norm == "has_invoice":
+                    condition = (
+                        f"EXISTS (SELECT 1 FROM invoice_items AS ii "
+                        f"WHERE ii.item_id = {alias}.id)"
+                    )
+                    return _wrap_condition(condition, unit.negated)
+                if key_norm == "has_image":
+                    condition = (
+                        f"EXISTS (SELECT 1 FROM item_images AS im "
+                        f"WHERE im.item_id = {alias}.id)"
+                    )
+                    return _wrap_condition(condition, unit.negated)
+            column_name: Optional[str] = None
+            column_type: Optional[str] = None
+            if key_norm in column_types:
+                column_name = key_norm
+                column_type = column_types[key_norm]
+            else:
+                candidate = f"is_{key_norm}"
+                if candidate in boolean_columns:
+                    column_name = candidate
+                    column_type = "boolean"
+            if column_name and column_type:
+                condition = _condition_for_column(column_name, column_type, unit)
+                if condition is not None:
+                    touched_columns.add(column_name)
+                    return condition
+            if key_norm.startswith("has_"):
+                column_candidate = key_norm[4:]
+                if column_candidate in column_types:
+                    qualified = f"{alias}.{column_candidate}"
+                    if column_types[column_candidate] == "text" or column_candidate in text_columns:
+                        condition = f"COALESCE(btrim({qualified}), '') <> ''"
+                    else:
+                        condition = f"{qualified} IS NOT NULL"
+                    touched_columns.add(column_candidate)
+                    return _wrap_condition(condition, unit.negated)
+            return None
+
+        for chain in self._chains:
+            if not chain:
+                continue
+            chain_conditions: List[str] = []
+            chain_keys: List[str] = []
+            convertible = True
+            for unit in chain:
+                condition = _convert_filter_unit(unit)
+                if condition is None:
+                    convertible = False
+                    break
+                chain_conditions.append(condition)
+                chain_keys.append(unit.key or "")
+            if convertible and chain_conditions:
+                chain_sqls.append(f"({' AND '.join(chain_conditions)})")
+                applied_filters.extend(chain_keys)
+            else:
+                residual_chains.append(chain)
+
+        where_clauses: List[str] = []
+        if chain_sqls and not residual_chains:
+            where_clauses.append(f"({' OR '.join(chain_sqls)})")
+        else:
+            if self._chains and not chain_sqls:
+                residual_chains = list(self._chains)
+            if residual_chains:
+                applied_filters = []
+
+        conditionals: Dict[str, Any] = {
+            "table": table,
+            "table_alias": alias,
+            "where": where_clauses,
+            "order_by": order_by,
+            "limit": limit_value,
+            "limit_is_explicit": explicit_limit,
+            "page": page_number,
+            "params": params,
+            "flags": flags,
+            "touched_columns": touched_columns,
+            "applied_filters": applied_filters,
+            "residual_chains": residual_chains,
+        }
+        return conditionals
 
     def evaluate(self, row: Dict[str, Any]) -> bool:
         try:
