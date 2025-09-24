@@ -48,21 +48,6 @@ COMMENT ON EXTENSION vector IS 'vector data type and ivfflat and hnsw access met
 
 
 --
--- Name: association_type; Type: TYPE; Schema: public; Owner: -
---
-
-CREATE TYPE public.association_type AS ENUM (
-    'containment',
-    'alternative',
-    'consumable',
-    'accessory',
-    'power',
-    'similar',
-    'weak'
-);
-
-
---
 -- Name: touch_container_embedding_updated(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -298,7 +283,7 @@ CREATE TABLE public.relationships (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     item_id uuid NOT NULL,
     assoc_id uuid NOT NULL,
-    assoc_type public.association_type NOT NULL,
+    assoc_type smallint NOT NULL DEFAULT 0,
     rank integer DEFAULT 0 NOT NULL,
     notes text DEFAULT ''::text NOT NULL,
     date_updated timestamp with time zone DEFAULT now() NOT NULL,
