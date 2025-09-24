@@ -667,6 +667,63 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
     }
   }, [associationBits, associationSummary, normalizedTable, query, relationDirection, runSearch, selectedCount, selectedPks, targetUuid]);
 
+  const handleUnlinkAssociation = useCallback(async () => {
+    if (!targetUuid || selectedCount === 0) {
+      return;
+    }
+    const ids = Array.from(selectedPks);
+    setIsActionBusy(true);
+    try {
+      const endpoint = API_ENDPOINTS[normalizedTable].relate;
+      const response = await fetch(endpoint, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          table: normalizedTable,
+          target_uuid: targetUuid,
+          pks: ids,
+          direction: relationDirection,
+        }),
+      });
+      let payload: any = null;
+      try {
+        payload = await response.json();
+      } catch {
+        payload = null;
+      }
+      if (!response.ok) {
+        const message =
+          payload && typeof payload === "object" && "error" in payload
+            ? String(payload.error)
+            : `Request failed (${response.status})`;
+        throw new Error(message);
+      }
+      if (payload && typeof payload === "object" && "ok" in payload && !payload.ok) {
+        throw new Error(payload.error ? String(payload.error) : "Request failed");
+      }
+
+      pinnedRef.current.clear();
+      setSelectedPks(() => new Set());
+
+      await runSearch(lastQueryRef.current || query);
+
+      setModalMessage({
+        title: "Relationships removed",
+        body:
+          ids.length === 1
+            ? "Selected relationship was completely removed."
+            : `${ids.length} relationships were completely removed.`,
+      });
+    } catch (error: any) {
+      setModalMessage({
+        title: "Action failed",
+        body: error?.message || "Unable to remove the selected relationships.",
+      });
+    } finally {
+      setIsActionBusy(false);
+    }
+  }, [normalizedTable, query, relationDirection, runSearch, selectedCount, selectedPks, targetUuid]);
+
   const resolveThumbnail = useCallback((row: SearchRow): string => {
     if (smallMode || normalizedTable !== "items") {
       return "";
@@ -934,8 +991,19 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
                   className="btn btn-primary btn-sm"
                   onClick={handleSetAssociation}
                   disabled={isBusy || !selectedCount}
+                  aria-label="Save association"
                 >
-                  set
+                  <span aria-hidden>💾</span>
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-outline-danger btn-sm"
+                  onClick={handleUnlinkAssociation}
+                  disabled={isBusy || !selectedCount}
+                  title="Completely unlink selected relationships"
+                  aria-label="Completely unlink selected relationships"
+                >
+                  <span aria-hidden>💥</span>
                 </button>
               </div>
             )}
