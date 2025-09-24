@@ -23,6 +23,8 @@ type AssociationOption = typeof ASSOCIATION_OPTIONS[number];
 
 interface SearchRow {
   pk: string;
+  slug?: string;
+  thumbnail?: string;
   [key: string]: unknown;
 }
 
@@ -159,6 +161,8 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
       lastQueryRef.current = q;
       setHasQueried(true);
 
+      const includeThumbnails = normalizedTable === "items" && !smallMode;
+
       if (!q && !targetUuid) {
         abortRef.current?.abort();
         setRawResults([]);
@@ -182,6 +186,7 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
             q,
             target_uuid: targetUuid || undefined,
             table: normalizedTable,
+            include_thumbnails: includeThumbnails,
           }),
           signal: controller.signal,
         });
@@ -214,16 +219,51 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
             ? (payload as any).data
             : payload;
 
-        const rows: SearchRow[] = Array.isArray(dataArray)
-          ? (dataArray as SearchRow[])
+        const rows: unknown[] = Array.isArray(dataArray)
+          ? (dataArray as unknown[])
           : Array.isArray(payload)
-          ? (payload as SearchRow[])
+          ? (payload as unknown[])
           : [];
 
-        const sanitized = rows.filter(
-          (row): row is SearchRow =>
-            row !== null && typeof row === "object" && typeof (row as any).pk === "string",
-        );
+        const sanitized = rows
+          .filter(
+            (row): row is Record<string, unknown> =>
+              row !== null && typeof row === "object" && typeof (row as any).pk === "string",
+          )
+          .map((row) => {
+            const base = row as Record<string, unknown>;
+            const normalized: SearchRow = { pk: String((row as any).pk) };
+
+            Object.entries(base).forEach(([key, value]) => {
+              if (key === "pk") {
+                return;
+              }
+              normalized[key] = value;
+            });
+
+            const slugValue = base.slug;
+            normalized.slug =
+              typeof slugValue === "string" && slugValue.trim().length > 0
+                ? slugValue
+                : undefined;
+
+            const thumbnailValue = base.thumbnail;
+            if (typeof thumbnailValue === "string") {
+              if (thumbnailValue.trim().length > 0) {
+                normalized.thumbnail = thumbnailValue;
+              } else if (includeThumbnails) {
+                normalized.thumbnail = "";
+              } else {
+                normalized.thumbnail = undefined;
+              }
+            } else if (includeThumbnails) {
+              normalized.thumbnail = "";
+            } else {
+              normalized.thumbnail = undefined;
+            }
+
+            return normalized;
+          });
 
         setRawResults(sanitized);
       } catch (error: any) {
@@ -240,7 +280,7 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
         }
       }
     },
-    [normalizedTable, query, targetUuid],
+    [normalizedTable, query, smallMode, targetUuid],
   );
   useEffect(() => {
     const normalized =
@@ -401,9 +441,8 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
         return url;
       }
       if (normalizedTable === "items") {
-        const slug = (row as any).slug;
-        if (typeof slug === "string" && !isBlank(slug)) {
-          return `/item/${slug}`;
+        if (typeof row.slug === "string" && !isBlank(row.slug)) {
+          return `/item/${row.slug}`;
         }
         if (typeof row.pk === "string" && !isBlank(row.pk)) {
           return `/item/${row.pk}`;
@@ -578,7 +617,7 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
     if (smallMode || normalizedTable !== "items") {
       return "";
     }
-    const thumbnail = (row as any).thumbnail;
+    const thumbnail = row.thumbnail;
     if (typeof thumbnail === "string" && !isBlank(thumbnail)) {
       return thumbnail;
     }
