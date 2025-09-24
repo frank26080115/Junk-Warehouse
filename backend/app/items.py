@@ -209,9 +209,9 @@ def insert_item(
     Insert a new item row and return the augmented item dict.
 
     This is the logic that powers the ``/api/insertitem`` endpoint and can be
-    re-used by offline scripts (e.g., CSV importers). ``is_staging`` is forced to
-    ``True`` for every inserted item so that bulk imports never go live by
-    accident.
+    re-used by offline scripts (e.g., CSV importers). ``is_staging`` defaults to
+    ``True`` for new rows so that bulk imports never go live by accident, but an
+    explicit ``False`` value from the caller is now respected.
     """
 
     if not isinstance(payload, Mapping):
@@ -270,7 +270,10 @@ def insert_item(
                 )
 
     data["short_id"] = short_id_value
-    data["is_staging"] = True
+    if data.get("is_staging") is None:
+        # Default new rows to staging unless the caller explicitly provided
+        # False.  (Truthiness is preserved; only ``None`` triggers the default.)
+        data["is_staging"] = True
 
     # remove null creation date so the DB fills it in with now() automatically
     DEFAULTABLE_COLUMNS = {"date_creation", "date_last_modified", "textsearch"}  # add others as needed
