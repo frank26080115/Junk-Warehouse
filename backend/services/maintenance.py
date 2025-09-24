@@ -14,6 +14,7 @@ from sqlalchemy import MetaData, Table, delete, or_, select, update
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session
 
+from app.helpers import normalize_pg_uuid
 from app.db import get_engine
 from app.logging_setup import start_log
 from app.static_server import get_public_html_path
@@ -231,28 +232,6 @@ def prune_images(
     return summary
 
 
-def main():
-    # Initialize logger using your existing setup
-    logger = start_log(app_name="maintenance")
-
-    while True:
-        try:
-            logger.info("Running maintenance task...")
-
-            # TODO: Add your housekeeping logic here
-            # e.g., cleaning old sessions, rotating temp files, etc.
-
-        except Exception as e:
-            logger.exception("Maintenance loop error")
-
-        time.sleep(60)  # wait 1 minute
-
-
-if __name__ == "__main__":
-    main()
-
-
-
 def neaten_relationship(
     db: Optional[Union[Engine, Connection, Session]] = None,
     item_uuid: Optional[Union[str, uuid.UUID]] = None,
@@ -269,7 +248,7 @@ def neaten_relationship(
         target_uuid: Optional[uuid.UUID] = None
     else:
         try:
-            target_uuid = item_uuid if isinstance(item_uuid, uuid.UUID) else uuid.UUID(str(item_uuid))
+            target_uuid = item_uuid if isinstance(item_uuid, uuid.UUID) else uuid.UUID(normalize_pg_uuid(item_uuid))
         except (TypeError, ValueError) as exc:
             raise ValueError("item_uuid must be a valid UUID value") from exc
 
@@ -369,3 +348,24 @@ def neaten_relationship(
         "rows_updated": len(updates),
         "rows_deleted": len(deletions),
     }
+
+
+def main():
+    # Initialize logger using your existing setup
+    logger = start_log(app_name="maintenance")
+
+    while True:
+        try:
+            logger.info("Running maintenance task...")
+
+            # TODO: Add your housekeeping logic here
+            # e.g., cleaning old sessions, rotating temp files, etc.
+
+        except Exception as e:
+            logger.exception("Maintenance loop error")
+
+        time.sleep(60)  # wait 1 minute
+
+
+if __name__ == "__main__":
+    main()
