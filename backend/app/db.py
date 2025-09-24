@@ -345,13 +345,6 @@ def update_db_row_by_dict(
             log.debug("removing '%s' from update payload to avoid PK change", pk_name)
         filtered.pop(pk_name, None)
 
-    # remove null creation date so the DB fills it in with now() automatically
-    if is_insert:
-        DEFAULTABLE_COLUMNS = {"date_creation", "date_last_modified"}  # add others as needed
-        for col in list(filtered):
-            if col in DEFAULTABLE_COLUMNS and filtered[col] is None:
-                filtered.pop(col)
-
     # 8) execute with RETURNING * to get the row back
     with engine.begin() as conn:
         try:

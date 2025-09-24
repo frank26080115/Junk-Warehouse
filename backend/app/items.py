@@ -272,6 +272,12 @@ def insert_item(
     data["short_id"] = short_id_value
     data["is_staging"] = True
 
+    # remove null creation date so the DB fills it in with now() automatically
+    DEFAULTABLE_COLUMNS = {"date_creation", "date_last_modified", "textsearch"}  # add others as needed
+    for col in list(data):
+        if col in DEFAULTABLE_COLUMNS and data[col] is None:
+            data.pop(col)
+
     result = update_db_row_by_dict(
         engine=engine,
         table=TABLE,
