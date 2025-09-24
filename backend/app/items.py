@@ -175,6 +175,9 @@ def save_item_api():
         if col in DEFAULTABLE_COLUMNS:
             payload.pop(col)
 
+    if payload.get("is_collection") is True:
+        payload["is_container"] = True
+
     try:
         response_payload: Optional[Mapping[str, Any]] = None
 
@@ -330,6 +333,9 @@ def insert_item(
         # Default new rows to staging unless the caller explicitly provided
         # False.  (Truthiness is preserved; only ``None`` triggers the default.)
         data["is_staging"] = True
+
+    if data.get("is_collection") is True:
+        data["is_container"] = True
 
     # remove null creation date so the DB fills it in with now() automatically
     DEFAULTABLE_COLUMNS = {"date_creation", "date_last_modified", "textsearch"}  # add others as needed

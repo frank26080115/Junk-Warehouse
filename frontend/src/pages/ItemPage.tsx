@@ -109,11 +109,11 @@ const booleanFlags = [
   { key: "is_collection",     emoji: "🗃️", label: "Collection" },
   { key: "is_large",          emoji: "🐘", label: "Large" },
   { key: "is_small",          emoji: "🐜", label: "Small" },
-  { key: "is_fixed_location", emoji: "🛏️", label: "Fixed location" },
+  { key: "is_fixed_location", emoji: "🛏️", label: "Fixed Location" },
   { key: "is_consumable",     emoji: "🍽️", label: "Consumable" },
+  { key: "is_lost",           emoji: "👻", label: "Lost" },
   { key: "is_staging",        emoji: "⏳", label: "Staging" },
   { key: "is_deleted",        emoji: "🗑️", label: "Deleted" },
-  { key: "is_lost",           emoji: "👻", label: "Lost" },
 ] as const;
 
 type FlagKey = typeof booleanFlags[number]["key"];
