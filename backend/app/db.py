@@ -322,6 +322,10 @@ def update_db_row_by_dict(
         else:
             log.debug("dropping unknown key '%s' (not a column of %s)", k, table)
 
+    for key, value in list(filtered.items()):
+        if isinstance(value, str):
+            filtered[key] = value.strip()
+
     # 6) determine primary key column to target
     pk_cols = list(t.primary_key.columns)
     if len(pk_cols) == 1:
