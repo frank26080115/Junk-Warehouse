@@ -14,6 +14,7 @@ from sqlalchemy.engine import Engine
 from .user_login import login_required
 from .db import get_engine, get_db_item_as_dict, update_db_row_by_dict
 from .slugify import slugify
+from .helpers import normalize_pg_uuid
 
 log = logging.getLogger(__name__)
 
@@ -223,7 +224,7 @@ def insert_item(
     normalized_uuid: Optional[str] = None
     if raw_uuid_val:
         try:
-            normalized_uuid = str(uuid.UUID(str(raw_uuid_val)))
+            normalized_uuid = normalize_pg_uuid(raw_uuid_val)
         except (ValueError, AttributeError, TypeError):
             log.debug(
                 "insertitem: invalid id supplied; generating a new UUID",

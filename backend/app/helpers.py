@@ -208,7 +208,7 @@ def fuzzy_apply_fuzzy_keys(data: dict[str, Any], columns: set[str], table_name: 
     if not data:
         return data
 
-    col_norm = {c: _norm_key(c) for c in columns}
+    col_norm = {c: fuzzy_norm_key(c) for c in columns}
     claimed: set[str] = set()
     out: dict[str, Any] = {}
 
@@ -219,14 +219,14 @@ def fuzzy_apply_fuzzy_keys(data: dict[str, Any], columns: set[str], table_name: 
             claimed.add(k)
             continue
 
-        nk = _norm_key(k)
+        nk = fuzzy_norm_key(k)
         best_col: Optional[str] = None
         best_dist = limit + 1
 
         for col, ncol in col_norm.items():
             if col in claimed:
                 continue
-            d = _levenshtein_at_most(nk, ncol, limit=limit)
+            d = fuzzy_levenshtein_at_most(nk, ncol, limit=limit)
             if d < best_dist:
                 best_dist = d
                 best_col = col
