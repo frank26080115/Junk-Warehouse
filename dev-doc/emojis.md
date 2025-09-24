@@ -47,6 +47,12 @@
 | 🌀    | Cyclone                     | &#127744;             |
 | ℹ️    | Information                 | &#8505;&#65039;       |
 | 🙋    | Person raising hand         | &#128587;             |
+| 👯    | Twins                       | &#128111;             |
+| 👩‍👩    | Two women (ZJW sequence)    | &#128105;&#8205;&#128105; |
+| 👬    | Two men holding hands       | &#128108;             |
+| 👭    | Two women holding hands     | &#128109;             |
+| 💥    | Collision / Explosion       | &#128165;             |
+| 🔥    | Fire                        | &#128293;             |
 | ⬆️    | Up arrow                    | &#11014;&#65039;      |
 | ⬇️    | Down arrow                  | &#11015;&#65039;      |
 | ⬅️    | Left arrow                  | &#11013;&#65039;      |
