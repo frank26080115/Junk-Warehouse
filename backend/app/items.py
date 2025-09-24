@@ -176,8 +176,10 @@ def save_item_api():
             payload.pop(col)
 
     try:
+        response_payload: Optional[Mapping[str, Any]] = None
+
         # Fuzzy update: lets the helper map keys without hardcoding column names here
-        update_db_row_by_dict(
+        update_result = update_db_row_by_dict(
             engine=engine,
             table=TABLE,
             uuid=item_uuid,  # required for updates; your helper should error if missing/unresolvable
@@ -186,7 +188,35 @@ def save_item_api():
             id_col_name=ID_COL,
         )
 
+        if isinstance(update_result, tuple) and len(update_result) == 2:
+            resp, status_code = update_result
+            if status_code >= 400:
+                if hasattr(resp, "get_json"):
+                    return resp, status_code
+                if isinstance(resp, Mapping):
+                    return jsonify(resp), status_code
+                return jsonify({"error": str(resp)}), status_code
+
+            candidate_payload: Optional[Any] = None
+            if hasattr(resp, "get_json"):
+                try:
+                    candidate_payload = resp.get_json(silent=True)
+                except Exception:
+                    candidate_payload = None
+            elif isinstance(resp, Mapping):
+                candidate_payload = resp
+
+            if isinstance(candidate_payload, Mapping):
+                response_payload = candidate_payload
+
         # Re-fetch authoritative row
+        if item_uuid is None and response_payload is not None:
+            returned_data = response_payload.get("data")
+            if isinstance(returned_data, Mapping):
+                possible_id = returned_data.get(ID_COL)
+                if possible_id:
+                    item_uuid = possible_id
+
         if not item_uuid and isinstance(payload, Mapping):
             # In a rare case where caller omitted id but your update helper still succeeded
             # (e.g., it resolved via short_id), try to get the id back from payload.
@@ -236,20 +266,40 @@ def insert_item(
                 "insertitem: invalid id supplied; generating a new UUID",
                 exc_info=False,
             )
-    if normalized_uuid is None:
-        normalized_uuid = str(uuid.uuid4())
-    data[ID_COL] = normalized_uuid
-
     def _to_signed_32(value: int) -> int:
         value &= 0xFFFFFFFF
         return value - 0x100000000 if value >= 0x80000000 else value
 
-    uuid_obj = uuid.UUID(normalized_uuid)
-    preferred_unsigned = int(uuid_obj.hex[-8:], 16)
-    preferred_short_id = _to_signed_32(preferred_unsigned)
-    short_id_value = preferred_short_id
-
     with engine.connect() as conn:
+        def uuid_in_use(candidate_uuid: str) -> bool:
+            result = conn.execute(
+                text("SELECT 1 FROM items WHERE id = :item_id LIMIT 1"),
+                {"item_id": candidate_uuid},
+            )
+            return result.first() is not None
+
+        if normalized_uuid is None:
+            generated_uuid: Optional[str] = None
+            for _ in range(100):
+                candidate_uuid = str(uuid.uuid4())
+                if not uuid_in_use(candidate_uuid):
+                    generated_uuid = candidate_uuid
+                    break
+            if generated_uuid is None:
+                raise RuntimeError(
+                    "Unable to allocate unique id after multiple attempts"
+                )
+            normalized_uuid = generated_uuid
+        else:
+            normalized_uuid = str(normalized_uuid)
+
+        data[ID_COL] = normalized_uuid
+
+        uuid_obj = uuid.UUID(str(normalized_uuid))
+        preferred_unsigned = int(uuid_obj.hex[-8:], 16)
+        preferred_short_id = _to_signed_32(preferred_unsigned)
+        short_id_value = preferred_short_id
+
         def short_id_in_use(candidate: int) -> bool:
             result = conn.execute(
                 text("SELECT 1 FROM items WHERE short_id = :sid LIMIT 1"),
