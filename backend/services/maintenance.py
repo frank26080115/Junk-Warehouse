@@ -13,6 +13,7 @@ from sqlalchemy.engine import Engine
 
 from app.db import get_engine
 from app.logging_setup import start_log
+from app.static_server import get_public_html_path
 
 log = logging.getLogger(__name__)
 
@@ -102,13 +103,27 @@ def prune_stale_staging_invoices(cutoff_date: datetime) -> int:
     return count
 
 
-def prune_images(target_directory: Union[Path, str]) -> Dict[str, int]:
-    """Remove deleted or orphaned images from the database and filesystem."""
+def prune_images(
+    target_directory: Union[Path, str, None] = None,
+) -> Dict[str, int]:
+    """Remove deleted or orphaned images from the database and filesystem.
+
+    If ``target_directory`` is not provided or is blank, the value returned by
+    :func:`app.static_server.get_public_html_path` is used.
+    """
     engine = get_engine()
     tables = _load_tables(engine, ("images", "item_images"))
     images_table = tables["images"]
     item_images_table = tables["item_images"]
-    target_dir_path = Path(target_directory).resolve()
+    if target_directory is None:
+        base_directory = get_public_html_path()
+    elif isinstance(target_directory, Path):
+        base_directory = target_directory
+    else:
+        directory_text = str(target_directory).strip()
+        base_directory = Path(directory_text) if directory_text else get_public_html_path()
+
+    target_dir_path = base_directory.resolve()
 
     if not target_dir_path.exists():
         log.warning(
