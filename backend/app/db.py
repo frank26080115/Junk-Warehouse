@@ -10,14 +10,14 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote_plus
 import uuid as _uuid
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Mapping
 from flask import g
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, MetaData, Table, select, text
 from sqlalchemy.engine import Engine, Connection
 from sqlalchemy.orm import Session, scoped_session, sessionmaker
 from sqlalchemy.exc import NoSuchTableError
-import app.helpers
+import app.helpers as helpers
 
 log = logging.getLogger(__name__)
 
@@ -336,14 +336,21 @@ def update_db_row_by_dict(
     if not is_insert and (uuid is None or (isinstance(uuid, str) and uuid.strip() == "")):
         return helpers.flask_return_wrap({"ok": False, "error": "uuid required for update (or pass 'new' to insert)"}, 400)
 
-    if isinstance(uuid, str):
-        uuid = str(normalize_pg_uuid(uuid))
+    if isinstance(uuid, str) and not is_insert:
+        uuid = helpers.normalize_pg_uuid(uuid)
 
     # Don’t allow updating the PK itself (keep where-clause the source of truth)
     if not is_insert and pk_name in filtered:
         if str(filtered[pk_name]) != str(uuid):
             log.debug("removing '%s' from update payload to avoid PK change", pk_name)
         filtered.pop(pk_name, None)
+
+    # remove null creation date so the DB fills it in with now() automatically
+    if is_insert:
+        DEFAULTABLE_COLUMNS = {"date_creation", "date_last_modified"}  # add others as needed
+        for col in list(filtered):
+            if col in DEFAULTABLE_COLUMNS and filtered[col] is None:
+                filtered.pop(col)
 
     # 8) execute with RETURNING * to get the row back
     with engine.begin() as conn:
