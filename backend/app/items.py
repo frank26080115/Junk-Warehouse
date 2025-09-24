@@ -200,6 +200,121 @@ def save_item_api():
         return jsonify({"error": str(e)}), 400
 
 
+def insert_item(
+    payload: Mapping[str, Any],
+    *,
+    engine: Optional[Engine] = None,
+) -> Dict[str, Any]:
+    """
+    Insert a new item row and return the augmented item dict.
+
+    This is the logic that powers the ``/api/insertitem`` endpoint and can be
+    re-used by offline scripts (e.g., CSV importers). ``is_staging`` is forced to
+    ``True`` for every inserted item so that bulk imports never go live by
+    accident.
+    """
+
+    if not isinstance(payload, Mapping):
+        raise TypeError("Item payload must be a mapping")
+
+    data: Dict[str, Any] = dict(payload)
+    engine = engine or get_engine()
+
+    raw_uuid_val = data.get(ID_COL)
+    normalized_uuid: Optional[str] = None
+    if raw_uuid_val:
+        try:
+            normalized_uuid = normalize_pg_uuid(raw_uuid_val)
+        except (ValueError, AttributeError, TypeError):
+            log.debug(
+                "insertitem: invalid id supplied; generating a new UUID",
+                exc_info=False,
+            )
+    if normalized_uuid is None:
+        normalized_uuid = str(uuid.uuid4())
+    data[ID_COL] = normalized_uuid
+
+    def _to_signed_32(value: int) -> int:
+        value &= 0xFFFFFFFF
+        return value - 0x100000000 if value >= 0x80000000 else value
+
+    uuid_obj = uuid.UUID(normalized_uuid)
+    preferred_unsigned = int(uuid_obj.hex[-8:], 16)
+    preferred_short_id = _to_signed_32(preferred_unsigned)
+    short_id_value = preferred_short_id
+
+    with engine.connect() as conn:
+        def short_id_in_use(candidate: int) -> bool:
+            result = conn.execute(
+                text("SELECT 1 FROM items WHERE short_id = :sid LIMIT 1"),
+                {"sid": candidate},
+            )
+            return result.first() is not None
+
+        if short_id_in_use(short_id_value):
+            log.debug(
+                "short_id %d already in use; generating random replacement",
+                short_id_value,
+            )
+            rng = random.SystemRandom()
+            unique_found = False
+            for _ in range(100):
+                candidate_unsigned = rng.getrandbits(32)
+                short_id_value = _to_signed_32(candidate_unsigned)
+                if not short_id_in_use(short_id_value):
+                    unique_found = True
+                    break
+            if not unique_found:
+                raise RuntimeError(
+                    "Unable to allocate unique short_id after multiple attempts"
+                )
+
+    data["short_id"] = short_id_value
+    data["is_staging"] = True
+
+    result = update_db_row_by_dict(
+        engine=engine,
+        table=TABLE,
+        uuid="new",
+        data=data,
+        fuzzy=True,
+        id_col_name=ID_COL,
+    )
+
+    if isinstance(result, tuple) and len(result) == 2:
+        resp, status = result
+        if status >= 400:
+            detail: Optional[Any] = None
+            if hasattr(resp, "get_json"):
+                try:
+                    detail = resp.get_json()
+                except Exception:  # pragma: no cover - defensive
+                    detail = None
+            elif isinstance(resp, Mapping):
+                detail = resp
+
+            message = "database error during insert"
+            if isinstance(detail, Mapping):
+                extracted = detail.get("error") or detail.get("detail")
+                if extracted:
+                    message = str(extracted)
+                else:
+                    message = str(detail)
+            raise RuntimeError(message)
+
+    new_id = data.get(ID_COL)
+    if not new_id:
+        raise RuntimeError(
+            "Insert succeeded but new item ID could not be determined"
+        )
+
+    db_row = get_db_item_as_dict(engine, TABLE, new_id, id_col_name=ID_COL)
+    if not db_row:
+        raise LookupError("Inserted item not found")
+
+    return _augment_item(db_row)
+
+
 @bp.route("/insertitem", methods=["POST"])
 @login_required
 def insert_item_api():
@@ -214,85 +329,9 @@ def insert_item_api():
     if not isinstance(raw_payload, Mapping):
         return jsonify({"error": "Item payload must be an object"}), 400
 
-    payload: Dict[str, Any] = dict(raw_payload)
-
-    engine: Engine = get_engine()
     try:
-        raw_uuid_val = payload.get(ID_COL)
-        normalized_uuid: Optional[str] = None
-        if raw_uuid_val:
-            try:
-                normalized_uuid = normalize_pg_uuid(raw_uuid_val)
-            except (ValueError, AttributeError, TypeError):
-                log.debug("insertitem: invalid id supplied; generating a new UUID", exc_info=False)
-        if normalized_uuid is None:
-            normalized_uuid = normalize_pg_uuid(str(uuid.uuid4()))
-        payload[ID_COL] = normalized_uuid
-
-        def _to_signed_32(value: int) -> int:
-            value &= 0xFFFFFFFF
-            return value - 0x100000000 if value >= 0x80000000 else value
-
-        uuid_obj = uuid.UUID(normalized_uuid)
-        preferred_unsigned = int(uuid_obj.hex[-8:], 16)
-        preferred_short_id = _to_signed_32(preferred_unsigned)
-        short_id_value = preferred_short_id
-
-        with engine.connect() as conn:
-            def short_id_in_use(candidate: int) -> bool:
-                result = conn.execute(
-                    text("SELECT 1 FROM items WHERE short_id = :sid LIMIT 1"),
-                    {"sid": candidate},
-                )
-                return result.first() is not None
-
-            if short_id_in_use(short_id_value):
-                log.debug(
-                    "short_id %d already in use; generating random replacement",
-                    short_id_value,
-                )
-                rng = random.SystemRandom()
-                unique_found = False
-                for _ in range(100):
-                    candidate_unsigned = rng.getrandbits(32)
-                    short_id_value = _to_signed_32(candidate_unsigned)
-                    if not short_id_in_use(short_id_value):
-                        unique_found = True
-                        break
-                if not unique_found:
-                    raise RuntimeError(
-                        "Unable to allocate unique short_id after multiple attempts"
-                    )
-
-        payload["short_id"] = short_id_value
-
-        # Insert path: tell helper explicitly to insert a new row
-        result = update_db_row_by_dict(
-            engine=engine,
-            table=TABLE,
-            uuid="new",
-            data=payload,
-            fuzzy=True,
-            id_col_name=ID_COL,
-        )
-
-        if isinstance(result, tuple) and len(result) == 2:
-            resp, status = result
-            if status >= 400:
-                return resp, status
-
-        # Try to determine the new item's id:
-        new_id = payload.get(ID_COL)
-
-        if not new_id:
-            return jsonify({"error": "Insert succeeded but new item ID could not be determined"}), 500
-
-        db_row = get_db_item_as_dict(engine, TABLE, new_id, id_col_name=ID_COL)
-        if not db_row:
-            return jsonify({"error": "Inserted item not found"}), 404
-
-        return jsonify(_augment_item(db_row)), 201
-
+        inserted = insert_item(raw_payload)
+        return jsonify(inserted), 201
     except Exception as e:
         log.exception("insertitem failed")
         return jsonify({"error": str(e)}), 400
