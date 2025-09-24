@@ -1,6 +1,7 @@
 import logging
 import json
 import re
+from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from .db import get_column_types, get_engine
@@ -129,6 +130,27 @@ def _coerce_literal(s: str) -> Any:
 
 def _is_iterable_but_not_str(x: Any) -> bool:
     return isinstance(x, Iterable) and not isinstance(x, (str, bytes, bytearray))
+
+
+_DATE_FORMATS: Tuple[str, ...] = (
+    "%Y/%m/%d",
+    "%Y-%m-%d",
+    "%m/%d/%Y",
+    "%m-%d-%Y",
+)
+
+
+def _normalize_date_literal(value: Any) -> Any:
+    if isinstance(value, str):
+        candidate = value.strip()
+        if candidate:
+            for fmt in _DATE_FORMATS:
+                try:
+                    parsed = datetime.strptime(candidate, fmt)
+                except ValueError:
+                    continue
+                return parsed.strftime("%Y-%m-%d")
+    return value
 
 
 class DirectiveUnit:
@@ -514,13 +536,19 @@ class SearchQuery:
                     if unit.negated:
                         return f"{qualified} IS NOT NULL"
                     return f"{qualified} IS NULL"
-                param_name = _new_param(unit.rhs)
+                rhs_value = unit.rhs
+                if column_type == "timestamp":
+                    rhs_value = _normalize_date_literal(rhs_value)
+                param_name = _new_param(rhs_value)
                 if unit.negated:
                     return f"{qualified} <> :{param_name}"
                 return f"{qualified} = :{param_name}"
             if unit.op in (">", "<"):
                 if column in comparable_columns and unit.rhs is not None:
-                    param_name = _new_param(unit.rhs)
+                    rhs_value = unit.rhs
+                    if column_type == "timestamp":
+                        rhs_value = _normalize_date_literal(rhs_value)
+                    param_name = _new_param(rhs_value)
                     condition = f"{qualified} {unit.op} :{param_name}"
                     return _wrap_condition(condition, unit.negated)
                 return None
