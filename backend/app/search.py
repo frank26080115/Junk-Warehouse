@@ -102,6 +102,103 @@ def _pick_best_short_id_row(
     return min(rows, key=_distance)
 
 
+def _execute_text_search_query(
+    session: Any,
+    search_query: SearchQuery,
+    query_text: str,
+    *,
+    default_table: str,
+    default_alias: str,
+    select_template: Optional[str] = None,
+    textsearch_template: Optional[str] = None,
+    default_order_templates: Optional[Iterable[str]] = None,
+    default_limit: int = DEFAULT_LIMIT,
+) -> List[Mapping[str, Any]]:
+    """Execute the dynamic SQL generated for a :class:`SearchQuery`.
+
+    Parameters mirror the knobs used by :func:`search_items` and the new
+    :func:`search_invoices` function so that the fairly involved SQL building
+    only lives in a single place.
+    """
+
+    criteria = search_query.get_sql_conditionals()
+
+    table_name = criteria.get("table", default_table)
+    alias = criteria.get("table_alias") or default_alias
+
+    select_clause = (select_template or "{alias}.*").format(alias=alias)
+    textsearch_expr = (textsearch_template or "{alias}.textsearch").format(alias=alias)
+
+    ts_query_expr = "websearch_to_tsquery('english', :q)"
+    rank_expression = f"ts_rank_cd({textsearch_expr}, {ts_query_expr})"
+
+    where_clauses: List[str] = []
+    touched_columns = criteria.get("touched_columns") or set()
+    if "is_deleted" not in touched_columns:
+        where_clauses.append(f"NOT {alias}.is_deleted")
+    where_clauses.append(f"{textsearch_expr} @@ {ts_query_expr}")
+    for condition in criteria.get("where", []):
+        if condition:
+            where_clauses.append(condition)
+
+    flags = criteria.get("flags") or {}
+    order_by_clauses: List[str] = list(criteria.get("order_by") or [])
+    if order_by_clauses:
+        if not flags.get("random_order"):
+            order_by_clauses.append(f"{rank_expression} DESC")
+    else:
+        base_direction = "ASC" if flags.get("reverse_default_order") else "DESC"
+        order_by_clauses.append(f"{rank_expression} {base_direction}")
+        if default_order_templates:
+            for template in default_order_templates:
+                order_by_clauses.append(template.format(alias=alias, direction=base_direction))
+
+    limit_value = criteria.get("limit")
+    limit_is_explicit = criteria.get("limit_is_explicit", False)
+    page_number = criteria.get("page")
+    show_all = flags.get("show_all", False)
+
+    if not limit_is_explicit:
+        limit_value = default_limit
+    elif show_all:
+        limit_value = None
+
+    offset_value: Optional[int] = None
+    if isinstance(page_number, int) and page_number > 1 and limit_value:
+        offset_value = (page_number - 1) * limit_value
+
+    sql_lines = [
+        "SELECT",
+        f"    {select_clause}",
+        f"FROM {table_name} AS {alias}",
+    ]
+    if where_clauses:
+        sql_lines.append("WHERE")
+        sql_lines.append(f"    {where_clauses[0]}")
+        for condition in where_clauses[1:]:
+            sql_lines.append(f"    AND {condition}")
+    if order_by_clauses:
+        sql_lines.append("ORDER BY")
+        for idx, clause in enumerate(order_by_clauses):
+            prefix = "    " if idx == 0 else "    , "
+            sql_lines.append(f"{prefix}{clause}")
+    if limit_value is not None:
+        sql_lines.append("LIMIT :limit")
+    if offset_value:
+        sql_lines.append("OFFSET :offset")
+
+    base_sql = text("\n".join(sql_lines))
+
+    sql_params: Dict[str, Any] = {"q": query_text}
+    sql_params.update(criteria.get("params", {}))
+    if limit_value is not None:
+        sql_params["limit"] = limit_value
+    if offset_value:
+        sql_params["offset"] = offset_value
+
+    return session.execute(base_sql, sql_params).mappings().all()
+
+
 def _finalize_item_rows(rows: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
     """Normalize search results with required metadata.
 
@@ -133,6 +230,30 @@ def _finalize_item_rows(rows: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any
             row_dict.get("name"),
             row_dict.get("short_id"),
         )
+
+        normalized.append(row_dict)
+
+    if not normalized:
+        return normalized
+
+    return deduplicate_rows(normalized, key="pk")
+
+
+def _finalize_invoice_rows(rows: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    for row in rows:
+        row_dict: Dict[str, Any] = dict(row)
+
+        identifier = row_dict.get("id")
+        if identifier is None and row_dict.get("pk") is not None:
+            identifier = row_dict.get("pk")
+
+        if identifier is not None:
+            identifier_str = str(identifier)
+            row_dict["id"] = identifier_str
+            row_dict["pk"] = identifier_str
+        else:
+            row_dict.pop("pk", None)
 
         normalized.append(row_dict)
 
@@ -342,76 +463,14 @@ def search_items(
     query_text = sq.query_text or raw_query  # fallback just in case
 
     
-    # --- BASE TEXT SEARCH (dynamic SQL generation) ---
-    criteria = sq.get_sql_conditionals()
-    table_name = criteria.get("table", "items")
-    alias = criteria.get("table_alias") or "i"
-    ts_query_expr = "websearch_to_tsquery('english', :q)"
-    rank_expression = f"ts_rank_cd({alias}.textsearch, {ts_query_expr})"
-
-    where_clauses: List[str] = []
-    touched_columns = criteria.get("touched_columns") or set()
-    if "is_deleted" not in touched_columns:
-        where_clauses.append(f"NOT {alias}.is_deleted")
-    where_clauses.append(f"{alias}.textsearch @@ {ts_query_expr}")
-    for condition in criteria.get("where", []):
-        if condition:
-            where_clauses.append(condition)
-
-    flags = criteria.get("flags") or {}
-    order_by_clauses: List[str] = list(criteria.get("order_by") or [])
-    if order_by_clauses:
-        if not flags.get("random_order"):
-            order_by_clauses.append(f"{rank_expression} DESC")
-    else:
-        base_direction = "ASC" if flags.get("reverse_default_order") else "DESC"
-        order_by_clauses.append(f"{rank_expression} {base_direction}")
-        order_by_clauses.append(f"{alias}.date_last_modified {base_direction}")
-
-    limit_value = criteria.get("limit")
-    limit_is_explicit = criteria.get("limit_is_explicit", False)
-    page_number = criteria.get("page")
-    show_all = flags.get("show_all", False)
-
-    if not limit_is_explicit:
-        limit_value = DEFAULT_LIMIT
-    elif show_all:
-        limit_value = None
-
-    offset_value: Optional[int] = None
-    if isinstance(page_number, int) and page_number > 1 and limit_value:
-        offset_value = (page_number - 1) * limit_value
-
-    sql_lines = [
-        "SELECT",
-        f"    {alias}.*",
-        f"FROM {table_name} AS {alias}",
-    ]
-    if where_clauses:
-        sql_lines.append("WHERE")
-        sql_lines.append(f"    {where_clauses[0]}")
-        for condition in where_clauses[1:]:
-            sql_lines.append(f"    AND {condition}")
-    if order_by_clauses:
-        sql_lines.append("ORDER BY")
-        for idx, clause in enumerate(order_by_clauses):
-            prefix = "    " if idx == 0 else "    , "
-            sql_lines.append(f"{prefix}{clause}")
-    if limit_value is not None:
-        sql_lines.append("LIMIT :limit")
-    if offset_value:
-        sql_lines.append("OFFSET :offset")
-
-    base_sql = text("\n".join(sql_lines))
-
-    sql_params: Dict[str, Any] = {"q": query_text}
-    sql_params.update(criteria.get("params", {}))
-    if limit_value is not None:
-        sql_params["limit"] = limit_value
-    if offset_value:
-        sql_params["offset"] = offset_value
-
-    rows = session.execute(base_sql, sql_params).mappings().all()
+    rows = _execute_text_search_query(
+        session,
+        sq,
+        query_text,
+        default_table="items",
+        default_alias="i",
+        default_order_templates=["{alias}.date_last_modified {direction}"],
+    )
 
     for row in rows:
         row_dict = dict(row)
@@ -475,6 +534,125 @@ def search_items(
     return _finalize_item_rows(results)
 
 
+def search_invoices(
+    raw_query: str,
+    target_uuid: Optional[str] = None,
+    context: Any = None,
+    primary_key_column: str = "id",
+) -> List[Dict[str, Any]]:
+    session = get_or_create_session()
+    results: List[Dict[str, Any]] = []
+
+    if not (raw_query and raw_query.strip()):
+        log.info("search_invoices: empty query -> returning empty list")
+        return _finalize_invoice_rows(results)
+
+    if isinstance(context, dict):
+        sq_context = dict(context)
+    else:
+        sq_context = {}
+        if context is not None:
+            sq_context["payload"] = context
+    sq_context.setdefault("table", "invoices")
+    sq_context.setdefault("table_alias", "inv")
+    sq = SearchQuery(s=raw_query, context=sq_context)
+
+    if not target_uuid and len(sq.identifiers) == 1:
+        identifier = sq.identifiers[0]
+
+        uuid_candidate: Optional[str]
+        try:
+            uuid_candidate = str(uuid.UUID(identifier))
+        except (ValueError, AttributeError, TypeError):
+            uuid_candidate = None
+
+        if uuid_candidate and not (sq.query_text or "").strip():
+            column = _normalize_primary_key_column(primary_key_column)
+
+            direct_sql = text(
+                f"""
+                SELECT
+                    inv.*
+                FROM invoices AS inv
+                WHERE
+                    NOT inv.is_deleted
+                    AND inv.{column} = :identifier
+                LIMIT 1
+                """
+            )
+
+            row = session.execute(direct_sql, {"identifier": uuid_candidate}).mappings().first()
+            if row:
+                return _finalize_invoice_rows([row])
+
+    query_text = sq.query_text or raw_query
+
+    textsearch_template = (
+        "to_tsvector('english', "
+        "COALESCE({alias}.subject, '') || ' ' || "
+        "COALESCE({alias}.notes, '') || ' ' || "
+        "COALESCE({alias}.order_number, '') || ' ' || "
+        "COALESCE({alias}.shop_name, '') || ' ' || "
+        "COALESCE({alias}.urls, '') || ' ' || "
+        "COALESCE({alias}.html, ''))"
+    )
+
+    rows = _execute_text_search_query(
+        session,
+        sq,
+        query_text,
+        default_table="invoices",
+        default_alias="inv",
+        select_template="{alias}.*",
+        textsearch_template=textsearch_template,
+        default_order_templates=["{alias}.date {direction}"],
+    )
+
+    for row in rows:
+        row_dict = dict(row)
+        if sq.evaluate(row_dict):
+            results.append(row_dict)
+
+    if target_uuid and results:
+        invoice_ids: List[str] = []
+        seen: set[str] = set()
+        for invoice in results:
+            pk_value = invoice.get("pk") or invoice.get("id")
+            if pk_value is None:
+                continue
+            value = str(pk_value)
+            if value in seen:
+                continue
+            seen.add(value)
+            invoice_ids.append(value)
+
+        if invoice_ids:
+            assoc_sql = (
+                text(
+                    """
+                    SELECT DISTINCT ii.invoice_id
+                    FROM invoice_items AS ii
+                    WHERE ii.item_id = :item_id
+                      AND ii.invoice_id IN :invoice_ids
+                    """
+                ).bindparams(bindparam("invoice_ids", expanding=True))
+            )
+            assoc_rows = session.execute(
+                assoc_sql,
+                {"item_id": target_uuid, "invoice_ids": invoice_ids},
+            ).scalars().all()
+            associated_ids = {str(value) for value in assoc_rows}
+
+            for invoice in results:
+                pk_value = invoice.get("pk") or invoice.get("id")
+                is_associated = False
+                if pk_value is not None:
+                    is_associated = str(pk_value) in associated_ids
+                invoice["is_associated"] = is_associated
+
+    return _finalize_invoice_rows(results)
+
+
 @bp.route("/search", methods=["POST"])
 @login_required
 def search_api():
@@ -526,4 +704,30 @@ def search_api():
 
     except Exception as e:
         log.exception("search_api: error while handling search")
+        return jsonify(ok=False, error=str(e)), 400
+
+
+@bp.route("/search/invoices", methods=["POST"])
+@login_required
+def search_invoices_api():
+    """Endpoint for invoice search requests."""
+
+    try:
+        data = request.get_json(silent=True) or {}
+        raw_query = (data.get("q") or "").strip()
+        target_uuid = data.get("target_uuid") or None
+
+        ctx = {
+            "ip": request.remote_addr,
+            "user_agent": request.headers.get("User-Agent"),
+        }
+
+        if not raw_query:
+            return jsonify(ok=True, data=[])
+
+        invoices = search_invoices(raw_query=raw_query, target_uuid=target_uuid, context=ctx)
+        return jsonify(ok=True, data=invoices)
+
+    except Exception as e:
+        log.exception("search_invoices_api: error while handling invoice search")
         return jsonify(ok=False, error=str(e)), 400
