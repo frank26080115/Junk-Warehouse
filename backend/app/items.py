@@ -169,6 +169,12 @@ def save_item_api():
     if isinstance(payload, Mapping):
         item_uuid = payload.get(ID_COL) or None
 
+    # remove null creation date so the DB fills it in with now() automatically
+    DEFAULTABLE_COLUMNS = {"date_creation", "date_last_modified", "textsearch"}  # add others as needed
+    for col in list(payload):
+        if col in DEFAULTABLE_COLUMNS:
+            payload.pop(col)
+
     try:
         # Fuzzy update: lets the helper map keys without hardcoding column names here
         update_db_row_by_dict(
@@ -278,7 +284,7 @@ def insert_item(
     # remove null creation date so the DB fills it in with now() automatically
     DEFAULTABLE_COLUMNS = {"date_creation", "date_last_modified", "textsearch"}  # add others as needed
     for col in list(data):
-        if col in DEFAULTABLE_COLUMNS and data[col] is None:
+        if col in DEFAULTABLE_COLUMNS:
             data.pop(col)
 
     result = update_db_row_by_dict(
