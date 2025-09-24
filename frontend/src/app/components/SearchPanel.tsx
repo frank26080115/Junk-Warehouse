@@ -68,6 +68,28 @@ function truncateText(value: string, max = 72): string {
   return `${value.slice(0, max - 1)}…`;
 }
 
+function formatDateToYMD(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) {
+    return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+  }
+
+  const parsed = new Date(trimmed);
+  if (!Number.isNaN(parsed.getTime())) {
+    const year = parsed.getFullYear();
+    const month = String(parsed.getMonth() + 1).padStart(2, "0");
+    const day = String(parsed.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  return trimmed;
+}
+
 function extractInvoiceLines(row: SearchRow): string[] {
   const normalize = (value: unknown): string => {
     if (value == null) {
@@ -82,9 +104,10 @@ function extractInvoiceLines(row: SearchRow): string[] {
   const lines: string[] = [];
 
   const dateRaw = normalize((row as any).date);
+  const formattedDate = formatDateToYMD(dateRaw);
   const hasBeenProcessed = (row as any).has_been_processed;
-  if (!isBlank(dateRaw)) {
-    let line = `📅 ${dateRaw}`;
+  if (!isBlank(formattedDate)) {
+    let line = `📅 ${formattedDate}`;
     if (hasBeenProcessed === false) {
       line = `${line} ⏳`;
     }
@@ -509,6 +532,21 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
     [normalizedTable],
   );
 
+  const buildInvoiceHref = useCallback((row: SearchRow): string => {
+    const directHref = (row as any).href;
+    if (typeof directHref === "string" && !isBlank(directHref)) {
+      return directHref;
+    }
+    const url = (row as any).url;
+    if (typeof url === "string" && !isBlank(url)) {
+      return url;
+    }
+    if (typeof row.pk === "string" && !isBlank(row.pk)) {
+      return `/invoice/${row.pk}`;
+    }
+    return "#";
+  }, []);
+
   const renderItemName = useCallback(
     (row: SearchRow) => {
       const candidates = [
@@ -862,6 +900,8 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
                   const thumbnail = resolveThumbnail(row);
                   const invoiceLines =
                     normalizedTable === "invoices" ? extractInvoiceLines(row) : [];
+                  const invoiceHref =
+                    normalizedTable === "invoices" ? buildInvoiceHref(row) : "";
 
                   return (
                     <tr key={row.pk} style={{ backgroundColor: rowShade }}>
@@ -922,7 +962,11 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
                         {normalizedTable === "items" ? (
                           renderItemName(row)
                         ) : (
-                          <div className="small text-body">
+                          <a
+                            href={invoiceHref || undefined}
+                            className="small text-body text-decoration-none"
+                            style={{ display: "inline-block", whiteSpace: "nowrap" }}
+                          >
                             {invoiceLines.map((line, idx) => (
                               <div
                                 key={`${row.pk}-line-${idx}`}
@@ -931,7 +975,7 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
                                 {line}
                               </div>
                             ))}
-                          </div>
+                          </a>
                         )}
                       </td>
                     </tr>
