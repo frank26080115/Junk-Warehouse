@@ -116,7 +116,7 @@ def prune_images(
     images_table = tables["images"]
     item_images_table = tables["item_images"]
     if target_directory is None:
-        base_directory = get_public_html_path()
+        base_directory = get_public_html_path() / "imgs"
     elif isinstance(target_directory, Path):
         base_directory = target_directory
     else:
