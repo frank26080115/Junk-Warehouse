@@ -284,7 +284,6 @@ CREATE TABLE public.relationships (
     item_id uuid NOT NULL,
     assoc_id uuid NOT NULL,
     assoc_type smallint NOT NULL DEFAULT 0,
-    rank integer DEFAULT 0 NOT NULL,
     notes text DEFAULT ''::text NOT NULL,
     date_updated timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT relationships_check CHECK ((item_id <> assoc_id))
