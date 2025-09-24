@@ -81,6 +81,22 @@ def _execute_task(task_name: str, params: Mapping[str, Any]):
             return maintenance.prune_images()
 
         return maintenance.prune_images(target_text)
+    if task_name == "neaten_relationship":
+        target = params.get("item_uuid")
+        if target is None:
+            for key in ("item_id", "uuid", "id"):
+                if key in params:
+                    target = params.get(key)
+                    break
+
+        if isinstance(target, str):
+            trimmed = target.strip()
+            if not trimmed:
+                target = None
+            else:
+                target = trimmed
+
+        return maintenance.neaten_relationship(item_uuid=target)
     raise ValueError(f"Unknown task '{task_name}'.")
 
 

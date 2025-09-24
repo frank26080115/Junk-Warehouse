@@ -3,13 +3,16 @@
 
 import logging
 import time
+import uuid
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Sequence, Set, Union
+from typing import Dict, List, Optional, Sequence, Set, Union
 
 from dotenv import load_dotenv
 from sqlalchemy import MetaData, Table, delete, or_, select, update
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.orm import Session
 
 from app.db import get_engine
 from app.logging_setup import start_log
@@ -247,3 +250,122 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+def neaten_relationship(
+    db: Optional[Union[Engine, Connection, Session]] = None,
+    item_uuid: Optional[Union[str, uuid.UUID]] = None,
+) -> Dict[str, int]:
+    """Merge reciprocal relationships by combining their bit flags.
+
+    This task looks for rows in the ``relationships`` table where two rows
+    represent the same association in opposite directions. When found, a single
+    row is kept with an ``assoc_type`` value equal to the bitwise OR of all
+    matching rows and the remaining duplicates are removed.
+    """
+
+    if item_uuid is None:
+        target_uuid: Optional[uuid.UUID] = None
+    else:
+        try:
+            target_uuid = item_uuid if isinstance(item_uuid, uuid.UUID) else uuid.UUID(str(item_uuid))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("item_uuid must be a valid UUID value") from exc
+
+    session: Optional[Session] = None
+    connection: Optional[Connection] = None
+    should_close_connection = False
+
+    if isinstance(db, Session):
+        session = db
+    elif isinstance(db, Connection):
+        connection = db
+    elif isinstance(db, Engine) or db is None:
+        engine = db if isinstance(db, Engine) else get_engine()
+        connection = engine.connect()
+        should_close_connection = True
+    else:
+        raise TypeError("db must be an Engine, Connection, Session, or None")
+
+    executor = session if session is not None else connection
+    if executor is None:
+        raise RuntimeError("Unable to determine database execution context")
+
+    if session is not None:
+        transaction_ctx = session.begin() if not session.in_transaction() else nullcontext()
+        bind = session.get_bind()
+    else:
+        assert connection is not None  # nosec - validated above
+        transaction_ctx = connection.begin() if not connection.in_transaction() else nullcontext()
+        bind = connection.engine
+
+    metadata = MetaData()
+    relationships_table = Table("relationships", metadata, autoload_with=bind)
+
+    stmt = select(
+        relationships_table.c.id,
+        relationships_table.c.item_id,
+        relationships_table.c.assoc_id,
+        relationships_table.c.assoc_type,
+    )
+    if target_uuid is not None:
+        stmt = stmt.where(
+            or_(
+                relationships_table.c.item_id == target_uuid,
+                relationships_table.c.assoc_id == target_uuid,
+            )
+        )
+
+    rows = executor.execute(stmt).mappings().all()
+
+    groups: Dict[tuple[str, str], List[dict]] = {}
+    for row in rows:
+        left = str(row["item_id"])
+        right = str(row["assoc_id"])
+        if left == right:
+            continue
+        key = (left, right) if left <= right else (right, left)
+        groups.setdefault(key, []).append(dict(row))
+
+    updates: List[tuple[uuid.UUID, int]] = []
+    deletions: List[uuid.UUID] = []
+    merged_pairs = 0
+
+    for entries in groups.values():
+        if len(entries) <= 1:
+            continue
+        merged_pairs += 1
+        entries.sort(key=lambda data: str(data["id"]))
+        primary = entries[0]
+        combined_type = 0
+        for entry in entries:
+            combined_type |= int(entry["assoc_type"] or 0)
+        if combined_type != int(primary["assoc_type"] or 0):
+            updates.append((primary["id"], combined_type))
+        for entry in entries[1:]:
+            deletions.append(entry["id"])
+
+    with transaction_ctx:
+        for row_id, combined in updates:
+            executor.execute(
+                update(relationships_table)
+                .where(relationships_table.c.id == row_id)
+                .values(assoc_type=combined)
+            )
+        if deletions:
+            executor.execute(
+                delete(relationships_table).where(
+                    relationships_table.c.id.in_(tuple(deletions))
+                )
+            )
+
+    if should_close_connection and connection is not None:
+        connection.close()
+
+    return {
+        "rows_examined": len(rows),
+        "pairs_merged": merged_pairs,
+        "rows_updated": len(updates),
+        "rows_deleted": len(deletions),
+    }

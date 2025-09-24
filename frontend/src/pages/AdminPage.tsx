@@ -4,7 +4,8 @@ type TaskName =
   | "prune_deleted"
   | "prune_stale_staging_items"
   | "prune_stale_staging_invoices"
-  | "prune_images";
+  | "prune_images"
+  | "neaten_relationship";
 
 const sectionStyle: React.CSSProperties = {
   border: "1px solid #d0d0d0",
@@ -43,6 +44,7 @@ const taskTitles: Record<TaskName, string> = {
   prune_stale_staging_items: "Prune Stale Staging Items",
   prune_stale_staging_invoices: "Prune Stale Staging Invoices",
   prune_images: "Prune Unused Images",
+  neaten_relationship: "Combine Reciprocal Relationships",
 };
 
 const AdminPage: React.FC = () => {
@@ -52,6 +54,7 @@ const AdminPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [itemsCutoff, setItemsCutoff] = useState<string>("");
   const [invoicesCutoff, setInvoicesCutoff] = useState<string>("");
+  const [relationshipUuid, setRelationshipUuid] = useState<string>("");
 
   const busy = activeTask !== null;
 
@@ -147,6 +150,15 @@ const AdminPage: React.FC = () => {
     runTask("prune_images", {});
   };
 
+  const handleNeatenRelationships = () => {
+    const payload: Record<string, unknown> = {};
+    const trimmed = relationshipUuid.trim();
+    if (trimmed) {
+      payload.item_uuid = trimmed;
+    }
+    runTask("neaten_relationship", payload);
+  };
+
   return (
     <div style={{ maxWidth: "800px", margin: "0 auto", padding: "1rem" }}>
       <h1>Admin</h1>
@@ -233,6 +245,36 @@ const AdminPage: React.FC = () => {
           Run task
         </button>
         {activeTask === "prune_images" && (
+          <p style={statusTextStyle}>Busy, please wait...</p>
+        )}
+      </section>
+
+      <section style={sectionStyle}>
+        <h2>{taskTitles.neaten_relationship}</h2>
+        <p>
+          Merges opposite-direction relationship rows by combining their type flags
+          and removing redundant entries. Provide an item UUID to limit the scope or
+          leave blank to process all relationships.
+        </p>
+        <div style={inputGroupStyle}>
+          <label htmlFor="relationship-uuid">Item UUID (optional)</label>
+          <input
+            id="relationship-uuid"
+            type="text"
+            value={relationshipUuid}
+            onChange={(event) => setRelationshipUuid(event.target.value)}
+            placeholder="00000000-0000-0000-0000-000000000000"
+            disabled={busy}
+          />
+        </div>
+        <button
+          type="button"
+          onClick={handleNeatenRelationships}
+          disabled={busy}
+        >
+          Run task
+        </button>
+        {activeTask === "neaten_relationship" && (
           <p style={statusTextStyle}>Busy, please wait...</p>
         )}
       </section>
