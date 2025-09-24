@@ -5,22 +5,22 @@ import React, {
   useRef,
   useState,
 } from "react";
-
-const ASSOCIATION_TYPES = [
-  "containment",
-  "alternative",
-  "consumable",
-  "accessory",
-  "power",
-  "similar",
-  "weak",
-] as const;
-
-const ASSOCIATION_OPTIONS = [...ASSOCIATION_TYPES, "unlink"] as const;
+import {
+  ALL_ASSOCIATION_BITS,
+  ALL_ASSOCIATION_MASK,
+  CONTAINMENT_BIT,
+  RELATED_BIT,
+  SIMILAR_BIT,
+  bit_to_emoji_character,
+  bit_to_word,
+  collect_emoji_characters_from_int,
+  collect_words_from_int,
+  int_has_containment,
+  int_has_related,
+  int_has_similar,
+} from "../helpers/assocHelper";
 
 type TableName = "items" | "invoices";
-type AssociationOption = typeof ASSOCIATION_OPTIONS[number];
-
 interface SearchRow {
   pk: string;
   slug?: string;
@@ -120,9 +120,13 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
   const [relationDirection, setRelationDirection] = useState<
     "forward" | "reverse"
   >("forward");
-  const [associationType, setAssociationType] = useState<AssociationOption>(
-    ASSOCIATION_OPTIONS[0]
+  const [associationBits, setAssociationBits] = useState<number>(
+    CONTAINMENT_BIT,
   );
+  const associationSummary = useMemo(() => {
+    const words = collect_words_from_int(associationBits);
+    return words.length ? words.join(", ") : "unlink";
+  }, [associationBits]);
   const [modalMessage, setModalMessage] = useState<
     | {
         title: string;
@@ -395,6 +399,34 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
     ? { fontSize: "10pt" }
     : undefined;
 
+  const handleAssociationBitToggle = useCallback(
+    (bit: number, nextChecked: boolean) => {
+      setAssociationBits((previous) => {
+        const baseline = Number.isFinite(previous) ? previous : 0;
+        if (nextChecked) {
+          return (baseline | bit) & ALL_ASSOCIATION_MASK;
+        }
+        return baseline & ~bit;
+      });
+    },
+    [],
+  );
+
+  const formatAssociationEmojis = useCallback((value: number): string => {
+    const normalized = Number.isFinite(value)
+      ? value & ALL_ASSOCIATION_MASK
+      : 0;
+    const icons = collect_emoji_characters_from_int(normalized);
+    if (icons.length > 0) {
+      return icons.join("");
+    }
+    return normalized === 0 ? "⚫" : "";
+  }, []);
+
+  const containmentChecked = int_has_containment(associationBits);
+  const relatedChecked = int_has_related(associationBits);
+  const similarChecked = int_has_similar(associationBits);
+
   const toggleCheckbox = useCallback(
     (row: SearchRow, checked: boolean) => {
       setSelectedPks((prev) => {
@@ -487,6 +519,28 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
       if (typeof explicit === "string" && !isBlank(explicit)) {
         return explicit;
       }
+
+      const assocRaw =
+        (row as any).assoc_type ??
+        (row as any).association_type ??
+        (row as any).relation_bits ??
+        (row as any).relation_type;
+      let assocValue = Number.NaN;
+      if (typeof assocRaw === "number") {
+        assocValue = assocRaw;
+      } else if (typeof assocRaw === "string" && !isBlank(assocRaw)) {
+        const parsed = Number.parseInt(assocRaw, 10);
+        if (Number.isFinite(parsed)) {
+          assocValue = parsed;
+        }
+      }
+      if (Number.isFinite(assocValue)) {
+        const icons = formatAssociationEmojis(assocValue);
+        if (icons) {
+          return icons;
+        }
+      }
+
       const isRelated = (row as any).is_related;
       if (typeof isRelated === "boolean") {
         return isRelated ? "🔗" : "⚫";
@@ -497,7 +551,7 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
       }
       return normalizedTable === "invoices" ? "⚫" : "";
     },
-    [normalizedTable],
+    [formatAssociationEmojis, normalizedTable],
   );
 
   const handleDelete = useCallback(async () => {
@@ -568,7 +622,7 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
           table: normalizedTable,
           target_uuid: targetUuid,
           pks: ids,
-          association_type: associationType,
+          association_type: associationBits,
           direction: relationDirection,
         }),
       });
@@ -589,7 +643,7 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
         throw new Error(payload.error ? String(payload.error) : "Request failed");
       }
 
-      if (associationType === "unlink") {
+      if (associationBits === 0) {
         pinnedRef.current.clear();
         setSelectedPks(() => new Set());
       }
@@ -597,11 +651,11 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
       await runSearch(lastQueryRef.current || query);
 
       setModalMessage({
-        title: associationType === "unlink" ? "Links removed" : "Relations updated",
+        title: associationBits === 0 ? "Links removed" : "Relations updated",
         body:
-          associationType === "unlink"
+          associationBits === 0
             ? "Selected relations have been removed."
-            : `Association set to "${associationType}" for the selected entries.`,
+            : `Association set to ${associationSummary} for the selected entries.`,
       });
     } catch (error: any) {
       setModalMessage({
@@ -611,7 +665,7 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
     } finally {
       setIsActionBusy(false);
     }
-  }, [associationType, normalizedTable, query, relationDirection, runSearch, selectedCount, selectedPks, targetUuid]);
+  }, [associationBits, associationSummary, normalizedTable, query, relationDirection, runSearch, selectedCount, selectedPks, targetUuid]);
 
   const resolveThumbnail = useCallback((row: SearchRow): string => {
     if (smallMode || normalizedTable !== "items") {
@@ -725,7 +779,12 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
                           className="text-center"
                           style={{ width: "3rem", fontSize: "1.5rem" }}
                         >
-                          <span aria-hidden>{relationIcon}</span>
+                          <span
+                            aria-hidden
+                            style={{ display: "inline-block", whiteSpace: "nowrap" }}
+                          >
+                            {relationIcon}
+                          </span>
                         </td>
                       )}
 
@@ -818,20 +877,57 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
                   {relationDirection === "forward" ? "➡️" : "⬅️"}
                 </button>
 
-                <select
-                  className="form-select form-select-sm"
-                  value={associationType}
-                  onChange={(event) =>
-                    setAssociationType(event.target.value as AssociationOption)
-                  }
-                  disabled={isBusy}
-                >
-                  {ASSOCIATION_OPTIONS.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
+                <div className="d-flex align-items-center gap-2">
+                  {ALL_ASSOCIATION_BITS.map((bit) => {
+                    const checked =
+                      bit === CONTAINMENT_BIT
+                        ? containmentChecked
+                        : bit === RELATED_BIT
+                        ? relatedChecked
+                        : bit === SIMILAR_BIT
+                        ? similarChecked
+                        : (associationBits & bit) === bit;
+                    const emoji = bit_to_emoji_character(bit);
+                    const label = bit_to_word(bit) || "association";
+                    return (
+                      <label
+                        key={bit}
+                        className="mb-0"
+                        style={{
+                          cursor: isBusy ? "not-allowed" : "pointer",
+                          userSelect: "none",
+                        }}
+                        title={label}
+                      >
+                        <input
+                          type="checkbox"
+                          className="form-check-input d-none"
+                          checked={checked}
+                          onChange={(event) =>
+                            handleAssociationBitToggle(bit, event.target.checked)
+                          }
+                          disabled={isBusy}
+                        />
+                        <span
+                          aria-hidden
+                          style={{
+                            display: "inline-block",
+                            fontSize: "1.5rem",
+                            opacity: checked ? 1 : 0.25,
+                            transition: "opacity 0.2s ease",
+                          }}
+                        >
+                          {emoji}
+                        </span>
+                        <span className="visually-hidden">{label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+
+                <div className="text-muted small" style={{ minWidth: "6rem" }}>
+                  {associationSummary}
+                </div>
 
                 <button
                   type="button"
@@ -872,3 +968,4 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
 };
 
 export default SearchPanel;
+
