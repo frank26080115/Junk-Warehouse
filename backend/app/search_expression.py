@@ -3,38 +3,15 @@ import json
 import re
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
+from .db import get_column_types, get_engine
+
 log = logging.getLogger(__name__)
 
 
 _TABLE_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "items": {
         "default_alias": "i",
-        "column_types": {
-            "id": "uuid",
-            "short_id": "integer",
-            "name": "text",
-            "description": "text",
-            "remarks": "text",
-            "quantity": "text",
-            "date_creation": "timestamp",
-            "date_last_modified": "timestamp",
-            "is_container": "boolean",
-            "is_collection": "boolean",
-            "is_large": "boolean",
-            "is_small": "boolean",
-            "is_fixed_location": "boolean",
-            "is_consumable": "boolean",
-            "metatext": "text",
-            "textsearch": "tsvector",
-            "is_staging": "boolean",
-            "is_deleted": "boolean",
-            "is_lost": "boolean",
-            "date_reminder": "timestamp",
-            "product_code": "text",
-            "url": "text",
-            "date_purchased": "timestamp",
-            "source": "text",
-        },
+        "db_table": "items",
         "order_columns": {
             "bydate": "date_creation",
             "bydatem": "date_last_modified",
@@ -42,25 +19,86 @@ _TABLE_SCHEMAS: Dict[str, Dict[str, Any]] = {
     },
     "invoices": {
         "default_alias": "inv",
-        "column_types": {
-            "id": "uuid",
-            "date": "timestamp",
-            "order_number": "text",
-            "shop_name": "text",
-            "urls": "text",
-            "subject": "text",
-            "html": "text",
-            "notes": "text",
-            "has_been_processed": "boolean",
-            "snooze": "timestamp",
-            "is_deleted": "boolean",
-        },
+        "db_table": "invoices",
         "order_columns": {
             "bydate": "date",
             "bydatem": "date",
         },
     },
 }
+
+_DYNAMIC_COLUMN_TYPES_CACHE: Dict[str, Dict[str, str]] = {}
+
+
+def _normalize_column_type(type_str: str) -> str:
+    normalized = (type_str or "").strip().lower()
+    if not normalized:
+        return "text"
+    if "bool" in normalized:
+        return "boolean"
+    if "uuid" in normalized:
+        return "uuid"
+    if "timestamp" in normalized or normalized == "date" or normalized.endswith(" date"):
+        return "timestamp"
+    if any(token in normalized for token in ("numeric", "decimal", "real", "double", "float", "money")):
+        return "numeric"
+    if any(token in normalized for token in ("int", "serial")):
+        return "integer"
+    if "tsvector" in normalized:
+        return "tsvector"
+    if any(
+        token in normalized
+        for token in ("text", "char", "clob", "string", "json", "enum", "bytea", "citext")
+    ):
+        return "text"
+    return normalized
+
+
+def _introspect_column_types(table_identifier: str) -> Dict[str, str]:
+    cached = _DYNAMIC_COLUMN_TYPES_CACHE.get(table_identifier)
+    if cached is not None:
+        return dict(cached)
+    if not table_identifier:
+        return {}
+    try:
+        engine = get_engine()
+    except Exception:
+        log.debug("Unable to acquire engine for column introspection", exc_info=True)
+        return {}
+    try:
+        raw_types = get_column_types(engine, table_identifier)
+    except Exception:
+        log.debug("Column introspection failed for table '%s'", table_identifier, exc_info=True)
+        return {}
+    normalized = {column: _normalize_column_type(type_str) for column, type_str in raw_types.items()}
+    _DYNAMIC_COLUMN_TYPES_CACHE[table_identifier] = normalized
+    return dict(normalized)
+
+
+def _resolve_column_types(_schema_key: str, schema: Dict[str, Any], actual_table: str) -> Dict[str, str]:
+    column_types: Dict[str, str] = {}
+
+    def _add_candidate(candidates: List[str], candidate: Optional[str]) -> None:
+        if isinstance(candidate, str):
+            candidate_trimmed = candidate.strip()
+            if candidate_trimmed and candidate_trimmed not in candidates:
+                candidates.append(candidate_trimmed)
+
+    candidates: List[str] = []
+    _add_candidate(candidates, actual_table)
+    _add_candidate(candidates, schema.get("db_table"))
+
+    for identifier in candidates:
+        dynamic_types = _introspect_column_types(identifier)
+        if not dynamic_types:
+            continue
+        for column, column_type in dynamic_types.items():
+            if column not in column_types:
+                column_types[column] = column_type
+        if column_types:
+            break
+
+    return column_types
 
 # --- helpers (same as before) ---
 def _coerce_literal(s: str) -> Any:
@@ -406,10 +444,17 @@ class SearchQuery:
             alias_value = self.context.get("table_alias")
             if isinstance(alias_value, str) and alias_value.strip():
                 alias = alias_value.strip()
-        schema = _TABLE_SCHEMAS.get(table, _TABLE_SCHEMAS["items"])
+
+        schema_key = table
+        if schema_key not in _TABLE_SCHEMAS and "." in schema_key:
+            schema_key = schema_key.split(".", 1)[1]
+        if schema_key not in _TABLE_SCHEMAS:
+            schema_key = "items"
+
+        schema = _TABLE_SCHEMAS[schema_key]
         if not alias:
             alias = schema.get("default_alias", "t")
-        column_types: Dict[str, str] = schema.get("column_types", {})
+        column_types: Dict[str, str] = _resolve_column_types(schema_key, schema, table)
         boolean_columns: Set[str] = {name for name, typ in column_types.items() if typ == "boolean"}
         text_columns: Set[str] = {name for name, typ in column_types.items() if typ == "text"}
         comparable_columns: Set[str] = {
@@ -562,7 +607,7 @@ class SearchQuery:
             key_norm = unit.key.strip().lower()
             if not key_norm:
                 return None
-            if table == "items":
+            if schema_key == "items":
                 if key_norm == "orphans":
                     condition = (
                         f"NOT EXISTS (SELECT 1 FROM relationships AS r "
