@@ -240,7 +240,6 @@ def _handle_gmail_message(msg: Dict[str, Any]) -> Dict[str, Any]:
         "status": status,
     }
 
-
 def _ingest_invoice_file(file_storage: FileStorage) -> Dict[str, Any]:
     """Prepare metadata for a single uploaded invoice/email file.
 
