@@ -1109,10 +1109,6 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
                   })}
                 </div>
 
-                <div className="text-muted small" style={{ minWidth: "6rem" }}>
-                  {associationSummary}
-                </div>
-
                 <button
                   type="button"
                   className="btn btn-primary btn-sm"
