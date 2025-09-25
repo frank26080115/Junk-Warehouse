@@ -10,7 +10,7 @@ import logging
 from app.logging_setup import start_log
 from .errors import register_error_handlers
 from .static_server import bp_overlay, get_public_html_path
-from .imagehandler import bp_image
+from .image_handler import bp_image
 from .user_login import bp as bp_auth
 from .invoice_handlers import bp as bp_invoice
 from .items import bp as bp_items
