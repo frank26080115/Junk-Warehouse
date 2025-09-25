@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote_plus
 import uuid as _uuid
-from typing import List, Dict, Any, Mapping, Tuple
+from typing import List, Dict, Any, Mapping, Tuple, Union
 from flask import g
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, MetaData, Table, select, text
@@ -26,43 +26,52 @@ def _coerce_mapping(value: Any) -> Dict[str, Any]:
     return {}
 
 
-def unwrap_db_result(result: Any) -> Tuple[Any, int, Dict[str, Any], str, Dict[str, Any]]:
-    """Normalize the response returned by :func:`update_db_row_by_dict`."""
+def unwrap_db_result(result: Any) -> Tuple[int, bool, Dict[str, Any], Dict[str, Any], Any, str]:
+    """Normalize responses into ``(status, is_error, reply, row, pk, message)`` tuples."""
 
+    status_code: int
+    reply_payload: Any
     if isinstance(result, tuple) and len(result) == 2:
-        response_obj, status_code = result
+        reply_payload, status_code = result
     else:
-        response_obj = result
-        status_code = getattr(response_obj, "status_code", 200)
+        reply_payload = result
+        status_code = getattr(result, "status_code", 200)
 
-    if hasattr(response_obj, "get_json"):
-        try:
-            raw_payload = response_obj.get_json()
-        except Exception:
-            raw_payload = {}
+    if isinstance(reply_payload, Mapping):
+        reply_obj = dict(reply_payload)
+    elif reply_payload is None:
+        reply_obj = {}
     else:
-        raw_payload = response_obj
+        reply_obj = {"data": reply_payload}
 
-    payload_mapping = _coerce_mapping(raw_payload)
-    raw_payload_dict = dict(payload_mapping)
-    data_field = payload_mapping.get("data") if isinstance(payload_mapping, Mapping) else None
-    if isinstance(data_field, Mapping):
-        payload_dict = dict(data_field)
+    http_code = int(status_code or 0)
+    ok_flag = reply_obj.get("ok")
+    is_error = bool(http_code >= 400 or (ok_flag is False))
+
+    data_section = reply_obj.get("data") if isinstance(reply_obj, dict) else None
+    if isinstance(data_section, Mapping):
+        row_dict = dict(data_section)
     else:
-        payload_dict = payload_mapping
+        row_dict = {}
 
-    if payload_dict:
-        text_source = payload_dict
-    else:
-        text_source = raw_payload_dict
+    primary_key = row_dict.get("id")
+    if primary_key is None:
+        for key, value in row_dict.items():
+            if isinstance(key, str) and key.lower().endswith("_id"):
+                primary_key = value
+                break
 
-    try:
-        payload_text = json.dumps(text_source, default=str)
-    except TypeError:
-        payload_text = str(text_source)
+    message_fields = ("message", "msg", "error", "detail", "reason")
+    message_text = ""
+    for field in message_fields:
+        value = reply_obj.get(field)
+        if value:
+            message_text = str(value)
+            break
+    if not message_text:
+        message_text = "OK" if not is_error else f"database error (HTTP {http_code})"
 
-    final_payload = payload_dict if isinstance(payload_dict, dict) else {}
-    return response_obj, int(status_code or 0), final_payload, payload_text, raw_payload_dict
+    return http_code, is_error, reply_obj, row_dict, primary_key, message_text
 
 log = logging.getLogger(__name__)
 
@@ -320,18 +329,18 @@ def update_db_row_by_dict(
     - If 'fuzzy' is True, rename keys to best-matching column names when edit distance <= 2.
       One column can only be matched once; log mismatches at debug level.
     - Keys not present as columns are dropped (with debug logs). No sanitization done.
-    - Returns (json, http_code) like a Flask handler; falls back to (dict, http_code) if Flask isn't present.
+    - Returns (dict_response, http_code).
     """
     # 1) normalize data -> dict
     if isinstance(data, str):
         try:
             payload = json.loads(data)
             if not isinstance(payload, Mapping):
-                return helpers.flask_return_wrap({"ok": False, "error": "JSON must be an object"}, 400)
+                return {"ok": False, "error": "JSON must be an object"}, 400
             payload = dict(payload)
         except Exception as e:
             log.debug("bad JSON payload: %s", e)
-            return helpers.flask_return_wrap({"ok": False, "error": "Invalid JSON string"}, 400)
+            return {"ok": False, "error": "Invalid JSON string"}, 400
     elif isinstance(data, Mapping):
         payload = dict(data)
     else:
@@ -339,7 +348,7 @@ def update_db_row_by_dict(
         try:
             payload = dict(data)  # type: ignore[call-arg]
         except Exception:
-            return helpers.flask_return_wrap({"ok": False, "error": "Unsupported data type for 'data'"}, 400)
+            return {"ok": False, "error": "Unsupported data type for 'data'"}, 400
 
     # 2) Pick up id from payload if uuid is None
     if uuid is None and id_col_name in payload:
@@ -350,7 +359,7 @@ def update_db_row_by_dict(
     try:
         t: Table = Table(table, md, autoload_with=engine)
     except Exception:
-        return helpers.flask_return_wrap({"ok": False, "error": f"Unknown table '{table}'"}, 400)
+        return {"ok": False, "error": f"Unknown table '{table}'"}, 400
 
     column_names = [c.name for c in t.columns]
     columns_set = set(column_names)
@@ -383,7 +392,7 @@ def update_db_row_by_dict(
     is_insert = isinstance(uuid, str) and (uuid.lower() == "new" or uuid.lower() == "insert")
 
     if not is_insert and (uuid is None or (isinstance(uuid, str) and uuid.strip() == "")):
-        return helpers.flask_return_wrap({"ok": False, "error": "uuid required for update (or pass 'new' to insert)"}, 400)
+        return {"ok": False, "error": "uuid required for update (or pass 'new' to insert)"}, 400
 
     if isinstance(uuid, str) and not is_insert:
         uuid = helpers.normalize_pg_uuid(uuid)
@@ -401,23 +410,23 @@ def update_db_row_by_dict(
                 stmt = t.insert().values(**filtered).returning(t)
                 row = conn.execute(stmt).mappings().first()
                 if row is None:
-                    return helpers.flask_return_wrap({"ok": False, "error": "insert failed (no row returned)"}, 400)
-                return helpers.flask_return_wrap({"ok": True, "data": dict(row)}, 201)
+                    return {"ok": False, "error": "insert failed (no row returned)"}, 400
+                return {"ok": True, "data": dict(row)}, 201
 
             # UPDATE path
             pk_col = t.c.get(pk_name)  # type: ignore[attr-defined]
             if pk_col is None:
-                return helpers.flask_return_wrap({"ok": False, "error": f"Primary key column '{pk_name}' not found"}, 400)
+                return {"ok": False, "error": f"Primary key column '{pk_name}' not found"}, 400
 
             stmt = t.update().where(pk_col == uuid).values(**filtered).returning(t)
             row = conn.execute(stmt).mappings().first()
             if row is None:
-                return helpers.flask_return_wrap({"ok": False, "error": "not found"}, 404)
-            return helpers.flask_return_wrap({"ok": True, "data": dict(row)}, 200)
+                return {"ok": False, "error": "not found"}, 404
+            return {"ok": True, "data": dict(row)}, 200
         except Exception as e:
             log.exception("DB write failed on table '%s'", table)
             # surfacing DB error text can be useful during dev; trim in prod if needed
-            return helpers.flask_return_wrap({"ok": False, "error": "database error", "detail": str(e)}, 400)
+            return {"ok": False, "error": "database error", "detail": str(e)}, 400
 
 
 def get_column_types(engine: Engine, table: str) -> Dict[str, str]:
