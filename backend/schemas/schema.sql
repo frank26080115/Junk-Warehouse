@@ -310,8 +310,6 @@ CREATE TABLE public.gmail_seen (
     id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),  -- random PK
     email_uuid   bytea NOT NULL,                              -- the email's own 64 bit UID
     date_seen    timestamptz NOT NULL DEFAULT now(),          -- when processed
-    url1         text,                                        -- URL #1
-    url2         text,                                        -- URL #2
     invoice_id   uuid UNIQUE,                                 -- one-to-one to invoices.id (nullable)
     CONSTRAINT gmail_seen_email_uuid_uniq UNIQUE (email_uuid),
     CONSTRAINT gmail_seen_invoice_fk
