@@ -458,57 +458,10 @@ def autogen_items_api():
             }
 
             # TODO: add pre-insert intelligence here
-            insert_result = update_db_row_by_dict(
-                engine=engine,
-                table=TABLE,
-                uuid="new",
-                data=row_payload,
-                fuzzy=True,
-                id_col_name=ID_COL,
-            )
+            inserted_item = insert_item(row_payload, engine=engine)
 
-            inserted_row: Optional[Mapping[str, Any]] = None
-            if isinstance(insert_result, tuple) and len(insert_result) == 2:
-                resp_obj, status_code = insert_result
-                if status_code >= 400:
-                    detail_payload: Optional[Mapping[str, Any]] = None
-                    if hasattr(resp_obj, "get_json"):
-                        try:
-                            detail_payload = resp_obj.get_json(silent=True)
-                        except Exception:
-                            detail_payload = None
-                    elif isinstance(resp_obj, Mapping):
-                        detail_payload = resp_obj  # type: ignore[assignment]
-                    message = ""
-                    if isinstance(detail_payload, Mapping):
-                        extracted = detail_payload.get("error") or detail_payload.get("detail")
-                        if extracted:
-                            message = str(extracted)
-                    raise RuntimeError(message or "database error during insert")
-
-                parsed_payload: Optional[Mapping[str, Any]] = None
-                if hasattr(resp_obj, "get_json"):
-                    try:
-                        parsed_payload = resp_obj.get_json(silent=True)
-                    except Exception:
-                        parsed_payload = None
-                elif isinstance(resp_obj, Mapping):
-                    parsed_payload = resp_obj  # type: ignore[assignment]
-
-                if isinstance(parsed_payload, Mapping):
-                    data_section = parsed_payload.get("data")
-                    if isinstance(data_section, Mapping):
-                        inserted_row = data_section
-            elif isinstance(insert_result, Mapping):
-                possible_data = insert_result.get("data")
-                if isinstance(possible_data, Mapping):
-                    inserted_row = possible_data
-
-            new_item_id: Optional[str] = None
-            if inserted_row and ID_COL in inserted_row:
-                new_item_id = str(inserted_row[ID_COL])
-            if not new_item_id and row_payload.get(ID_COL):
-                new_item_id = str(row_payload[ID_COL])
+            new_item_id_value = inserted_item.get(ID_COL) if isinstance(inserted_item, Mapping) else None
+            new_item_id: Optional[str] = str(new_item_id_value) if new_item_id_value else None
             if not new_item_id:
                 raise RuntimeError("Insert succeeded but item ID could not be determined")
 
