@@ -1,18 +1,17 @@
 # backend/app/imagehandler.py
 from __future__ import annotations
 
-import io
-import os
 import uuid
 import shutil
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Tuple
 
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, request, jsonify
 from werkzeug.utils import secure_filename
 from PIL import Image, UnidentifiedImageError
+from sqlalchemy import text
 
 from .db import get_db_conn
 from .static_server import get_public_html_path
@@ -175,6 +174,22 @@ def _download_to_tmp(url: str, tmp_dir: Path) -> Path:
     return tmp_path
 
 
+def _ext_from_mimetype(mimetype: str) -> str:
+    mapping = {
+        "image/jpeg": "jpg",
+        "image/pjpeg": "jpg",
+        "image/png": "png",
+        "image/gif": "gif",
+        "image/webp": "webp",
+        "image/bmp": "bmp",
+        "image/tiff": "tif",
+        "image/x-icon": "ico",
+        "image/heic": "heic",
+        "image/heif": "heif",
+    }
+    return mapping.get((mimetype or "").lower(), "png")
+
+
 class BadRequest(Exception):
     pass
 
@@ -218,6 +233,9 @@ def handle_img_upload(item_id:str):
     except BadRequest as e:
         return jsonify(error=str(e)), 400
  
+    clipboard_flag = request.form.get("img_clipboard", "").strip()
+    is_clipboard_upload = clipboard_flag not in {"", "0", "false", "False"}
+
     # Determine source: file or url (must have one or the other)
     upload = request.files.get("img_file")
     url = request.form.get("img_url", "").strip()
@@ -225,13 +243,38 @@ def handle_img_upload(item_id:str):
     if (not upload and not url) or (upload and url):
         return jsonify(error="Provide exactly one of 'img_file' or 'img_url'"), 400
 
+    try:
+        with get_db_conn() as conn:
+            row = conn.execute(
+                text("SELECT short_id FROM items WHERE id = :item_id"),
+                {"item_id": str(item_uuid)},
+            ).first()
+    except Exception:
+        log.exception("Failed to fetch item short_id prior to upload")
+        return jsonify(error="Database error while preparing image upload"), 500
+
+    if row is None:
+        return jsonify(error="Unknown item for upload"), 404
+
+    short_value = row[0]
+    try:
+        short_id_hex = format(int(short_value or 0), "x")
+    except (TypeError, ValueError):
+        short_id_hex = str(short_value or "0")
+
     # Save source into tmp, validate extension & readability
-    source_url: Optional[str] = None
+    source_url = ""
+    has_renamed = False
     try:
         if upload:
-            if upload.filename == "":
-                raise BadRequest("Empty filename")
-            original_name = secure_filename(upload.filename)
+            incoming_name = secure_filename(upload.filename or "")
+            if incoming_name and not is_clipboard_upload:
+                original_name = incoming_name
+            else:
+                timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
+                ext = _ext_from_mimetype(upload.mimetype)
+                original_name = f"{short_id_hex}{timestamp}.{ext}"
+                has_renamed = True
             if not _ext_ok(original_name):
                 raise UnsupportedMedia("Unsupported file type")
             original_name = _truncate_basename(original_name)
@@ -285,53 +328,63 @@ def handle_img_upload(item_id:str):
     # Insert DB rows
     try:
         with get_db_conn() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                # Determine rank: 0 if first image for this item; otherwise 1
-                cur.execute(
-                    "SELECT 1 FROM img_relations WHERE item_id = %s LIMIT 1",
-                    (str(item_uuid),),
+            trans = conn.begin()
+            try:
+                has_any = (
+                    conn.execute(
+                        text("SELECT 1 FROM item_images WHERE item_id = :item_id LIMIT 1"),
+                        {"item_id": str(item_uuid)},
+                    ).first()
+                    is not None
                 )
-                has_any = cur.fetchone() is not None
                 rank = 0 if not has_any else 1
 
-                # Insert into images
-                cur.execute(
-                    """
-                    INSERT INTO images
-                      (dir, file_name, source_url, has_renamed, original_file_name,
-                       notes, dim_width, dim_height)
-                    VALUES
-                      (%s, %s, %s, %s, %s,
-                       %s, %s, %s)
-                    RETURNING id
-                    """,
-                    (
-                        dir_name,
-                        final_name,
-                        source_url,
-                        False,
-                        original_name,
-                        "",  # notes
-                        width,
-                        height,
+                image_row = conn.execute(
+                    text(
+                        """
+                        INSERT INTO images
+                          (dir, file_name, source_url, has_renamed, original_file_name,
+                           notes, dim_width, dim_height)
+                        VALUES
+                          (:dir, :file_name, :source_url, :has_renamed, :original_file_name,
+                           :notes, :width, :height)
+                        RETURNING id
+                        """
                     ),
-                )
-                image_row = cur.fetchone()
-                img_id = image_row["id"]
+                    {
+                        "dir": dir_name,
+                        "file_name": final_name,
+                        "source_url": source_url,
+                        "has_renamed": has_renamed,
+                        "original_file_name": original_name,
+                        "notes": "",
+                        "width": width,
+                        "height": height,
+                    },
+                ).mappings().one()
+                img_id = str(image_row["id"])
 
-                # Insert relation
-                cur.execute(
-                    """
-                    INSERT INTO img_relations
-                      (item_id, img_id, rank)
-                    VALUES
-                      (%s, %s, %s)
-                    RETURNING id
-                    """,
-                    (str(item_uuid), str(img_id), rank),
-                )
-                rel_row = cur.fetchone()
-                rel_id = rel_row["id"]
+                relation_row = conn.execute(
+                    text(
+                        """
+                        INSERT INTO item_images
+                          (item_id, img_id, rank)
+                        VALUES
+                          (:item_id, :img_id, :rank)
+                        RETURNING id
+                        """
+                    ),
+                    {
+                        "item_id": str(item_uuid),
+                        "img_id": img_id,
+                        "rank": rank,
+                    },
+                ).mappings().one()
+                rel_id = str(relation_row["id"])
+                trans.commit()
+            except Exception:
+                trans.rollback()
+                raise
 
         log.info(
             "Stored image '%s' (w=%d h=%d) in %s, img_id=%s, rel_id=%s, rank=%d",
@@ -366,3 +419,178 @@ def handle_img_upload(item_id:str):
 @bp_image.get("/img_upload")
 def img_upload_2():
     return img_upload()
+
+
+@bp_image.get("/api/getimagesfor")
+def get_images_for_item():
+    item_id = request.args.get("item_id") or request.args.get("item") or ""
+    item_id = item_id.strip()
+    if not item_id:
+        return jsonify(error="Missing item_id"), 400
+
+    try:
+        item_uuid = _validate_uuid(item_id)
+    except BadRequest as e:
+        return jsonify(error=str(e)), 400
+
+    try:
+        with get_db_conn() as conn:
+            rows = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT ii.img_id, ii.rank, img.dir, img.file_name
+                        FROM item_images AS ii
+                        JOIN images AS img ON img.id = ii.img_id
+                        WHERE ii.item_id = :item_id
+                        ORDER BY ii.rank ASC, ii.date_updated DESC, img.date_updated DESC
+                        """
+                    ),
+                    {"item_id": str(item_uuid)},
+                )
+                .mappings()
+                .all()
+            )
+    except Exception:
+        log.exception("Failed to fetch images for item %s", item_uuid)
+        return jsonify(error="Failed to fetch images"), 500
+
+    images = [
+        {
+            "uuid": str(row["img_id"]),
+            "src": f"/imgs/{row['dir']}/{row['file_name']}",
+            "rank": row["rank"],
+        }
+        for row in rows
+    ]
+    return jsonify({"images": images})
+
+
+@bp_image.post("/api/deleteimagefor")
+def delete_image_for_item():
+    payload = request.get_json(silent=True) or {}
+    item_id = (payload.get("item_id") or payload.get("item") or "").strip()
+    img_id = (
+        payload.get("img_id")
+        or payload.get("image_id")
+        or payload.get("uuid")
+        or ""
+    ).strip()
+
+    if not item_id or not img_id:
+        return jsonify(error="Missing item_id or img_id"), 400
+
+    try:
+        item_uuid = _validate_uuid(item_id)
+        img_uuid = _validate_uuid(img_id)
+    except BadRequest as e:
+        return jsonify(error=str(e)), 400
+
+    try:
+        with get_db_conn() as conn:
+            trans = conn.begin()
+            try:
+                result = conn.execute(
+                    text(
+                        "DELETE FROM item_images WHERE item_id = :item_id AND img_id = :img_id"
+                    ),
+                    {"item_id": str(item_uuid), "img_id": str(img_uuid)},
+                )
+                if result.rowcount == 0:
+                    trans.rollback()
+                    return jsonify(error="Image relationship not found"), 404
+                trans.commit()
+            except Exception:
+                trans.rollback()
+                raise
+    except Exception:
+        log.exception(
+            "Failed to delete image %s for item %s", img_uuid, item_uuid
+        )
+        return jsonify(error="Failed to delete image"), 500
+
+    return jsonify(ok=True)
+
+
+@bp_image.post("/api/setmainimagesfor")
+def set_main_image_for_item():
+    payload = request.get_json(silent=True) or {}
+    item_id = (payload.get("item_id") or payload.get("item") or "").strip()
+    img_id = (
+        payload.get("img_id")
+        or payload.get("image_id")
+        or payload.get("uuid")
+        or ""
+    ).strip()
+
+    if not item_id or not img_id:
+        return jsonify(error="Missing item_id or img_id"), 400
+
+    try:
+        item_uuid = _validate_uuid(item_id)
+        img_uuid = _validate_uuid(img_id)
+    except BadRequest as e:
+        return jsonify(error=str(e)), 400
+
+    img_uuid_str = str(img_uuid)
+
+    try:
+        with get_db_conn() as conn:
+            trans = conn.begin()
+            try:
+                rows = (
+                    conn.execute(
+                        text(
+                            """
+                            SELECT img_id, rank
+                            FROM item_images
+                            WHERE item_id = :item_id
+                            ORDER BY rank ASC, date_updated DESC
+                            FOR UPDATE
+                            """
+                        ),
+                        {"item_id": str(item_uuid)},
+                    )
+                    .mappings()
+                    .all()
+                )
+
+                if not rows:
+                    trans.rollback()
+                    return jsonify(error="No images found for item"), 404
+
+                image_ids = {str(row["img_id"]) for row in rows}
+                if img_uuid_str not in image_ids:
+                    trans.rollback()
+                    return jsonify(error="Image not associated with item"), 404
+
+                current_main = next((row for row in rows if row["rank"] == 0), None)
+                if current_main and str(current_main["img_id"]) != img_uuid_str:
+                    conn.execute(
+                        text(
+                            "UPDATE item_images SET rank = rank + 1 WHERE item_id = :item_id AND img_id = :img_id"
+                        ),
+                        {
+                            "item_id": str(item_uuid),
+                            "img_id": str(current_main["img_id"]),
+                        },
+                    )
+
+                conn.execute(
+                    text(
+                        "UPDATE item_images SET rank = 0 WHERE item_id = :item_id AND img_id = :img_id"
+                    ),
+                    {"item_id": str(item_uuid), "img_id": img_uuid_str},
+                )
+
+                trans.commit()
+            except Exception:
+                trans.rollback()
+                raise
+    except Exception:
+        log.exception(
+            "Failed to set main image %s for item %s", img_uuid, item_uuid
+        )
+        return jsonify(error="Failed to update main image"), 500
+
+    return jsonify(ok=True)
