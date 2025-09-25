@@ -3,11 +3,13 @@ from __future__ import annotations
 CONTAINMENT_BIT = 1
 RELATED_BIT = 2
 SIMILAR_BIT = 4
+MERGE_BIT = 8
 
 ALL_ASSOCIATION_BITS = (
     CONTAINMENT_BIT,
     RELATED_BIT,
     SIMILAR_BIT,
+    MERGE_BIT,
 )
 ALL_ASSOCIATION_MASK = 0
 for _bit in ALL_ASSOCIATION_BITS:
@@ -17,6 +19,7 @@ default_words = {
     CONTAINMENT_BIT: "containment",
     RELATED_BIT: "related",
     SIMILAR_BIT: "similar",
+    MERGE_BIT: "merge",
 }
 BIT_TO_WORD = dict(default_words)
 WORD_TO_BIT = {value: key for key, value in BIT_TO_WORD.items()}
@@ -24,11 +27,13 @@ BIT_TO_EMOJI_HTML_ENTITY = {
     CONTAINMENT_BIT: "&#x1F5C3;",
     RELATED_BIT: "&#x1F517;",
     SIMILAR_BIT: "&#x1F46F;",
+    MERGE_BIT: "&#x1F91D;",
 }
 BIT_TO_EMOJI_CHARACTER = {
     CONTAINMENT_BIT: "🗃️",
     RELATED_BIT: "🔗",
     SIMILAR_BIT: "👯",
+    MERGE_BIT: "🤝",
 }
 
 
@@ -61,6 +66,10 @@ def int_has_related(value: int) -> bool:
 
 def int_has_similar(value: int) -> bool:
     return bool(value & SIMILAR_BIT)
+
+
+def int_has_merge(value: int) -> bool:
+    return bool(value & MERGE_BIT)
 
 
 def collect_words_from_int(value: int) -> list[str]:

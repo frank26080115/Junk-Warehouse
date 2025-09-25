@@ -4,18 +4,29 @@
 import logging
 import time
 import uuid
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Set, Union
+from typing import Callable, Dict, List, Optional, Sequence, Set, Union
 
 from dotenv import load_dotenv
 from sqlalchemy import MetaData, Table, delete, or_, select, update
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session
 
+from app.assoc_helper import MERGE_BIT
 from app.helpers import normalize_pg_uuid
-from app.db import get_engine
+from app.db import get_engine, get_db_item_as_dict
+from services.merge_helpers import (
+    _merge_description,
+    _merge_metatext,
+    _merge_name,
+    _merge_product_code,
+    _merge_quantity,
+    _merge_remarks,
+    _merge_source,
+    _merge_url,
+)
 from app.logging_setup import start_log
 from app.static_server import get_public_html_path
 
@@ -36,6 +47,65 @@ def _load_tables(engine: Engine, table_names: Sequence[str]) -> Dict[str, Table]
         tables[name] = Table(name, metadata, autoload_with=engine)
         log.debug("Reflected table %s", name)
     return tables
+
+
+def _prepare_relationship_context(
+    db: Optional[Union[Engine, Connection, Session]] = None,
+) -> tuple[
+    Union[Connection, Session],
+    Table,
+    Callable[[], None],
+    AbstractContextManager[object],
+]:
+    """Resolve a database executor and reflected relationships table.
+
+    Returns a tuple of ``(executor, relationships_table, cleanup, transaction_ctx)``
+    where ``executor`` is either a :class:`~sqlalchemy.engine.Connection` or
+    :class:`~sqlalchemy.orm.Session`, ``relationships_table`` is the reflected
+    SQLAlchemy table, ``cleanup`` is a callable that will close any temporary
+    connection created by this helper, and ``transaction_ctx`` is a context
+    manager suitable for wrapping write operations.
+    """
+
+    session: Optional[Session] = None
+    connection: Optional[Connection] = None
+    should_close_connection = False
+
+    if isinstance(db, Session):
+        session = db
+    elif isinstance(db, Connection):
+        connection = db
+    elif isinstance(db, Engine) or db is None:
+        engine = db if isinstance(db, Engine) else get_engine()
+        connection = engine.connect()
+        should_close_connection = True
+    else:
+        raise TypeError("db must be an Engine, Connection, Session, or None")
+
+    executor: Optional[Union[Connection, Session]] = session if session is not None else connection
+    if executor is None:
+        raise RuntimeError("Unable to determine database execution context")
+
+    if session is not None:
+        transaction_ctx: AbstractContextManager[object] = (
+            session.begin() if not session.in_transaction() else nullcontext()
+        )
+        bind = session.get_bind()
+    else:
+        assert connection is not None  # nosec - validated above
+        transaction_ctx = (
+            connection.begin() if not connection.in_transaction() else nullcontext()
+        )
+        bind = connection.engine
+
+    metadata = MetaData()
+    relationships_table = Table("relationships", metadata, autoload_with=bind)
+
+    def cleanup() -> None:
+        if should_close_connection and connection is not None:
+            connection.close()
+
+    return executor, relationships_table, cleanup, transaction_ctx
 
 
 def prune_deleted() -> Dict[str, int]:
@@ -252,95 +322,68 @@ def neaten_relationship(
         except (TypeError, ValueError) as exc:
             raise ValueError("item_uuid must be a valid UUID value") from exc
 
-    session: Optional[Session] = None
-    connection: Optional[Connection] = None
-    should_close_connection = False
+    executor, _, cleanup, transaction_ctx = _prepare_relationship_context(db)
 
-    if isinstance(db, Session):
-        session = db
-    elif isinstance(db, Connection):
-        connection = db
-    elif isinstance(db, Engine) or db is None:
-        engine = db if isinstance(db, Engine) else get_engine()
-        connection = engine.connect()
-        should_close_connection = True
-    else:
-        raise TypeError("db must be an Engine, Connection, Session, or None")
-
-    executor = session if session is not None else connection
-    if executor is None:
-        raise RuntimeError("Unable to determine database execution context")
-
-    if session is not None:
-        transaction_ctx = session.begin() if not session.in_transaction() else nullcontext()
-        bind = session.get_bind()
-    else:
-        assert connection is not None  # nosec - validated above
-        transaction_ctx = connection.begin() if not connection.in_transaction() else nullcontext()
-        bind = connection.engine
-
-    metadata = MetaData()
-    relationships_table = Table("relationships", metadata, autoload_with=bind)
-
-    stmt = select(
-        relationships_table.c.id,
-        relationships_table.c.item_id,
-        relationships_table.c.assoc_id,
-        relationships_table.c.assoc_type,
-    )
-    if target_uuid is not None:
-        stmt = stmt.where(
-            or_(
-                relationships_table.c.item_id == target_uuid,
-                relationships_table.c.assoc_id == target_uuid,
-            )
-        )
-
-    rows = executor.execute(stmt).mappings().all()
-
-    groups: Dict[tuple[str, str], List[dict]] = {}
-    for row in rows:
-        left = str(row["item_id"])
-        right = str(row["assoc_id"])
-        if left == right:
-            continue
-        key = (left, right) if left <= right else (right, left)
-        groups.setdefault(key, []).append(dict(row))
-
+    rows: List[dict] = []
     updates: List[tuple[uuid.UUID, int]] = []
     deletions: List[uuid.UUID] = []
     merged_pairs = 0
 
-    for entries in groups.values():
-        if len(entries) <= 1:
-            continue
-        merged_pairs += 1
-        entries.sort(key=lambda data: str(data["id"]))
-        primary = entries[0]
-        combined_type = 0
-        for entry in entries:
-            combined_type |= int(entry["assoc_type"] or 0)
-        if combined_type != int(primary["assoc_type"] or 0):
-            updates.append((primary["id"], combined_type))
-        for entry in entries[1:]:
-            deletions.append(entry["id"])
-
-    with transaction_ctx:
-        for row_id, combined in updates:
-            executor.execute(
-                update(relationships_table)
-                .where(relationships_table.c.id == row_id)
-                .values(assoc_type=combined)
-            )
-        if deletions:
-            executor.execute(
-                delete(relationships_table).where(
-                    relationships_table.c.id.in_(tuple(deletions))
+    try:
+        stmt = select(
+            relationships_table.c.id,
+            relationships_table.c.item_id,
+            relationships_table.c.assoc_id,
+            relationships_table.c.assoc_type,
+        )
+        if target_uuid is not None:
+            stmt = stmt.where(
+                or_(
+                    relationships_table.c.item_id == target_uuid,
+                    relationships_table.c.assoc_id == target_uuid,
                 )
             )
 
-    if should_close_connection and connection is not None:
-        connection.close()
+        rows = executor.execute(stmt).mappings().all()
+
+        groups: Dict[tuple[str, str], List[dict]] = {}
+        for row in rows:
+            left = str(row["item_id"])
+            right = str(row["assoc_id"])
+            if left == right:
+                continue
+            key = (left, right) if left <= right else (right, left)
+            groups.setdefault(key, []).append(dict(row))
+
+        for entries in groups.values():
+            if len(entries) <= 1:
+                continue
+            merged_pairs += 1
+            entries.sort(key=lambda data: str(data["id"]))
+            primary = entries[0]
+            combined_type = 0
+            for entry in entries:
+                combined_type |= int(entry["assoc_type"] or 0)
+            if combined_type != int(primary["assoc_type"] or 0):
+                updates.append((primary["id"], combined_type))
+            for entry in entries[1:]:
+                deletions.append(entry["id"])
+
+        with transaction_ctx:
+            for row_id, combined in updates:
+                executor.execute(
+                    update(relationships_table)
+                    .where(relationships_table.c.id == row_id)
+                    .values(assoc_type=combined)
+                )
+            if deletions:
+                executor.execute(
+                    delete(relationships_table).where(
+                        relationships_table.c.id.in_(tuple(deletions))
+                    )
+                )
+    finally:
+        cleanup()
 
     return {
         "rows_examined": len(rows),
@@ -348,6 +391,254 @@ def neaten_relationship(
         "rows_updated": len(updates),
         "rows_deleted": len(deletions),
     }
+
+
+def merge_two_items(
+    db: Optional[Union[Engine, Connection, Session]] = None,
+    first_item_uuid: Optional[Union[str, uuid.UUID]] = None,
+    second_item_uuid: Optional[Union[str, uuid.UUID]] = None,
+) -> None:
+    """Merge two items that have been flagged with the merge association."""
+
+    if first_item_uuid is None or second_item_uuid is None:
+        raise ValueError("Both item UUIDs must be provided for a merge operation")
+
+    try:
+        primary_uuid = (
+            first_item_uuid
+            if isinstance(first_item_uuid, uuid.UUID)
+            else uuid.UUID(normalize_pg_uuid(first_item_uuid))
+        )
+        secondary_uuid = (
+            second_item_uuid
+            if isinstance(second_item_uuid, uuid.UUID)
+            else uuid.UUID(normalize_pg_uuid(second_item_uuid))
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Item UUIDs must be valid UUID values") from exc
+
+    if primary_uuid == secondary_uuid:
+        raise ValueError("Cannot merge an item with itself")
+
+    executor, _relationships_table, cleanup, transaction_ctx = _prepare_relationship_context(db)
+
+    try:
+        log.info("Preparing to merge items %s and %s", primary_uuid, secondary_uuid)
+
+        engine = get_engine()
+        items_table = _load_tables(engine, ("items",))["items"]
+
+        try:
+            primary_item = get_db_item_as_dict(engine, "items", primary_uuid)
+        except LookupError as exc:
+            raise ValueError(f"Primary item {primary_uuid} is missing") from exc
+
+        try:
+            secondary_item = get_db_item_as_dict(engine, "items", secondary_uuid)
+        except LookupError as exc:
+            raise ValueError(f"Secondary item {secondary_uuid} is missing") from exc
+
+        if primary_item.get("is_deleted"):
+            raise ValueError(f"Primary item {primary_uuid} is already deleted")
+
+        if secondary_item.get("is_deleted"):
+            raise ValueError(f"Secondary item {secondary_uuid} is already deleted")
+
+        updates: Dict[str, object] = {}
+
+        primary_creation = primary_item.get("date_creation")
+        secondary_creation = secondary_item.get("date_creation")
+
+        name_value = _merge_name(
+            primary_item.get("name", ""),
+            secondary_item.get("name", ""),
+            primary_created=primary_creation,
+            secondary_created=secondary_creation,
+        )
+        if name_value != primary_item.get("name"):
+            updates["name"] = name_value
+
+        description_value = _merge_description(
+            primary_item.get("description", ""),
+            secondary_item.get("description", ""),
+            primary_created=primary_creation,
+            secondary_created=secondary_creation,
+        )
+        if description_value != primary_item.get("description"):
+            updates["description"] = description_value
+
+        remarks_value = _merge_remarks(
+            primary_item.get("remarks", ""),
+            secondary_item.get("remarks", ""),
+            primary_created=primary_creation,
+            secondary_created=secondary_creation,
+        )
+        if remarks_value != primary_item.get("remarks"):
+            updates["remarks"] = remarks_value
+
+        text_mergers = (
+            ("quantity", _merge_quantity),
+            ("product_code", _merge_product_code),
+            ("url", _merge_url),
+            ("source", _merge_source),
+        )
+
+        for column, merger in text_mergers:
+            merged_value = merger(primary_item.get(column, ""), secondary_item.get(column, ""))
+            if merged_value != primary_item.get(column):
+                updates[column] = merged_value
+
+        metatext_value = _merge_metatext(primary_item.get("metatext", ""), secondary_item.get("metatext", ""))
+        if metatext_value != primary_item.get("metatext"):
+            updates["metatext"] = metatext_value
+
+        boolean_fields = (
+            "is_container",
+            "is_collection",
+            "is_large",
+            "is_small",
+            "is_fixed_location",
+            "is_consumable",
+        )
+
+        for field in boolean_fields:
+            combined_flag = bool(primary_item.get(field)) or bool(secondary_item.get(field))
+            if combined_flag != bool(primary_item.get(field)):
+                updates[field] = combined_flag
+
+        date_fields = (
+            "date_purchased",
+            "date_reminder",
+            "date_last_modified",
+        )
+
+        for field in date_fields:
+            dates = [primary_item.get(field), secondary_item.get(field)]
+            recent_dates = [value for value in dates if value is not None]
+            if not recent_dates:
+                continue
+            newest = max(recent_dates)
+            if newest != primary_item.get(field):
+                updates[field] = newest
+
+        if not updates:
+            log.info("No field updates were necessary when merging %s into %s", secondary_uuid, primary_uuid)
+
+        with transaction_ctx:
+            if updates:
+                executor.execute(
+                    update(items_table)
+                    .where(items_table.c.id == primary_uuid)
+                    .values(**updates)
+                )
+
+            executor.execute(
+                update(items_table)
+                .where(items_table.c.id == secondary_uuid)
+                .values(is_deleted=True)
+            )
+
+            # TODO: Consolidate descriptive fields, notes, and metadata into the surviving item.
+            # TODO: Reassign tags, categories, and other relationships from the secondary item.
+            # TODO: Merge associated images while avoiding duplicate entries in the item_images table.
+            # TODO: Transfer inventory, invoice links, or other domain-specific associations.
+            # TODO: Remove or update the initiating merge row from the relationships table.
+            # TODO: Trigger any indexing or cache refresh required after the merge completes.
+            # TODO: Record an audit trail summarizing the merge for future reference.
+    finally:
+        cleanup()
+
+
+def process_pending_merges(
+    db: Optional[Union[Engine, Connection, Session]] = None,
+) -> int:
+    """Scan for merge associations and invoke :func:`merge_two_items` for each."""
+
+    executor, relationships_table, cleanup, _transaction_ctx = _prepare_relationship_context(db)
+
+    processed_pairs = 0
+    seen_pairs: Set[frozenset[uuid.UUID]] = set()
+    engine = get_engine()
+
+    try:
+        merge_clause = relationships_table.c.assoc_type.op("&")(MERGE_BIT) != 0
+        stmt = select(
+            relationships_table.c.item_id,
+            relationships_table.c.assoc_id,
+            relationships_table.c.assoc_type,
+        ).where(merge_clause)
+
+        rows = executor.execute(stmt).mappings().all()
+        log.info("Found %s merge relationship candidates", len(rows))
+
+        for row in rows:
+            left_raw = row.get("item_id")
+            right_raw = row.get("assoc_id")
+            if left_raw is None or right_raw is None:
+                log.warning("Skipping merge candidate with missing item identifiers: %s", row)
+                continue
+
+            try:
+                left_uuid = (
+                    left_raw
+                    if isinstance(left_raw, uuid.UUID)
+                    else uuid.UUID(normalize_pg_uuid(str(left_raw)))
+                )
+                right_uuid = (
+                    right_raw
+                    if isinstance(right_raw, uuid.UUID)
+                    else uuid.UUID(normalize_pg_uuid(str(right_raw)))
+                )
+            except (TypeError, ValueError):
+                log.exception("Encountered merge row with invalid UUIDs: %s", row)
+                continue
+
+            if left_uuid == right_uuid:
+                log.warning("Skipping self-referential merge candidate for %s", left_uuid)
+                continue
+
+            pair_key = frozenset({left_uuid, right_uuid})
+            if pair_key in seen_pairs:
+                continue
+            seen_pairs.add(pair_key)
+
+            try:
+                secondary_snapshot = get_db_item_as_dict(engine, "items", right_uuid)
+            except LookupError:
+                log.warning("Skipping merge candidate with missing secondary item: %s", right_uuid)
+                continue
+
+            if secondary_snapshot.get("is_deleted"):
+                log.info("Secondary item %s is deleted; skipping merge", right_uuid)
+                continue
+
+            try:
+                primary_snapshot = get_db_item_as_dict(engine, "items", left_uuid)
+            except LookupError:
+                log.warning("Skipping merge candidate with missing primary item: %s", left_uuid)
+                continue
+
+            if primary_snapshot.get("is_deleted"):
+                log.info("Primary item %s is deleted; skipping merge", left_uuid)
+                continue
+
+            try:
+                merge_two_items(
+                    db=executor,
+                    first_item_uuid=left_uuid,
+                    second_item_uuid=right_uuid,
+                )
+                processed_pairs += 1
+            except Exception:
+                log.exception(
+                    "Failed to merge items %s and %s flagged for merge",
+                    left_uuid,
+                    right_uuid,
+                )
+
+        return processed_pairs
+    finally:
+        cleanup()
 
 
 def main():

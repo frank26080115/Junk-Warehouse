@@ -9,6 +9,7 @@ import {
   ALL_ASSOCIATION_BITS,
   ALL_ASSOCIATION_MASK,
   CONTAINMENT_BIT,
+  MERGE_BIT,
   RELATED_BIT,
   SIMILAR_BIT,
   bit_to_emoji_character,
@@ -16,6 +17,7 @@ import {
   collect_emoji_characters_from_int,
   collect_words_from_int,
   int_has_containment,
+  int_has_merge,
   int_has_related,
   int_has_similar,
 } from "../helpers/assocHelper";
@@ -473,6 +475,7 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
   const containmentChecked = int_has_containment(associationBits);
   const relatedChecked = int_has_related(associationBits);
   const similarChecked = int_has_similar(associationBits);
+  const mergeChecked = int_has_merge(associationBits);
 
   const toggleCheckbox = useCallback(
     (row: SearchRow, checked: boolean) => {
@@ -1065,6 +1068,8 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
                         ? relatedChecked
                         : bit === SIMILAR_BIT
                         ? similarChecked
+                        : bit === MERGE_BIT
+                        ? mergeChecked
                         : (associationBits & bit) === bit;
                     const emoji = bit_to_emoji_character(bit);
                     const label = bit_to_word(bit) || "association";
