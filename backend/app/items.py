@@ -12,7 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from .user_login import login_required
-from .db import get_engine, get_db_item_as_dict, update_db_row_by_dict
+from .db import get_engine, get_db_item_as_dict, update_db_row_by_dict, unwrap_db_result
 from .slugify import slugify
 from .helpers import normalize_pg_uuid
 from .image_handler import (
@@ -174,8 +174,6 @@ def save_item_api():
         payload["is_container"] = True
 
     try:
-        response_payload: Optional[Mapping[str, Any]] = None
-
         # Fuzzy update: lets the helper map keys without hardcoding column names here
         update_result = update_db_row_by_dict(
             engine=engine,
@@ -185,35 +183,34 @@ def save_item_api():
             fuzzy=True,
             id_col_name=ID_COL,
         )
+        (
+            response_obj,
+            status_code,
+            payload_dict,
+            payload_text,
+            raw_payload,
+        ) = unwrap_db_result(update_result)
 
-        if isinstance(update_result, tuple) and len(update_result) == 2:
-            resp, status_code = update_result
-            if status_code >= 400:
-                if hasattr(resp, "get_json"):
-                    return resp, status_code
-                if isinstance(resp, Mapping):
-                    return jsonify(resp), status_code
-                return jsonify({"error": str(resp)}), status_code
+        if status_code >= 400:
+            if hasattr(response_obj, "get_json"):
+                return response_obj, status_code
+            if isinstance(raw_payload, Mapping) and raw_payload:
+                return jsonify(raw_payload), status_code
+            if isinstance(response_obj, Mapping):
+                return jsonify(response_obj), status_code
+            message = payload_text if payload_text else str(response_obj)
+            return jsonify({"error": message}), status_code
 
-            candidate_payload: Optional[Any] = None
-            if hasattr(resp, "get_json"):
-                try:
-                    candidate_payload = resp.get_json(silent=True)
-                except Exception:
-                    candidate_payload = None
-            elif isinstance(resp, Mapping):
-                candidate_payload = resp
-
-            if isinstance(candidate_payload, Mapping):
-                response_payload = candidate_payload
-
-        # Re-fetch authoritative row
-        if item_uuid is None and response_payload is not None:
-            returned_data = response_payload.get("data")
-            if isinstance(returned_data, Mapping):
-                possible_id = returned_data.get(ID_COL)
-                if possible_id:
-                    item_uuid = possible_id
+        if item_uuid is None:
+            possible_id = None
+            if isinstance(payload_dict, Mapping):
+                possible_id = payload_dict.get(ID_COL)
+            if not possible_id and isinstance(raw_payload, Mapping):
+                data_section = raw_payload.get("data")
+                if isinstance(data_section, Mapping):
+                    possible_id = data_section.get(ID_COL)
+            if possible_id:
+                item_uuid = possible_id
 
         if not item_uuid and isinstance(payload, Mapping):
             # In a rare case where caller omitted id but your update helper still succeeded
@@ -347,28 +344,42 @@ def insert_item(
         id_col_name=ID_COL,
     )
 
-    if isinstance(result, tuple) and len(result) == 2:
-        resp, status = result
-        if status >= 400:
-            detail: Optional[Any] = None
-            if hasattr(resp, "get_json"):
-                try:
-                    detail = resp.get_json()
-                except Exception:  # pragma: no cover - defensive
-                    detail = None
-            elif isinstance(resp, Mapping):
-                detail = resp
+    (
+        response_obj,
+        status,
+        payload_dict,
+        payload_text,
+        raw_payload,
+    ) = unwrap_db_result(result)
 
-            message = "database error during insert"
-            if isinstance(detail, Mapping):
-                extracted = detail.get("error") or detail.get("detail")
-                if extracted:
-                    message = str(extracted)
-                else:
-                    message = str(detail)
-            raise RuntimeError(message)
+    if status >= 400:
+        detail: Optional[Any] = None
+        if isinstance(raw_payload, Mapping) and raw_payload:
+            detail = raw_payload
+        elif hasattr(response_obj, "get_json"):
+            try:
+                detail = response_obj.get_json()
+            except Exception:  # pragma: no cover - defensive
+                detail = None
+        elif isinstance(response_obj, Mapping):
+            detail = response_obj
 
-    new_id = data.get(ID_COL)
+        message = "database error during insert"
+        if isinstance(detail, Mapping):
+            extracted = detail.get("error") or detail.get("detail")
+            if extracted:
+                message = str(extracted)
+            else:
+                message = str(detail)
+        elif payload_text:
+            message = payload_text
+        else:
+            message = str(response_obj)
+        raise RuntimeError(message)
+
+    new_id = payload_dict.get(ID_COL) if isinstance(payload_dict, Mapping) else None
+    if not new_id:
+        new_id = data.get(ID_COL)
     if not new_id:
         raise RuntimeError(
             "Insert succeeded but new item ID could not be determined"

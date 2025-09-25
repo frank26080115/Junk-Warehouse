@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote_plus
 import uuid as _uuid
-from typing import List, Dict, Any, Mapping
+from typing import List, Dict, Any, Mapping, Tuple
 from flask import g
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, MetaData, Table, select, text
@@ -18,6 +18,51 @@ from sqlalchemy.engine import Engine, Connection
 from sqlalchemy.orm import Session, scoped_session, sessionmaker
 from sqlalchemy.exc import NoSuchTableError
 import app.helpers as helpers
+
+
+def _coerce_mapping(value: Any) -> Dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    return {}
+
+
+def unwrap_db_result(result: Any) -> Tuple[Any, int, Dict[str, Any], str, Dict[str, Any]]:
+    """Normalize the response returned by :func:`update_db_row_by_dict`."""
+
+    if isinstance(result, tuple) and len(result) == 2:
+        response_obj, status_code = result
+    else:
+        response_obj = result
+        status_code = getattr(response_obj, "status_code", 200)
+
+    if hasattr(response_obj, "get_json"):
+        try:
+            raw_payload = response_obj.get_json()
+        except Exception:
+            raw_payload = {}
+    else:
+        raw_payload = response_obj
+
+    payload_mapping = _coerce_mapping(raw_payload)
+    raw_payload_dict = dict(payload_mapping)
+    data_field = payload_mapping.get("data") if isinstance(payload_mapping, Mapping) else None
+    if isinstance(data_field, Mapping):
+        payload_dict = dict(data_field)
+    else:
+        payload_dict = payload_mapping
+
+    if payload_dict:
+        text_source = payload_dict
+    else:
+        text_source = raw_payload_dict
+
+    try:
+        payload_text = json.dumps(text_source, default=str)
+    except TypeError:
+        payload_text = str(text_source)
+
+    final_payload = payload_dict if isinstance(payload_dict, dict) else {}
+    return response_obj, int(status_code or 0), final_payload, payload_text, raw_payload_dict
 
 log = logging.getLogger(__name__)
 
