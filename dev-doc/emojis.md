@@ -64,6 +64,8 @@
 | 🆔    | ID button                   | &#127380;             |
 | 🔤    | Input Latin letters         | &#128292;             |
 | 🪪    | Identification card         | &#129706;             |
+| ⚓    | Anchor                      | &#9875;               |
+| 📌    | Pushpin                     | &#128204;             |
 | ⬆️    | Up arrow                    | &#11014;&#65039;      |
 | ⬇️    | Down arrow                  | &#11015;&#65039;      |
 | ⬅️    | Left arrow                  | &#11013;&#65039;      |
