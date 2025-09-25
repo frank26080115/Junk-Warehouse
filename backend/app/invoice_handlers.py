@@ -57,6 +57,7 @@ def _build_gmail_service() -> Any:
         scopes = ["https://www.googleapis.com/auth/gmail.readonly"]
 
     creds = Credentials.from_authorized_user_info(token_info, scopes=scopes)
+
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
 
@@ -167,10 +168,12 @@ def _handle_gmail_message(msg: Dict[str, Any]) -> Dict[str, Any]:
 
     order_number = None
     order_url = None
-    if html_body:
+    if subject:
+        order_number = extract_order_number(subject)
+    if not order_number and html_body:
         order_number, order_url = extract_order_number_and_url(html_body)
     if not order_number:
-        order_number = extract_order_number(subject) or extract_order_number(text_body)
+        order_number = extract_order_number(text_body)
 
     if order_number:
         order_number = order_number.strip()
@@ -215,8 +218,6 @@ def _handle_gmail_message(msg: Dict[str, Any]) -> Dict[str, Any]:
     gmail_payload: Dict[str, Any] = {
         "email_uuid": normalized_id or message_id,
         "date_seen": email_date,
-        "url1": None,
-        "url2": None,
     }
     if invoice_id:
         gmail_payload["invoice_id"] = invoice_id
