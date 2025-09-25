@@ -6,7 +6,7 @@ import uuid
 from datetime import date, datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from flask import Blueprint, jsonify, request
 from sqlalchemy import text
@@ -22,7 +22,7 @@ from automation.order_num_extract import extract_order_number, extract_order_num
 from automation.html_dom_finder import analyze as analyze_dom_report
 from automation.html_invoice_helpers import parse_mhtml_from_string, sniff_format
 from lxml import html as lxml_html
-from app.db import get_db_item_as_dict, get_engine, update_db_row_by_dict
+from app.db import get_db_item_as_dict, get_engine, update_db_row_by_dict, unwrap_db_result
 
 from .user_login import login_required
 
@@ -163,22 +163,9 @@ def _parse_email_date(header_value: Optional[str]) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def _unwrap_db_payload(response: Any) -> Dict[str, Any]:
-    if hasattr(response, "get_json"):
-        try:
-            payload = response.get_json()
-        except Exception:
-            payload = {}
-    elif isinstance(response, dict):
-        payload = response
-    else:
-        payload = {}
-
-    if isinstance(payload, dict):
-        data = payload.get("data")
-        if isinstance(data, dict):
-            return data
-    return payload if isinstance(payload, dict) else {}
+def _unwrap_db_payload(response: Any) -> Tuple[Dict[str, Any], str]:
+    _, _, payload_dict, payload_text, _ = unwrap_db_result(response)
+    return payload_dict, payload_text
 
 
 def _serialize_invoice_row(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -287,17 +274,20 @@ def _handle_gmail_message(msg: Dict[str, Any]) -> Dict[str, Any]:
         }
 
         engine = get_engine()
-        invoice_resp, invoice_status = update_db_row_by_dict(engine, "invoices", "new", invoice_payload, fuzzy=False)
+        (
+            invoice_resp,
+            invoice_status,
+            invoice_payload,
+            invoice_payload_text,
+            _,
+        ) = unwrap_db_result(
+            update_db_row_by_dict(engine, "invoices", "new", invoice_payload, fuzzy=False)
+        )
         if invoice_status >= 400:
-            payload = _unwrap_db_payload(invoice_resp)
-            try:
-                invoice_error = json.dumps(payload)
-            except TypeError:
-                invoice_error = str(payload)
-            log.error("Failed to insert invoice for Gmail message %s: %s", message_id, invoice_error)
+            invoice_error = invoice_payload_text
+            log.error("Failed to insert invoice for Gmail message %s: %s", message_id, invoice_payload_text)
         else:
-            payload = _unwrap_db_payload(invoice_resp)
-            invoice_id = payload.get("id") if isinstance(payload, dict) else None
+            invoice_id = invoice_payload.get("id") if isinstance(invoice_payload, dict) else None
 
     gmail_payload: Dict[str, Any] = {
         "email_uuid": normalized_id or message_id,
@@ -307,10 +297,11 @@ def _handle_gmail_message(msg: Dict[str, Any]) -> Dict[str, Any]:
         gmail_payload["invoice_id"] = invoice_id
 
     engine = get_engine()
-    gmail_resp, gmail_status = update_db_row_by_dict(engine, "gmail_seen", "new", gmail_payload, fuzzy=False)
+    gmail_resp, gmail_status, _, gmail_payload_text, _ = unwrap_db_result(
+        update_db_row_by_dict(engine, "gmail_seen", "new", gmail_payload, fuzzy=False)
+    )
     if gmail_status >= 400:
-        payload = _unwrap_db_payload(gmail_resp)
-        log.error("Failed to insert gmail_seen row for message %s: %s", message_id, payload)
+        log.error("Failed to insert gmail_seen row for message %s: %s", message_id, gmail_payload_text)
 
     status = "invoice_created" if invoice_id else ("invoice_failed" if invoice_error else "no_order_number")
 
@@ -438,24 +429,24 @@ def _ingest_invoice_file(file_storage: FileStorage) -> Dict[str, Any]:
         }
 
         engine = get_engine()
-        invoice_resp, invoice_status = update_db_row_by_dict(
-            engine, "invoices", "new", invoice_payload, fuzzy=False
+        (
+            invoice_resp,
+            invoice_status,
+            invoice_payload,
+            invoice_payload_text,
+            _,
+        ) = unwrap_db_result(
+            update_db_row_by_dict(engine, "invoices", "new", invoice_payload, fuzzy=False)
         )
         if invoice_status >= 400:
-            payload = _unwrap_db_payload(invoice_resp)
-            try:
-                invoice_error = json.dumps(payload)
-            except TypeError:
-                invoice_error = str(payload)
+            invoice_error = invoice_payload_text
             log.error(
                 "Failed to insert invoice for uploaded file %s: %s",
                 filename,
-                invoice_error,
+                invoice_payload_text,
             )
         else:
-            payload = _unwrap_db_payload(invoice_resp)
-            if isinstance(payload, dict):
-                invoice_id = payload.get("id")
+            invoice_id = invoice_payload.get("id") if isinstance(invoice_payload, dict) else None
 
     status = "invoice_created" if invoice_id else (
         "invoice_failed" if invoice_error else "no_order_number"
@@ -533,11 +524,13 @@ def set_invoice_api() -> Any:
         cleaned_payload,
         fuzzy=False,
     )
-    if isinstance(update_result, tuple) and len(update_result) == 2:
-        response_obj, status_code = update_result
-    else:
-        response_obj = update_result
-        status_code = 200
+    (
+        response_obj,
+        status_code,
+        invoice_data,
+        payload_text,
+        raw_payload,
+    ) = unwrap_db_result(update_result)
     if status_code >= 400:
         if hasattr(response_obj, "get_json"):
             try:
@@ -547,29 +540,24 @@ def set_invoice_api() -> Any:
             if error_payload is not None:
                 return jsonify(error_payload), status_code
             return response_obj, status_code
+        if isinstance(raw_payload, dict) and raw_payload:
+            return jsonify(raw_payload), status_code
         if isinstance(response_obj, dict):
             return jsonify(response_obj), status_code
-        return jsonify({"error": str(response_obj)}), status_code
-    response_payload = None
-    if hasattr(response_obj, "get_json"):
-        try:
-            response_payload = response_obj.get_json()
-        except Exception:
-            response_payload = None
-    elif isinstance(response_obj, dict):
-        response_payload = response_obj
-    invoice_data = None
-    if isinstance(response_payload, dict):
-        data_section = response_payload.get("data")
-        if isinstance(data_section, dict):
-            invoice_data = data_section
-        elif response_payload.get("ok") and isinstance(response_payload.get("invoice"), dict):
-            invoice_data = response_payload["invoice"]
-        else:
-            invoice_data = response_payload if response_payload else None
+        message = payload_text if payload_text else str(response_obj)
+        return jsonify({"error": message}), status_code
+    invoice_record: Optional[Dict[str, Any]] = None
+    if isinstance(invoice_data, dict) and invoice_data:
+        invoice_record = invoice_data
+    elif isinstance(raw_payload, dict):
+        alt_invoice = raw_payload.get("invoice")
+        if isinstance(alt_invoice, dict):
+            invoice_record = alt_invoice
+        elif raw_payload:
+            invoice_record = raw_payload
     invoice_id = None
-    if isinstance(invoice_data, dict):
-        invoice_id = invoice_data.get("id")
+    if isinstance(invoice_record, dict):
+        invoice_id = invoice_record.get("id")
     if not invoice_id:
         if isinstance(invoice_uuid, str):
             lowered = invoice_uuid.lower()
@@ -587,8 +575,8 @@ def set_invoice_api() -> Any:
     final_row: Dict[str, Any]
     if isinstance(reloaded_row, dict):
         final_row = reloaded_row
-    elif isinstance(invoice_data, dict):
-        final_row = invoice_data
+    elif isinstance(invoice_record, dict):
+        final_row = invoice_record
     else:
         fallback = dict(cleaned_payload)
         if invoice_id:
@@ -792,14 +780,31 @@ def analyze_invoice_html() -> Any:
         "html": updated_html,
     }
 
-    update_response, status_code = update_db_row_by_dict(
+    update_result = update_db_row_by_dict(
         engine, "invoices", invoice_uuid, update_payload, fuzzy=False
     )
+    (
+        response_obj,
+        status_code,
+        payload_dict,
+        payload_text,
+        raw_payload,
+    ) = unwrap_db_result(update_result)
 
     if status_code >= 400:
-        payload = _unwrap_db_payload(update_response)
-        error_message = payload.get("error") if isinstance(payload, dict) else None
-        message = error_message or "Failed to update invoice with analyzed HTML."
+        error_message = None
+        if isinstance(payload_dict, dict):
+            error_message = payload_dict.get("error")
+        if not error_message and isinstance(raw_payload, dict):
+            error_message = raw_payload.get("error")
+        message = error_message or payload_text or "Failed to update invoice with analyzed HTML."
+        if hasattr(response_obj, "get_json") and not error_message:
+            try:
+                response_payload = response_obj.get_json()
+            except Exception:
+                response_payload = None
+            if isinstance(response_payload, dict):
+                return jsonify(response_payload), status_code
         return jsonify({"ok": False, "error": message}), status_code
 
     try:
