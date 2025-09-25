@@ -129,14 +129,21 @@ def _execute_text_search_query(
     select_clause = (select_template or "{alias}.*").format(alias=alias)
     textsearch_expr = (textsearch_template or "{alias}.textsearch").format(alias=alias)
 
-    ts_query_expr = "websearch_to_tsquery('english', :q)"
-    rank_expression = f"ts_rank_cd({textsearch_expr}, {ts_query_expr})"
+    normalized_query = (query_text or "").strip()
+    use_textsearch = bool(normalized_query and normalized_query != "*")
+
+    ts_query_expr = None
+    rank_expression = None
+    if use_textsearch:
+        ts_query_expr = "websearch_to_tsquery('english', :q)"
+        rank_expression = f"ts_rank_cd({textsearch_expr}, {ts_query_expr})"
 
     where_clauses: List[str] = []
     touched_columns = criteria.get("touched_columns") or set()
     if "is_deleted" not in touched_columns:
         where_clauses.append(f"NOT {alias}.is_deleted")
-    where_clauses.append(f"{textsearch_expr} @@ {ts_query_expr}")
+    if use_textsearch and ts_query_expr:
+        where_clauses.append(f"{textsearch_expr} @@ {ts_query_expr}")
     for condition in criteria.get("where", []):
         if condition:
             where_clauses.append(condition)
@@ -144,11 +151,12 @@ def _execute_text_search_query(
     flags = criteria.get("flags") or {}
     order_by_clauses: List[str] = list(criteria.get("order_by") or [])
     if order_by_clauses:
-        if not flags.get("random_order"):
+        if use_textsearch and rank_expression and not flags.get("random_order"):
             order_by_clauses.append(f"{rank_expression} DESC")
     else:
         base_direction = "ASC" if flags.get("reverse_default_order") else "DESC"
-        order_by_clauses.append(f"{rank_expression} {base_direction}")
+        if use_textsearch and rank_expression:
+            order_by_clauses.append(f"{rank_expression} {base_direction}")
         if default_order_templates:
             for template in default_order_templates:
                 order_by_clauses.append(template.format(alias=alias, direction=base_direction))
@@ -189,7 +197,9 @@ def _execute_text_search_query(
 
     base_sql = text("\n".join(sql_lines))
 
-    sql_params: Dict[str, Any] = {"q": query_text}
+    sql_params: Dict[str, Any] = {}
+    if use_textsearch:
+        sql_params["q"] = normalized_query or query_text
     sql_params.update(criteria.get("params", {}))
     if limit_value is not None:
         sql_params["limit"] = limit_value
