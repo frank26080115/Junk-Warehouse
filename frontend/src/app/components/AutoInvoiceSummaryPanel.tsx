@@ -4,6 +4,7 @@ interface AutoSummaryEntry {
   id: string;
   text: string;
   url: string;
+  image: string;
   selected: boolean;
 }
 
@@ -29,6 +30,32 @@ function generateClientId(seed: number): string {
   return `auto-${seed}-${timestamp}-${random}`;
 }
 
+const MIN_FREEFORM_ROWS = 3;
+const MAX_DATA_URL_LENGTH = 1_500_000; // ~1.5 MB worth of base64 text
+
+const isEntryBlank = (entry: AutoSummaryEntry): boolean =>
+  entry.text.trim() === "" && entry.url.trim() === "" && entry.image.trim() === "";
+
+const createBlankEntry = (seed: number): AutoSummaryEntry => ({
+  id: generateClientId(seed),
+  text: "",
+  url: "",
+  image: "",
+  selected: false,
+});
+
+const ensureFreeformRows = (list: AutoSummaryEntry[]): AutoSummaryEntry[] => {
+  const next = [...list];
+  let blanks = next.filter(isEntryBlank).length;
+  let seed = next.length;
+  while (blanks < MIN_FREEFORM_ROWS) {
+    next.push(createBlankEntry(seed));
+    blanks += 1;
+    seed += 1;
+  }
+  return next;
+};
+
 const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoiceUuid, autoSummaryRaw }) => {
   const [entries, setEntries] = useState<AutoSummaryEntry[]>([]);
   const [missingMessage, setMissingMessage] = useState<string | null>(null);
@@ -47,7 +74,7 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
 
     const raw = autoSummaryRaw ?? "";
     if (raw.trim() === "") {
-      setEntries([]);
+      setEntries(ensureFreeformRows([]));
       setMissingMessage("Auto summary is blank or missing.");
       return;
     }
@@ -65,17 +92,20 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
         const urlValue = typeof base.url === "string" ? base.url : "";
         const rawId = base.client_id;
         const clientId = typeof rawId === "string" && rawId.trim() !== "" ? rawId : generateClientId(index);
+        const imageValue = typeof base.image === "string" ? base.image : "";
         return {
           id: clientId,
           text: textValue,
           url: urlValue,
+          image: imageValue,
           selected: false,
         };
       });
 
-      setEntries(normalized);
+      setEntries(ensureFreeformRows(normalized));
+      setMissingMessage(null);
     } catch (error) {
-      setEntries([]);
+      setEntries(ensureFreeformRows([]));
       setParseError("Failed to parse auto summary.");
       setParseErrorValue(raw);
     }
@@ -96,14 +126,69 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
     );
   };
 
-  const handleEntryChange = (id: string, key: "text" | "url", value: string) => {
+  const handleEntryChange = (id: string, key: "text" | "url" | "image", value: string) => {
+    if (key === "image" && value.startsWith("data:") && value.length > MAX_DATA_URL_LENGTH) {
+      setModalError(
+        "The pasted image is too large to store as a data URL. Please choose a smaller image or host it externally."
+      );
+      return;
+    }
     setEntries((prev) =>
-      prev.map((entry) =>
-        entry.id === id
-          ? { ...entry, [key]: value }
-          : entry
+      ensureFreeformRows(
+        prev.map((entry) =>
+          entry.id === id
+            ? { ...entry, [key]: value }
+            : entry
+        )
       )
     );
+  };
+
+  const handleImagePaste = (id: string, event: React.ClipboardEvent<HTMLInputElement>) => {
+    const clipboardData = event.clipboardData;
+    if (!clipboardData) {
+      return;
+    }
+    const items = clipboardData.items;
+    if (!items) {
+      return;
+    }
+    const imageItem = Array.from(items).find((item) => item.type.startsWith("image/"));
+    if (!imageItem) {
+      return;
+    }
+    event.preventDefault();
+    const file = imageItem.getAsFile();
+    if (!file) {
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== "string") {
+        setModalError("Unable to read the pasted image data.");
+        return;
+      }
+      if (result.length > MAX_DATA_URL_LENGTH) {
+        setModalError(
+          "The pasted image is too large to convert to a data URL. Please choose a smaller image or upload it separately."
+        );
+        return;
+      }
+      setEntries((prev) =>
+        ensureFreeformRows(
+          prev.map((entry) =>
+            entry.id === id
+              ? { ...entry, image: result }
+              : entry
+          )
+        )
+      );
+    };
+    reader.onerror = () => {
+      setModalError("Failed to process the pasted image.");
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleDeselectAll = () => {
@@ -151,11 +236,13 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
       const payloadItems = entriesToInsert.map((entry) => {
         const nameCandidate = entry.text.trim();
         const urlCandidate = entry.url.trim();
+        const imageCandidate = entry.image.trim();
         const fallbackName = urlCandidate || "(auto summary item)";
         return {
           client_id: entry.id,
           name: nameCandidate || fallbackName,
           url: urlCandidate,
+          image: imageCandidate,
         };
       });
 
@@ -187,7 +274,7 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
         : [];
 
       if (succeededIds.length > 0) {
-        setEntries((prev) => prev.filter((entry) => !succeededIds.includes(entry.id)));
+        setEntries((prev) => ensureFreeformRows(prev.filter((entry) => !succeededIds.includes(entry.id))));
         setStatusMessage(`Inserted ${succeededIds.length} item${succeededIds.length === 1 ? "" : "s"}.`);
       } else {
         setStatusMessage(null);
@@ -246,13 +333,13 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
         <div className="alert alert-success" role="status">{statusMessage}</div>
       )}
 
-      {!missingMessage && !parseError && entries.length === 0 && (
+      {!parseError && entries.length === 0 && (
         <div className="alert alert-secondary" role="status">
           No auto-generated summary entries are available.
         </div>
       )}
 
-      {!missingMessage && !parseError && entries.length > 0 && (
+      {entries.length > 0 && (
         <div className="table-responsive">
           <table className="table table-sm align-middle">
             <tbody>
@@ -286,22 +373,40 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
                           <label className="form-check-label" htmlFor={checkboxId}>Use this entry</label>
                         </div>
                       </div>
-                      <input
-                        type="text"
-                        className="form-control form-control-sm mb-2"
-                        value={entry.text}
-                        placeholder="no text"
-                        onChange={(event) => handleEntryChange(entry.id, "text", event.target.value)}
-                        disabled={isBusy}
-                      />
-                      <input
-                        type="text"
-                        className="form-control form-control-sm"
-                        value={entry.url}
-                        placeholder="no URL"
-                        onChange={(event) => handleEntryChange(entry.id, "url", event.target.value)}
-                        disabled={isBusy}
-                      />
+                      <div className="input-group input-group-sm mb-2">
+                        <span className="input-group-text" aria-hidden="true">🪪</span>
+                        <input
+                          type="text"
+                          className="form-control"
+                          value={entry.text}
+                          placeholder="no text"
+                          onChange={(event) => handleEntryChange(entry.id, "text", event.target.value)}
+                          disabled={isBusy}
+                        />
+                      </div>
+                      <div className="input-group input-group-sm mb-2">
+                        <span className="input-group-text" aria-hidden="true">🔗</span>
+                        <input
+                          type="text"
+                          className="form-control"
+                          value={entry.url}
+                          placeholder="no URL"
+                          onChange={(event) => handleEntryChange(entry.id, "url", event.target.value)}
+                          disabled={isBusy}
+                        />
+                      </div>
+                      <div className="input-group input-group-sm">
+                        <span className="input-group-text" aria-hidden="true">📸</span>
+                        <input
+                          type="text"
+                          className="form-control"
+                          value={entry.image}
+                          placeholder="no image URL"
+                          onChange={(event) => handleEntryChange(entry.id, "image", event.target.value)}
+                          onPaste={(event) => handleImagePaste(entry.id, event)}
+                          disabled={isBusy}
+                        />
+                      </div>
                     </td>
                   </tr>
                 );
