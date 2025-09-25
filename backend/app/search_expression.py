@@ -2,7 +2,7 @@ import logging
 import json
 import re
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
 from .db import get_column_types, get_engine
 
@@ -151,6 +151,45 @@ def _normalize_date_literal(value: Any) -> Any:
                     continue
                 return parsed.strftime("%Y-%m-%d")
     return value
+
+
+def get_sql_order_and_limit(
+    criteria: Mapping[str, Any],
+    *,
+    alias: str,
+    use_textsearch: bool,
+    rank_expression: Optional[str],
+    default_order_templates: Optional[Iterable[str]],
+    default_limit: int,
+) -> Tuple[List[str], Optional[int], Optional[int]]:
+    flags = criteria.get("flags") or {}
+    order_by_clauses: List[str] = list(criteria.get("order_by") or [])
+    if order_by_clauses:
+        if use_textsearch and rank_expression and not flags.get("random_order"):
+            order_by_clauses.append(f"{rank_expression} DESC")
+    else:
+        base_direction = "ASC" if flags.get("reverse_default_order") else "DESC"
+        if use_textsearch and rank_expression:
+            order_by_clauses.append(f"{rank_expression} {base_direction}")
+        if default_order_templates:
+            for template in default_order_templates:
+                order_by_clauses.append(template.format(alias=alias, direction=base_direction))
+
+    limit_value = criteria.get("limit")
+    limit_is_explicit = criteria.get("limit_is_explicit", False)
+    page_number = criteria.get("page")
+    show_all = flags.get("show_all", False)
+
+    if not limit_is_explicit:
+        limit_value = default_limit
+    elif show_all:
+        limit_value = None
+
+    offset_value: Optional[int] = None
+    if isinstance(page_number, int) and page_number > 1 and limit_value:
+        offset_value = (page_number - 1) * limit_value
+
+    return order_by_clauses, limit_value, offset_value
 
 
 class DirectiveUnit:

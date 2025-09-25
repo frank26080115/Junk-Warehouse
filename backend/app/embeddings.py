@@ -13,21 +13,13 @@ from sqlalchemy.orm import Session
 
 from .db import get_engine, get_db_item_as_dict, get_or_create_session
 from .helpers import normalize_pg_uuid
-from .search_expression import SearchQuery
+from .search_expression import SearchQuery, get_sql_order_and_limit
 
 log = logging.getLogger(__name__)
 
 EMBEDDING_DIMENSIONS = 384
 EMBEDDING_MODEL_NAME = "hash-embed-v1"
 DEFAULT_EMBEDDING_LIMIT = 50
-
-
-def _normalize_uuid(value: Union[str, uuid.UUID]) -> uuid.UUID:
-    if isinstance(value, uuid.UUID):
-        return value
-    normalized = normalize_pg_uuid(value)
-    return uuid.UUID(normalized)
-
 
 def _resolve_item_dict(item_or_identifier: Union[Mapping[str, Any], str, uuid.UUID]) -> Dict[str, Any]:
     engine = get_engine()
@@ -36,11 +28,17 @@ def _resolve_item_dict(item_or_identifier: Union[Mapping[str, Any], str, uuid.UU
         raw_id = item_dict.get("id")
         if raw_id is None:
             raise ValueError("Item dictionary must include an 'id' field")
-        item_uuid = _normalize_uuid(raw_id)
+        if isinstance(raw_id, uuid.UUID):
+            item_uuid = raw_id
+        else:
+            item_uuid = uuid.UUID(normalize_pg_uuid(str(raw_id)))
         item_dict["id"] = str(item_uuid)
         return item_dict
 
-    item_uuid = _normalize_uuid(item_or_identifier)
+    if isinstance(item_or_identifier, uuid.UUID):
+        item_uuid = item_or_identifier
+    else:
+        item_uuid = uuid.UUID(normalize_pg_uuid(str(item_or_identifier)))
     item_dict = get_db_item_as_dict(engine, "items", item_uuid)
     item_dict["id"] = str(item_uuid)
     return item_dict
@@ -126,21 +124,75 @@ def search_items_by_embeddings(
     if session is None:
         session = get_or_create_session()
 
-    limit_value = DEFAULT_EMBEDDING_LIMIT if limit is None else max(int(limit), 1)
+    default_limit = DEFAULT_EMBEDDING_LIMIT if limit is None else max(int(limit), 1)
 
-    sql = text(
-        """
-        SELECT
-            i.*,
-            (ie.vec <=> :query_vec) AS embedding_distance
-        FROM item_embeddings AS ie
-        JOIN items AS i ON i.id = ie.item_id
-        WHERE NOT i.is_deleted
-        ORDER BY embedding_distance ASC, i.date_last_modified DESC
-        LIMIT :limit
-        """
-    )
+    table_name = "items"
+    alias = "i"
+    where_clauses: List[str] = [f"NOT {alias}.is_deleted"]
+    order_by_clauses: List[str] = ["embedding_distance ASC", f"{alias}.date_last_modified DESC"]
+    limit_value: Optional[int] = default_limit
+    offset_value: Optional[int] = None
+    params: Dict[str, Any] = {"query_vec": vector}
 
-    params = {"query_vec": vector, "limit": limit_value}
+    if isinstance(search_query_or_text, SearchQuery):
+        criteria = search_query_or_text.get_sql_conditionals()
+
+        table_name = criteria.get("table", table_name)
+        alias = criteria.get("table_alias") or alias
+
+        touched_columns = criteria.get("touched_columns") or set()
+        where_clauses = []
+        if "is_deleted" not in touched_columns:
+            where_clauses.append(f"NOT {alias}.is_deleted")
+        for condition in criteria.get("where", []):
+            if condition:
+                where_clauses.append(condition)
+
+        order_by_extra, limit_value, offset_value = get_sql_order_and_limit(
+            criteria,
+            alias=alias,
+            use_textsearch=False,
+            rank_expression=None,
+            default_order_templates=["{alias}.date_last_modified {direction}"],
+            default_limit=default_limit,
+        )
+        order_by_clauses = ["embedding_distance ASC"] + list(order_by_extra or [])
+        if len(order_by_clauses) == 1:
+            order_by_clauses.append(f"{alias}.date_last_modified DESC")
+
+        params.update(criteria.get("params", {}))
+    else:
+        params["limit"] = limit_value
+
+    sql_lines = [
+        "SELECT",
+        f"    {alias}.*,",
+        "    (ie.vec <=> :query_vec) AS embedding_distance",
+        "FROM item_embeddings AS ie",
+        f"JOIN {table_name} AS {alias} ON {alias}.id = ie.item_id",
+    ]
+
+    if where_clauses:
+        sql_lines.append("WHERE")
+        sql_lines.append(f"    {where_clauses[0]}")
+        for clause in where_clauses[1:]:
+            sql_lines.append(f"    AND {clause}")
+
+    if order_by_clauses:
+        sql_lines.append("ORDER BY")
+        for index, clause in enumerate(order_by_clauses):
+            prefix = "    " if index == 0 else "    , "
+            sql_lines.append(f"{prefix}{clause}")
+
+    if limit_value is not None:
+        sql_lines.append("LIMIT :limit")
+        params.setdefault("limit", limit_value)
+
+    if offset_value:
+        sql_lines.append("OFFSET :offset")
+        params["offset"] = offset_value
+
+    sql = text("\n".join(sql_lines))
+
     rows = session.execute(sql, params).mappings().all()
     return rows
