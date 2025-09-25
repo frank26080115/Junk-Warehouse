@@ -285,17 +285,138 @@ def _handle_gmail_message(msg: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 def _ingest_invoice_file(file_storage: FileStorage) -> Dict[str, Any]:
-    """Prepare metadata for a single uploaded invoice/email file.
+    """Prepare metadata for a single uploaded invoice/email file."""
 
-    TODO: Parse MIME and HTML structures similar to backend/automation/gmail_proc.py.
-    TODO: Reuse backend/automation/order_num_extract.py heuristics to derive order identifiers.
-    TODO: Map parsed fields into the invoice tables defined in backend/schemas/schema.sql.
-    """
-    return {
-        "filename": file_storage.filename or "",
-        "status": "pending",
-        "notes": "TODO: implement invoice ingestion pipeline.",
+    filename = file_storage.filename or ""
+    try:
+        raw_payload = file_storage.read()
+    except Exception:
+        log.exception("Failed to read uploaded invoice file %s", filename)
+        return {
+            "filename": filename,
+            "status": "read_error",
+            "order_number": None,
+            "invoice_error": "Unable to read uploaded file.",
+        }
+    finally:
+        try:
+            file_storage.stream.seek(0)
+        except Exception:
+            pass
+
+    if isinstance(raw_payload, str):
+        html_body = raw_payload
+    else:
+        html_body = ""
+        if raw_payload:
+            for encoding in ("utf-8", "utf-16", "latin-1"):
+                try:
+                    html_body = raw_payload.decode(encoding)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            if not html_body:
+                html_body = raw_payload.decode("utf-8", errors="ignore")
+
+    html_body = (html_body or "").lstrip("\ufeff")
+
+    if not html_body.strip():
+        return {
+            "filename": filename,
+            "status": "empty_file",
+            "order_number": None,
+        }
+
+    order_number: Optional[str]
+    order_url: Optional[str]
+    dom_report_available = False
+    dom_report: Optional[Dict[str, Any]] = None
+
+    order_number, order_url = extract_order_number_and_url(html_body)
+    if not order_number:
+        order_number = extract_order_number(html_body)
+        order_url = order_url or ""
+
+    if order_number:
+        order_number = order_number.strip()
+
+    auto_summary = "[]"
+    if html_body:
+        try:
+            report, _ = analyze_dom_report(html_body)
+            dom_report = report
+            auto_summary = _condense_dom_report(report)
+            dom_report_available = True
+        except Exception:
+            log.exception(
+                "Failed to generate DOM auto-summary for uploaded invoice %s",
+                filename,
+            )
+            auto_summary = "[]"
+
+    invoice_id: Optional[str] = None
+    invoice_error: Optional[str] = None
+    invoice_status: Optional[int] = None
+
+    if order_number:
+        urls_value = order_url or ""
+        now = datetime.now(timezone.utc)
+        invoice_payload: Dict[str, Any] = {
+            "date": now,
+            "order_number": order_number,
+            "shop_name": "",
+            "urls": urls_value,
+            "subject": "",
+            "html": html_body,
+            "notes": f"Uploaded via invoice_upload: {filename}",
+            "has_been_processed": False,
+            "auto_summary": auto_summary,
+            "snooze": now,
+            "is_deleted": False,
+        }
+
+        engine = get_engine()
+        invoice_resp, invoice_status = update_db_row_by_dict(
+            engine, "invoices", "new", invoice_payload, fuzzy=False
+        )
+        if invoice_status >= 400:
+            payload = _unwrap_db_payload(invoice_resp)
+            try:
+                invoice_error = json.dumps(payload)
+            except TypeError:
+                invoice_error = str(payload)
+            log.error(
+                "Failed to insert invoice for uploaded file %s: %s",
+                filename,
+                invoice_error,
+            )
+        else:
+            payload = _unwrap_db_payload(invoice_resp)
+            if isinstance(payload, dict):
+                invoice_id = payload.get("id")
+
+    status = "invoice_created" if invoice_id else (
+        "invoice_failed" if invoice_error else "no_order_number"
+    )
+
+    result: Dict[str, Any] = {
+        "filename": filename,
+        "status": status,
+        "order_number": order_number,
+        "order_url": order_url or "",
+        "auto_summary": auto_summary,
+        "dom_report_available": dom_report_available,
     }
+    if dom_report is not None:
+        result["dom_report"] = dom_report
+    if invoice_id:
+        result["invoice_id"] = invoice_id
+    if invoice_error:
+        result["invoice_error"] = invoice_error
+    if invoice_status is not None:
+        result["invoice_status"] = invoice_status
+
+    return result
 
 
 @bp.route("/checkemail", methods=["POST"])
@@ -359,12 +480,8 @@ def check_email() -> Any:
 @bp.route("/invoiceupload", methods=["POST"])
 @login_required
 def invoice_upload() -> Any:
-    """Accept uploaded invoice files and process them like inbound emails.
+    """Accept uploaded invoice files and process them like inbound emails."""
 
-    TODO: Support bulk uploads by streaming each file into the same pipeline used for Gmail messages.
-    TODO: Capture missing metadata (sender, subject, timestamps) with sensible defaults when absent.
-    TODO: Persist invoice and attachment records according to backend/schemas/schema.sql.
-    """
     files = request.files.getlist("files") or request.files.getlist("file")
     if not files:
         return jsonify({"error": "No invoice files provided."}), 400
@@ -373,13 +490,33 @@ def invoice_upload() -> Any:
     for storage in files:
         if not storage:
             continue
-        processed.append(_ingest_invoice_file(storage))
-        # TODO: Persist each result just like a processed Gmail message would be saved.
+        try:
+            result = _ingest_invoice_file(storage)
+        except Exception as exc:
+            log.exception(
+                "Failed to ingest uploaded invoice %s",
+                getattr(storage, "filename", ""),
+            )
+            result = {
+                "filename": getattr(storage, "filename", ""),
+                "status": "processing_error",
+                "error": str(exc),
+            }
+        processed.append(result)
 
-    return jsonify(
-        {
-            "ok": True,
-            "processed": processed,
-            "message": "Invoice upload accepted. TODO: persist invoices and metadata.",
-        }
-    )
+    created = sum(1 for item in processed if item.get("status") == "invoice_created")
+    failure_statuses = {"invoice_failed", "processing_error", "read_error"}
+    failed = sum(1 for item in processed if item.get("status") in failure_statuses)
+    missing = sum(1 for item in processed if item.get("status") == "no_order_number")
+    empty = sum(1 for item in processed if item.get("status") == "empty_file")
+
+    summary = {
+        "ok": failed == 0,
+        "processed": processed,
+        "created": created,
+        "failed": failed,
+        "missing_order_number": missing,
+        "empty_files": empty,
+    }
+
+    return jsonify(summary)
