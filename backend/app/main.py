@@ -12,6 +12,7 @@ from .errors import register_error_handlers
 from .static_server import bp_overlay, get_public_html_path
 from .imagehandler import bp_image
 from .user_login import bp as bp_auth
+from .invoice_handlers import bp as bp_invoice
 from .items import bp as bp_items
 from .maint import bp as bp_maint
 from .search import bp as bp_search
@@ -43,6 +44,7 @@ def create_app():
     app.register_blueprint(bp_overlay)
     app.register_blueprint(bp_image)
     app.register_blueprint(bp_search)
+    app.register_blueprint(bp_invoice)
     app.register_blueprint(bp_items)
     app.register_blueprint(bp_maint)
 
