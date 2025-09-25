@@ -103,6 +103,16 @@ function fromDateInputValue(s: string): string | null {
   return dt.toISOString();
 }
 
+function truncateWithEllipsis(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  if (maxLength <= 1) {
+    return value.slice(0, maxLength);
+  }
+  return `${value.slice(0, maxLength - 1)}…`;
+}
+
 const booleanFlags = [
   { key: "is_container",      emoji: "📦", label: "Container" },
   { key: "is_collection",     emoji: "🗃️", label: "Collection" },
@@ -253,6 +263,16 @@ const ItemPage: React.FC = () => {
 
   const disabled = isReadOnly;
   const targetUuid = item.id || "new";
+  const urlEntries = useMemo(() => {
+    const raw = item.url || "";
+    return raw
+      .split(";")
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0);
+  }, [item.url]);
+  const hasExistingId = Boolean(item?.id);
+  const insertEmoji = hasExistingId ? "👯" : "➕";
+  const insertTitle = `Insert new item (${insertEmoji})`;
 
   return (
     <div className="container-lg" style={{ maxWidth: "960px" }}>
@@ -264,9 +284,9 @@ const ItemPage: React.FC = () => {
             className="btn btn-light border rounded-circle shadow-sm"
             onClick={doInsert}
             aria-label="Insert new item"
-            title="Insert new item (➕)"
+            title={insertTitle}
           >
-            <span aria-hidden>➕</span>
+            <span aria-hidden>{insertEmoji}</span>
           </button>
           <button
             type="button"
@@ -392,15 +412,42 @@ const ItemPage: React.FC = () => {
           <label className="col-12 col-sm-2 col-lg-2 col-form-label fw-semibold form-label-leftright">🛒-URL:</label>
           <div className="col-12 col-sm-10 col-lg-10">
             {isReadOnly ? (
-              isBlank(item.url) ? null : (
-                <a
-                  href={item.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="form-control-plaintext text-truncate"
-                >
-                  {item.url}
-                </a>
+              urlEntries.length === 0 ? null : (
+                <div className="form-control-plaintext p-0">
+                  <div className="d-flex flex-wrap gap-2">
+                    {urlEntries.map((urlValue, index) => {
+                      const displayText =
+                        urlEntries.length === 1
+                          ? truncateWithEllipsis(urlValue, 30)
+                          : "🔗";
+                      const classNameBase = "text-decoration-none";
+                      const className =
+                        urlEntries.length === 1
+                          ? `${classNameBase} text-truncate d-inline-block`
+                          : classNameBase;
+                      const style =
+                        urlEntries.length === 1 ? { maxWidth: "100%" } : undefined;
+                      const ariaLabel =
+                        urlEntries.length === 1
+                          ? undefined
+                          : `Open URL ${index + 1}: ${urlValue}`;
+                      return (
+                        <a
+                          key={`${urlValue}-${index}`}
+                          href={urlValue}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className={className}
+                          style={style}
+                          title={urlValue}
+                          aria-label={ariaLabel}
+                        >
+                          {displayText}
+                        </a>
+                      );
+                    })}
+                  </div>
+                </div>
               )
             ) : (
               <input
