@@ -209,6 +209,7 @@ CREATE TABLE public.invoices (
     urls text DEFAULT ''::text NOT NULL,
     subject text DEFAULT ''::text NOT NULL,
     html text DEFAULT ''::text NOT NULL,
+    auto_summary text DEFAULT ''::text,
     notes text DEFAULT ''::text NOT NULL,
     has_been_processed boolean DEFAULT false NOT NULL,
     snooze timestamp with time zone DEFAULT now() NOT NULL,
