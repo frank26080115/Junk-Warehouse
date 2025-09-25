@@ -18,7 +18,11 @@ from app.assoc_helper import MERGE_BIT
 from app.helpers import normalize_pg_uuid
 from app.db import get_engine, get_db_item_as_dict
 from services.merge_helpers import (
+    _append_audit_note,
+    _build_merge_audit_note,
+    _ensure_index_refresh,
     _merge_description,
+    _merge_item_images,
     _merge_metatext,
     _merge_name,
     _merge_product_code,
@@ -26,6 +30,9 @@ from services.merge_helpers import (
     _merge_remarks,
     _merge_source,
     _merge_url,
+    _reassign_relationships,
+    _transfer_embeddings,
+    _transfer_invoice_links,
 )
 from app.logging_setup import start_log
 from app.static_server import get_public_html_path
@@ -420,13 +427,21 @@ def merge_two_items(
     if primary_uuid == secondary_uuid:
         raise ValueError("Cannot merge an item with itself")
 
-    executor, _relationships_table, cleanup, transaction_ctx = _prepare_relationship_context(db)
+    executor, relationships_table, cleanup, transaction_ctx = _prepare_relationship_context(db)
 
     try:
         log.info("Preparing to merge items %s and %s", primary_uuid, secondary_uuid)
 
         engine = get_engine()
-        items_table = _load_tables(engine, ("items",))["items"]
+        tables = _load_tables(
+            engine,
+            ("items", "item_images", "invoice_items", "item_embeddings", "container_embeddings"),
+        )
+        items_table = tables["items"]
+        item_images_table = tables["item_images"]
+        invoice_items_table = tables["invoice_items"]
+        item_embeddings_table = tables["item_embeddings"]
+        container_embeddings_table = tables["container_embeddings"]
 
         try:
             primary_item = get_db_item_as_dict(engine, "items", primary_uuid)
@@ -521,8 +536,32 @@ def merge_two_items(
             if newest != primary_item.get(field):
                 updates[field] = newest
 
+        audit_note = _build_merge_audit_note(
+            primary_uuid,
+            secondary_uuid,
+            primary_item,
+            secondary_item,
+        )
+        if audit_note:
+            remarks_source = updates.get("remarks", primary_item.get("remarks", ""))
+            remarks_with_audit = _append_audit_note(remarks_source, audit_note)
+            if remarks_with_audit != remarks_source:
+                updates["remarks"] = remarks_with_audit
+
+            metatext_source = updates.get("metatext", primary_item.get("metatext", ""))
+            metatext_with_audit = _merge_metatext(metatext_source, audit_note)
+            if metatext_with_audit != metatext_source:
+                updates["metatext"] = metatext_with_audit
+
         if not updates:
             log.info("No field updates were necessary when merging %s into %s", secondary_uuid, primary_uuid)
+
+        relationship_summary: Dict[str, int] = {}
+        image_summary: Dict[str, int] = {}
+        invoice_summary: Dict[str, int] = {}
+        item_embedding_summary: Dict[str, int] = {}
+        container_embedding_summary: Dict[str, int] = {}
+        refresh_timestamp: Optional[datetime] = None
 
         with transaction_ctx:
             if updates:
@@ -538,13 +577,61 @@ def merge_two_items(
                 .values(is_deleted=True)
             )
 
-            # TODO: Consolidate descriptive fields, notes, and metadata into the surviving item.
-            # TODO: Reassign tags, categories, and other relationships from the secondary item.
-            # TODO: Merge associated images while avoiding duplicate entries in the item_images table.
-            # TODO: Transfer inventory, invoice links, or other domain-specific associations.
-            # TODO: Remove or update the initiating merge row from the relationships table.
-            # TODO: Trigger any indexing or cache refresh required after the merge completes.
-            # TODO: Record an audit trail summarizing the merge for future reference.
+            relationship_summary = _reassign_relationships(
+                executor,
+                relationships_table,
+                primary_uuid,
+                secondary_uuid,
+            )
+            image_summary = _merge_item_images(
+                executor,
+                item_images_table,
+                primary_uuid,
+                secondary_uuid,
+            )
+            invoice_summary = _transfer_invoice_links(
+                executor,
+                invoice_items_table,
+                primary_uuid,
+                secondary_uuid,
+            )
+            item_embedding_summary = _transfer_embeddings(
+                executor,
+                item_embeddings_table,
+                primary_uuid,
+                secondary_uuid,
+            )
+            container_embedding_summary = _transfer_embeddings(
+                executor,
+                container_embeddings_table,
+                primary_uuid,
+                secondary_uuid,
+            )
+            refresh_timestamp = _ensure_index_refresh(
+                executor,
+                items_table,
+                primary_uuid,
+            )
+            if refresh_timestamp is not None:
+                updates["date_last_modified"] = refresh_timestamp
+
+        update_summary = {
+            key: (value.isoformat() if isinstance(value, datetime) else value)
+            for key, value in updates.items()
+        }
+        log.info(
+            "Merge completed for %s <- %s; updates=%s relationships=%s images=%s invoices=%s item_embeddings=%s container_embeddings=%s refreshed=%s audit_note=%s",
+            primary_uuid,
+            secondary_uuid,
+            update_summary,
+            relationship_summary,
+            image_summary,
+            invoice_summary,
+            item_embedding_summary,
+            container_embedding_summary,
+            refresh_timestamp.isoformat() if refresh_timestamp else None,
+            audit_note,
+        )
     finally:
         cleanup()
 
