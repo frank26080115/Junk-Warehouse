@@ -16,7 +16,6 @@ from order_num_extract import extract_order_number, extract_order_number_and_url
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]  # use gmail.modify if you want to add labels, mark read, etc.
 POLL_SECONDS = 30
 ONLY_INBOX = True
-LOOKBACK_DAYS = 7  # limit to last week
 
 def gmail_service():
     """Create an authenticated Gmail API client using OAuth on first run."""
@@ -37,19 +36,22 @@ def gmail_service():
     return build("gmail", "v1", credentials=creds)
 
 def gmail_date_7d_query() -> str:
+    return gmail_date_7d_query(7)
+
+def gmail_date_x_days_query(days:int) -> str:
     """
-    Build a Gmail search query constrained to last week.
+    Build a Gmail search query constrained to some number of days
     We combine:
       - in:inbox (optional)
-      - newer_than:7d (server-side relative)
+      - newer_than:xd (server-side relative)
       - after:YYYY/MM/DD (explicit absolute date for extra safety)
     """
     today_local = datetime.now().date()
-    after_date = (today_local - timedelta(days=LOOKBACK_DAYS)).strftime("%Y/%m/%d")
+    after_date = (today_local - timedelta(days=days)).strftime("%Y/%m/%d")
     parts = []
     if ONLY_INBOX:
         parts.append("in:inbox")
-    parts.append("newer_than:7d")
+    parts.append(f"newer_than:{days}d")
     parts.append(f"after:{after_date}")
     # You can add extra filters here, e.g. -category:social, has:attachment, etc.
     return " ".join(parts)
