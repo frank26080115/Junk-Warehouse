@@ -441,8 +441,8 @@ def merge_two_items(
         if primary_item.get("is_deleted"):
             raise ValueError(f"Primary item {primary_uuid} is already deleted")
 
-        if not secondary_item.get("is_deleted"):
-            raise ValueError(f"Secondary item {secondary_uuid} must be soft deleted before merging")
+        if secondary_item.get("is_deleted"):
+            raise ValueError(f"Secondary item {secondary_uuid} is already deleted")
 
         updates: Dict[str, object] = {}
 
@@ -504,6 +504,12 @@ def merge_two_items(
                     .where(items_table.c.id == primary_uuid)
                     .values(**updates)
                 )
+
+            executor.execute(
+                update(items_table)
+                .where(items_table.c.id == secondary_uuid)
+                .values(is_deleted=True)
+            )
 
             # TODO: Consolidate descriptive fields, notes, and metadata into the surviving item.
             # TODO: Reassign tags, categories, and other relationships from the secondary item.
@@ -575,8 +581,8 @@ def process_pending_merges(
                 log.warning("Skipping merge candidate with missing secondary item: %s", right_uuid)
                 continue
 
-            if not secondary_snapshot.get("is_deleted"):
-                log.info("Secondary item %s has not been marked deleted; skipping merge", right_uuid)
+            if secondary_snapshot.get("is_deleted"):
+                log.info("Secondary item %s is deleted; skipping merge", right_uuid)
                 continue
 
             try:
