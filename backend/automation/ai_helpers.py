@@ -1,0 +1,210 @@
+from __future__ import annotations
+
+import os, sys, pathlib
+import json
+import requests
+
+from typing import List, Union
+
+from openai import OpenAI
+from app.config_loader import CONFIG_DIR, CONFIG_PATH, load_app_config
+
+OLLAMA_HOST_URL = "http://127.0.0.1:11434"
+
+def ensure_ollama_up(host=OLLAMA_HOST_URL, wait_sec=8):
+    import requests, time, subprocess, platform
+
+    # 1) Probe
+    try:
+        r = requests.get(f"{host}/api/version", timeout=1)
+        if r.ok:
+            return True
+    except Exception:
+        pass
+
+    # 2) Try to start (requires Ollama installed and on PATH)
+    try:
+        if platform.system() == "Windows":
+            creationflags = 0
+            if hasattr(subprocess, "DETACHED_PROCESS"):
+                creationflags |= subprocess.DETACHED_PROCESS
+            if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+                creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
+            subprocess.Popen(
+                ["ollama", "serve"],
+                creationflags=creationflags,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.STDOUT
+            )
+        else:
+            subprocess.Popen(
+                ["ollama", "serve"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.STDOUT
+            )
+    except FileNotFoundError:
+        raise RuntimeError("Ollama not found on PATH. Install it and try again.")
+
+    # 3) Wait for it to come up
+    deadline = time.time() + wait_sec
+    while time.time() < deadline:
+        try:
+            r = requests.get(f"{host}/api/version", timeout=1)
+            if r.ok:
+                return True
+        except Exception:
+            time.sleep(0.25)
+
+    raise RuntimeError("Ollama did not start in time.")
+
+def list_ollama_models(host: str = OLLAMA_HOST_URL) -> list[str]:
+    """
+    Return a list of available Ollama model names.
+    """
+    ensure_ollama_up(host)
+    url = f"{host}/api/tags"
+    try:
+        resp = requests.get(url, timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        return [m["name"] for m in data.get("models", [])]
+    except Exception as e:
+        print(f"Error fetching models: {e}")
+        return []
+
+def is_model_online(model: str) -> bool:
+    """
+    Heuristic:
+      - If model exists in local Ollama tags -> offline (False).
+      - If it's a known OpenAI model name -> online (True).
+      - Otherwise raise (better to fail loud than silently route wrong).
+    """
+    local = set(list_ollama_models())
+    if model in local:
+        return False
+    # expand as needed
+    known_online = {
+        "gpt-5-mini", "gpt-5-nano", "gpt-4o-mini", "gpt-4o", "gpt-4.1-mini",
+        "o4-mini", "o3-mini"
+    }
+    if model in known_online or model.startswith("gpt-"):
+        return True
+    raise ValueError(f"Unknown AI model specified: {model}")
+
+class AiInstance(object):
+    def __init__(self, model: str):
+        self.model = model
+        self.appconfig = load_app_config()
+
+        # Map convenience aliases
+        if model == "online":
+            self.model = self.appconfig["ai_model_online"]
+        elif model == "offline":
+            self.model = self.appconfig["ai_model_offline"]
+
+        # IMPORTANT: decide online/offline based on the resolved model
+        self.is_online = is_model_online(self.model)
+
+        if not self.is_online:
+            ensure_ollama_up()
+            self.client = OpenAI(
+                base_url=OLLAMA_HOST_URL + "/v1",  # Ollama's OpenAI-compatible endpoint
+                api_key="ollama"  # any non-empty string
+            )
+        else:
+            secrets_path = CONFIG_DIR / "secrets.json"
+            api_key: str | None = None
+            if secrets_path.exists():
+                try:
+                    data = json.loads(secrets_path.read_text(encoding="utf-8"))
+                    api_key = data.get("openai_api_key")
+                except Exception:
+                    pass
+            # Fallback to environment variable
+            api_key = api_key or os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                raise RuntimeError(
+                    "OpenAI API key not found. Set OPENAI_API_KEY or provide secrets.json with 'openai_api_key'."
+                )
+            self.client = OpenAI(api_key=api_key)
+
+        self.tool = None
+        self.system_msg = None
+
+    def remove_tool(self):
+        self.tool = None
+
+    def make_tool(self, desc: str, param_props, system_msg:str = None, required="all", name: str = "return_tool"):
+        """
+        example of param_props:
+        {
+            "related": {"type": "string", "enum": ["YES","NO"]},
+            "answer":  {"type": "string"},
+            "evidence":{"type": "array", "items": {"type":"string"}, "maxItems": 5}
+        }
+        """
+
+        # it is unlikely a user is going to define a tool without knowing what to say as a system message
+        if system_msg:
+            self.system_msg = system_msg
+
+        self.tool = {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": desc,
+                "parameters": {
+                    "type": "object",
+                    "properties": param_props,
+                    "additionalProperties": False
+                }
+            }
+        }
+        if required:
+            params = self.tool["function"]["parameters"]
+            if required == "all":
+                # copy all keys from properties into required
+                props = params.get("properties", {}) or {}
+                params["required"] = list(props.keys())
+            elif isinstance(required, list):
+                params["required"] = required
+            else:
+                raise TypeError(f"param 'required' must be a list of strings, but it is '{type(required)}'")
+
+    def query(self, user_msg: Union[List[str], str], system_msg: str = None):
+        if not system_msg:
+            system_msg = self.system_msg
+        self.msg = [{"role": "system", "content": system_msg}] if system_msg else []
+
+        if isinstance(user_msg, str):
+            msg_lst = [user_msg]
+        elif isinstance(user_msg, list):
+            msg_lst = user_msg[:]
+        else:
+            raise TypeError(f"param 'user_msg' must be str or list[str], but it is '{type(user_msg)}'")
+
+        for m in msg_lst:
+            self.msg.append({"role": "user", "content": m})
+
+        if self.tool:
+            res = self.client.chat.completions.create(
+                model=self.model,
+                messages=self.msg,
+                tools=[self.tool],
+                tool_choice={"type": "function", "function": {"name": self.tool["function"]["name"]}}
+            )
+            msg = res.choices[0].message
+            # Guard for tool calls presence
+            if not getattr(msg, "tool_calls", None):
+                # Model ignored the tool; return normal content
+                return getattr(msg, "content", "")
+            call = msg.tool_calls[0]
+            # OpenAI SDK returns objects with .function.arguments (JSON string)
+            args_json = call.function.arguments
+            return json.loads(args_json) if isinstance(args_json, str) else args_json
+        else:
+            res = self.client.chat.completions.create(
+                model=self.model,
+                messages=self.msg
+            )
+            return res.choices[0].message.content
