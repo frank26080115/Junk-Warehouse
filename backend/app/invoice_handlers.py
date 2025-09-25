@@ -20,6 +20,8 @@ from automation.gmail_proc import (
 )
 from automation.order_num_extract import extract_order_number, extract_order_number_and_url
 from automation.html_dom_finder import analyze as analyze_dom_report
+from automation.html_invoice_helpers import parse_mhtml_from_string, sniff_format
+from lxml import html as lxml_html
 from app.db import get_engine, update_db_row_by_dict
 
 from .user_login import login_required
@@ -341,6 +343,27 @@ def _ingest_invoice_file(file_storage: FileStorage) -> Dict[str, Any]:
                 html_body = raw_payload.decode("utf-8", errors="ignore")
 
     html_body = (html_body or "").lstrip("\ufeff")
+
+    sniffed_format: Optional[str] = None
+    if html_body:
+        try:
+            sniffed_format = sniff_format(html_body)
+        except Exception:
+            log.exception(
+                "Failed to determine uploaded invoice format for %s",
+                filename,
+            )
+            sniffed_format = None
+
+    if sniffed_format == "mhtml":
+        try:
+            parsed_root = parse_mhtml_from_string(html_body)
+            html_body = lxml_html.tostring(parsed_root, encoding="unicode")
+        except Exception:
+            log.exception(
+                "Failed to extract HTML from MHTML invoice %s",
+                filename,
+            )
 
     if not html_body.strip():
         return {
