@@ -446,10 +446,37 @@ def merge_two_items(
 
         updates: Dict[str, object] = {}
 
+        primary_creation = primary_item.get("date_creation")
+        secondary_creation = secondary_item.get("date_creation")
+
+        name_value = _merge_name(
+            primary_item.get("name", ""),
+            secondary_item.get("name", ""),
+            primary_created=primary_creation,
+            secondary_created=secondary_creation,
+        )
+        if name_value != primary_item.get("name"):
+            updates["name"] = name_value
+
+        description_value = _merge_description(
+            primary_item.get("description", ""),
+            secondary_item.get("description", ""),
+            primary_created=primary_creation,
+            secondary_created=secondary_creation,
+        )
+        if description_value != primary_item.get("description"):
+            updates["description"] = description_value
+
+        remarks_value = _merge_remarks(
+            primary_item.get("remarks", ""),
+            secondary_item.get("remarks", ""),
+            primary_created=primary_creation,
+            secondary_created=secondary_creation,
+        )
+        if remarks_value != primary_item.get("remarks"):
+            updates["remarks"] = remarks_value
+
         text_mergers = (
-            ("name", _merge_name),
-            ("description", _merge_description),
-            ("remarks", _merge_remarks),
             ("quantity", _merge_quantity),
             ("product_code", _merge_product_code),
             ("url", _merge_url),
