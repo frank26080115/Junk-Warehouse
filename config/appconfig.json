@@ -1,3 +1,5 @@
 {
-    "timezone": "America/Los_Angeles"
+    "timezone": "America/Los_Angeles",
+    "ai_model_online": "gpt-5-nano",
+    "ai_model_offline": "gpt-oss:20b"
 }
