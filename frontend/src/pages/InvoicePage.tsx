@@ -3,6 +3,8 @@ import { useNavigate, useParams } from "react-router-dom";
 
 import "../styles/forms.css";
 
+import AutoInvoiceSummaryPanel from "../app/components/AutoInvoiceSummaryPanel";
+
 interface InvoiceDto {
   id?: string;
   date?: string | null;
@@ -14,6 +16,7 @@ interface InvoiceDto {
   has_been_processed?: boolean;
   snooze?: string | null;
   is_deleted?: boolean;
+  auto_summary?: string | null;
 }
 
 const EMPTY_INVOICE: InvoiceDto = {
@@ -27,6 +30,7 @@ const EMPTY_INVOICE: InvoiceDto = {
   has_been_processed: false,
   snooze: null,
   is_deleted: false,
+  auto_summary: "",
 };
 
 function fmtDateTime(value?: string | null): string {
@@ -362,6 +366,8 @@ const InvoicePage: React.FC = () => {
           </div>
         </div>
       </div>
+      <AutoInvoiceSummaryPanel invoiceUuid={effectiveUuid} autoSummaryRaw={invoice.auto_summary} />
+
       <footer className="mt-4 text-muted small">
         Invoice UUID: {effectiveUuid ? (
           <a href={`/invoice/${effectiveUuid}`}>{effectiveUuid}</a>

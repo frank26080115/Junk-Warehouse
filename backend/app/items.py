@@ -396,3 +396,160 @@ def insert_item_api():
     except Exception as e:
         log.exception("insertitem failed")
         return jsonify({"error": str(e)}), 400
+
+@bp.route("/autogenitems", methods=["POST"])
+@login_required
+def autogen_items_api():
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, Mapping):
+        return jsonify({"success": False, "error": "Request payload must be an object."}), 400
+
+    invoice_value = (
+        payload.get("invoice_uuid")
+        or payload.get("invoiceId")
+        or payload.get("invoice_id")
+    )
+    if not invoice_value:
+        return jsonify({"success": False, "error": "Missing invoice UUID."}), 400
+    try:
+        invoice_uuid = normalize_pg_uuid(str(invoice_value))
+    except Exception as exc:
+        return jsonify({"success": False, "error": f"Invalid invoice UUID: {exc}"}), 400
+
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list) or len(raw_items) == 0:
+        return jsonify({"success": False, "error": "Items payload must be a non-empty list."}), 400
+
+    engine = get_engine()
+    succeeded_ids: List[str] = []
+    failures: List[Dict[str, str]] = []
+
+    for entry in raw_items:
+        client_id = ""
+        name_text = ""
+        url_text = ""
+        display_value = ""
+        try:
+            if not isinstance(entry, Mapping):
+                raise TypeError("Each entry must be an object.")
+            raw_client_id = entry.get("client_id")
+            if isinstance(raw_client_id, str) and raw_client_id.strip():
+                client_id = raw_client_id.strip()
+            elif raw_client_id is not None:
+                client_id = str(raw_client_id)
+
+            raw_name = entry.get("name")
+            raw_url = entry.get("url")
+            if isinstance(raw_name, str):
+                name_text = raw_name.strip()
+            if isinstance(raw_url, str):
+                url_text = raw_url.strip()
+
+            display_value = name_text or url_text or client_id or "(unnamed entry)"
+
+            if not name_text and not url_text:
+                raise ValueError("Missing name and URL for auto-generated item.")
+
+            row_payload: Dict[str, Any] = {
+                "name": name_text or url_text or "(auto summary item)",
+                "url": url_text,
+                "remarks": "automatically generated from invoice",
+                "is_staging": True,
+            }
+
+            # TODO: add pre-insert intelligence here
+            insert_result = update_db_row_by_dict(
+                engine=engine,
+                table=TABLE,
+                uuid="new",
+                data=row_payload,
+                fuzzy=True,
+                id_col_name=ID_COL,
+            )
+
+            inserted_row: Optional[Mapping[str, Any]] = None
+            if isinstance(insert_result, tuple) and len(insert_result) == 2:
+                resp_obj, status_code = insert_result
+                if status_code >= 400:
+                    detail_payload: Optional[Mapping[str, Any]] = None
+                    if hasattr(resp_obj, "get_json"):
+                        try:
+                            detail_payload = resp_obj.get_json(silent=True)
+                        except Exception:
+                            detail_payload = None
+                    elif isinstance(resp_obj, Mapping):
+                        detail_payload = resp_obj  # type: ignore[assignment]
+                    message = ""
+                    if isinstance(detail_payload, Mapping):
+                        extracted = detail_payload.get("error") or detail_payload.get("detail")
+                        if extracted:
+                            message = str(extracted)
+                    raise RuntimeError(message or "database error during insert")
+
+                parsed_payload: Optional[Mapping[str, Any]] = None
+                if hasattr(resp_obj, "get_json"):
+                    try:
+                        parsed_payload = resp_obj.get_json(silent=True)
+                    except Exception:
+                        parsed_payload = None
+                elif isinstance(resp_obj, Mapping):
+                    parsed_payload = resp_obj  # type: ignore[assignment]
+
+                if isinstance(parsed_payload, Mapping):
+                    data_section = parsed_payload.get("data")
+                    if isinstance(data_section, Mapping):
+                        inserted_row = data_section
+            elif isinstance(insert_result, Mapping):
+                possible_data = insert_result.get("data")
+                if isinstance(possible_data, Mapping):
+                    inserted_row = possible_data
+
+            new_item_id: Optional[str] = None
+            if inserted_row and ID_COL in inserted_row:
+                new_item_id = str(inserted_row[ID_COL])
+            if not new_item_id and row_payload.get(ID_COL):
+                new_item_id = str(row_payload[ID_COL])
+            if not new_item_id:
+                raise RuntimeError("Insert succeeded but item ID could not be determined")
+
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO invoice_items (item_id, invoice_id) VALUES (:item_id, :invoice_id)"
+                    ),
+                    {"item_id": new_item_id, "invoice_id": invoice_uuid},
+                )
+                # TODO: add post-insert intelligence here, maybe automatically linking up containers, maybe mark duplicates for merge
+
+            succeeded_ids.append(client_id or new_item_id)
+        except Exception as exc:
+            error_message = str(exc)
+            reference = display_value or url_text or name_text or client_id or "(unnamed entry)"
+            log.exception("autogenitems insert failed for %s", reference)
+            failures.append(
+                {
+                    "client_id": client_id,
+                    "display": reference,
+                    "error": error_message,
+                }
+            )
+
+    response_payload: Dict[str, Any] = {
+        "success": not failures,
+        "invoice_uuid": invoice_uuid,
+        "inserted_count": len(succeeded_ids),
+        "succeeded_ids": succeeded_ids,
+    }
+
+    if not failures and succeeded_ids:
+        count = len(succeeded_ids)
+        plural = "" if count == 1 else "s"
+        response_payload["message"] = f"Inserted {count} item{plural}."
+    elif failures:
+        summary = "; ".join(f"{item['display']}: {item['error']}" for item in failures)
+        response_payload["failures"] = failures
+        response_payload["message"] = summary
+        response_payload["success"] = False
+
+    return jsonify(response_payload), 200
+
