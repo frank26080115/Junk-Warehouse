@@ -1016,7 +1016,7 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
                 disabled={!hasResults}
                 onClick={handleSelectAll}
               >
-                select all
+                ☑️☑️
               </button>
               <button
                 type="button"
@@ -1024,7 +1024,7 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
                 disabled={!selectedCount}
                 onClick={handleSelectNone}
               >
-                select none
+                ☐☐
               </button>
               {allowDelete && (
                 <button
@@ -1033,7 +1033,7 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
                   disabled={!selectedCount}
                   onClick={handleDelete}
                 >
-                  delete
+                  🗑️
                 </button>
               )}
             </div>
