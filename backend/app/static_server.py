@@ -42,11 +42,18 @@ def overlay_root(path: str):
     abort(404)
 
 def get_public_html_path() -> Path:
-    from flask import current_app
-
     key = "public_html_path"
     default_path = REPO_ROOT / "var" / "public_html"
-    configured_path = current_app.config.get(key)
+
+    configured_path = None
+    try:
+        from flask import current_app
+        configured_path = current_app.config.get(key)
+    except:
+        from app.config_loader import load_app_config
+        app_cfg = load_app_config()
+        configured_path = app_cfg["key"]
+
     if configured_path:
         return Path(configured_path)
     return default_path
