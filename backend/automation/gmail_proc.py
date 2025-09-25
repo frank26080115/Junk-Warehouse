@@ -35,6 +35,7 @@ def gmail_service():
 
     return build("gmail", "v1", credentials=creds)
 
+
 def gmail_date_7d_query() -> str:
     return gmail_date_7d_query(7)
 
@@ -53,8 +54,13 @@ def gmail_date_x_days_query(days:int) -> str:
         parts.append("in:inbox")
     parts.append(f"newer_than:{days}d")
     parts.append(f"after:{after_date}")
-    # You can add extra filters here, e.g. -category:social, has:attachment, etc.
     return " ".join(parts)
+
+
+def gmail_date_7d_query() -> str:
+    """Backward-compatible helper that retains the historic 7-day behavior."""
+
+    return gmail_date_x_days_query(LOOKBACK_DAYS)
 
 def list_message_ids(svc, q: str, max_page=10) -> List[str]:
     """List message IDs that match query; handles pagination."""
