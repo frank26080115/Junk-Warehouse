@@ -33,6 +33,20 @@ SECRETS_PATH = REPO_ROOT / "config" / "secrets.json"
 
 
 def _load_gmail_token() -> Dict[str, Any]:
+    token_path = SECRETS_PATH.with_name("gmail_token.json")
+
+    if token_path.exists():
+        raw_token = token_path.read_text(encoding="utf-8")
+        try:
+            token_data = json.loads(raw_token)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Invalid JSON content in Gmail token file at {token_path}"
+            ) from exc
+        if not isinstance(token_data, dict):
+            raise ValueError("gmail_token.json must contain a JSON object with OAuth credentials")
+        return token_data
+
     if not SECRETS_PATH.exists():
         raise FileNotFoundError(f"Missing secrets file at {SECRETS_PATH}")
 
@@ -44,6 +58,7 @@ def _load_gmail_token() -> Dict[str, Any]:
 
 
 def _build_gmail_service() -> Any:
+    token_path = SECRETS_PATH.with_name("gmail_token.json")
     token_info = _load_gmail_token()
 
     try:
@@ -59,8 +74,15 @@ def _build_gmail_service() -> Any:
 
     creds = Credentials.from_authorized_user_info(token_info, scopes=scopes)
 
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
+    persist_token = not token_path.exists()
+
+    if not creds.valid:
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        persist_token = True
+
+    if persist_token:
+        token_path.write_text(creds.to_json(), encoding="utf-8")
 
     return build("gmail", "v1", credentials=creds)
 
