@@ -36,23 +36,31 @@ def gmail_service():
 
     return build("gmail", "v1", credentials=creds)
 
-def gmail_date_7d_query() -> str:
-    """
-    Build a Gmail search query constrained to last week.
-    We combine:
-      - in:inbox (optional)
-      - newer_than:7d (server-side relative)
-      - after:YYYY/MM/DD (explicit absolute date for extra safety)
-    """
+def gmail_date_x_days_query(days: int) -> str:
+    """Build a Gmail query limited to ``days`` worth of history."""
+
+    try:
+        days_int = int(days)
+    except (TypeError, ValueError):
+        days_int = LOOKBACK_DAYS
+
+    if days_int <= 0:
+        days_int = LOOKBACK_DAYS
+
     today_local = datetime.now().date()
-    after_date = (today_local - timedelta(days=LOOKBACK_DAYS)).strftime("%Y/%m/%d")
-    parts = []
+    after_date = (today_local - timedelta(days=days_int)).strftime("%Y/%m/%d")
+    parts: List[str] = []
     if ONLY_INBOX:
         parts.append("in:inbox")
-    parts.append("newer_than:7d")
+    parts.append(f"newer_than:{days_int}d")
     parts.append(f"after:{after_date}")
-    # You can add extra filters here, e.g. -category:social, has:attachment, etc.
     return " ".join(parts)
+
+
+def gmail_date_7d_query() -> str:
+    """Backward-compatible helper that retains the historic 7-day behavior."""
+
+    return gmail_date_x_days_query(LOOKBACK_DAYS)
 
 def list_message_ids(svc, q: str, max_page=10) -> List[str]:
     """List message IDs that match query; handles pagination."""
