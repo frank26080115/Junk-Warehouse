@@ -58,8 +58,7 @@ def _collect_item_text(item_row: Mapping[str, Any]) -> str:
                 parts.append(trimmed)
         else:
             parts.append(str(value))
-    return "
-".join(parts)
+    return "".join(parts)
 
 
 def _build_embedding_vector(text_input: str, *, dimensions: int = EMBEDDING_DIMENSIONS) -> List[float]:
