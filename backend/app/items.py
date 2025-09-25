@@ -13,6 +13,7 @@ from sqlalchemy.engine import Engine
 
 from .user_login import login_required
 from .db import get_engine, get_db_item_as_dict, update_db_row_by_dict, unwrap_db_result
+from .embeddings import update_embeddings_for_item
 from .slugify import slugify
 from .helpers import normalize_pg_uuid
 from .image_handler import (
@@ -208,6 +209,11 @@ def save_item_api():
         if not db_row:
             return jsonify({"error": "Saved item not found"}), 404
 
+        try:
+            update_embeddings_for_item(db_row)
+        except Exception:
+            log.exception("Failed to refresh item embeddings after save")
+
         return jsonify(_augment_item(db_row)), 200
 
     except Exception as e:
@@ -349,6 +355,11 @@ def insert_item(
     db_row = get_db_item_as_dict(engine, TABLE, new_id, id_col_name=ID_COL)
     if not db_row:
         raise LookupError("Inserted item not found")
+
+    try:
+        update_embeddings_for_item(db_row)
+    except Exception:
+        log.exception("Failed to refresh item embeddings after insert")
 
     return _augment_item(db_row)
 
