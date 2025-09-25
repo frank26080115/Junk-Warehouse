@@ -19,6 +19,7 @@ from automation.gmail_proc import (
     list_message_ids,
 )
 from automation.order_num_extract import extract_order_number, extract_order_number_and_url
+from automation.html_dom_finder import analyze as analyze_dom_report
 from app.db import get_engine, update_db_row_by_dict
 
 from .user_login import login_required
@@ -156,6 +157,38 @@ def _unwrap_db_payload(response: Any) -> Dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _condense_dom_report(report: Dict[str, Any]) -> str:
+    summary: List[Dict[str, str]] = []
+    candidates = report.get("top_candidates") if isinstance(report, dict) else None
+    if not isinstance(candidates, list):
+        candidates = []
+
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+
+        url = (item.get("url") or "").strip()
+        preview_text = (item.get("preview_text") or "").strip()
+        anchor_text = (item.get("anchor_text") or "").strip()
+
+        chosen_text = ""
+        if url:
+            chosen_text = anchor_text if len(anchor_text) >= 12 else preview_text
+            if len(chosen_text) < 12:
+                chosen_text = ""
+        else:
+            if len(preview_text) >= 12:
+                chosen_text = preview_text
+
+        if chosen_text or url:
+            summary.append({
+                "text": chosen_text if chosen_text else "",
+                "url": url,
+            })
+
+    return json.dumps(summary, ensure_ascii=False)
+
+
 def _handle_gmail_message(msg: Dict[str, Any]) -> Dict[str, Any]:
     headers = {h.get("name", "").lower(): h.get("value", "") for h in msg.get("payload", {}).get("headers", [])}
     subject = headers.get("subject", "")
@@ -183,6 +216,15 @@ def _handle_gmail_message(msg: Dict[str, Any]) -> Dict[str, Any]:
     invoice_id: Optional[str] = None
     invoice_error: Optional[str] = None
 
+    auto_summary = "[]"
+    if html_body:
+        try:
+            report, _ = analyze_dom_report(html_body)
+            auto_summary = _condense_dom_report(report)
+        except Exception:
+            log.exception("Failed to generate DOM auto-summary for Gmail message")
+            auto_summary = "[]"
+
     if order_number:
         gmail_url = f"https://mail.google.com/mail/u/0/#all/{message_id}"
         urls_value = gmail_url
@@ -198,6 +240,7 @@ def _handle_gmail_message(msg: Dict[str, Any]) -> Dict[str, Any]:
             "html": html_body or text_body,
             "notes": "",
             "has_been_processed": False,
+            "auto_summary": auto_summary,
             "snooze": datetime.now(timezone.utc),
             "is_deleted": False,
         }
