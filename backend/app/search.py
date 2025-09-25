@@ -11,7 +11,7 @@ from flask import Blueprint, jsonify, request
 
 from .user_login import login_required
 from .db import deduplicate_rows, get_or_create_session
-from .search_expression import SearchQuery
+from .search_expression import SearchQuery, get_sql_order_and_limit
 from .embeddings import search_items_by_embeddings
 from .helpers import fuzzy_levenshtein_at_most
 from .items import augment_item_dict
@@ -167,32 +167,14 @@ def _execute_text_search_query(
         if condition:
             where_clauses.append(condition)
 
-    flags = criteria.get("flags") or {}
-    order_by_clauses: List[str] = list(criteria.get("order_by") or [])
-    if order_by_clauses:
-        if use_textsearch and rank_expression and not flags.get("random_order"):
-            order_by_clauses.append(f"{rank_expression} DESC")
-    else:
-        base_direction = "ASC" if flags.get("reverse_default_order") else "DESC"
-        if use_textsearch and rank_expression:
-            order_by_clauses.append(f"{rank_expression} {base_direction}")
-        if default_order_templates:
-            for template in default_order_templates:
-                order_by_clauses.append(template.format(alias=alias, direction=base_direction))
-
-    limit_value = criteria.get("limit")
-    limit_is_explicit = criteria.get("limit_is_explicit", False)
-    page_number = criteria.get("page")
-    show_all = flags.get("show_all", False)
-
-    if not limit_is_explicit:
-        limit_value = default_limit
-    elif show_all:
-        limit_value = None
-
-    offset_value: Optional[int] = None
-    if isinstance(page_number, int) and page_number > 1 and limit_value:
-        offset_value = (page_number - 1) * limit_value
+    order_by_clauses, limit_value, offset_value = get_sql_order_and_limit(
+        criteria,
+        alias=alias,
+        use_textsearch=use_textsearch,
+        rank_expression=rank_expression,
+        default_order_templates=default_order_templates,
+        default_limit=default_limit,
+    )
 
     sql_lines = [
         "SELECT",
