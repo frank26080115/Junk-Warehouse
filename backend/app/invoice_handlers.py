@@ -181,6 +181,23 @@ def _unwrap_db_payload(response: Any) -> Dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _serialize_invoice_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    data = dict(row)
+    raw_id = data.get("id")
+    if raw_id is not None:
+        try:
+            data["id"] = str(raw_id)
+        except Exception:
+            pass
+    for key in ("date", "snooze"):
+        value = data.get(key)
+        if hasattr(value, "isoformat"):
+            try:
+                data[key] = value.isoformat()
+            except Exception:
+                pass
+    return data
+
 def _condense_dom_report(report: Dict[str, Any]) -> str:
     summary: List[Dict[str, str]] = []
     candidates = report.get("top_candidates") if isinstance(report, dict) else None
@@ -463,6 +480,121 @@ def _ingest_invoice_file(file_storage: FileStorage) -> Dict[str, Any]:
 
     return result
 
+
+@bp.route("/getinvoice", methods=["POST"])
+@login_required
+def get_invoice_api() -> Any:
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify({"error": "Invoice UUID is required."}), 400
+    invoice_uuid = payload.get("uuid") or payload.get("id")
+    if isinstance(invoice_uuid, str):
+        invoice_uuid = invoice_uuid.strip()
+    if not invoice_uuid:
+        return jsonify({"error": "Invoice UUID is required."}), 400
+    engine = get_engine()
+    try:
+        invoice_row = get_db_item_as_dict(engine, "invoices", invoice_uuid)
+    except LookupError:
+        return jsonify({"error": "Invoice not found."}), 404
+    except ValueError:
+        return jsonify({"error": "Invalid invoice UUID."}), 400
+    except Exception:
+        log.exception("Failed to load invoice %s", invoice_uuid)
+        return jsonify({"error": "Failed to load invoice."}), 500
+    return jsonify(_serialize_invoice_row(invoice_row)), 200
+
+
+@bp.route("/setinvoice", methods=["POST"])
+@login_required
+def set_invoice_api() -> Any:
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify({"error": "Invoice payload must be an object."}), 400
+    invoice_uuid = payload.get("id") or payload.get("uuid")
+    if isinstance(invoice_uuid, str):
+        invoice_uuid = invoice_uuid.strip()
+    cleaned_payload = dict(payload)
+    cleaned_payload.pop("uuid", None)
+    if "id" in cleaned_payload:
+        raw_id = cleaned_payload["id"]
+        if raw_id is None or (isinstance(raw_id, str) and not raw_id.strip()):
+            cleaned_payload.pop("id", None)
+    for key in ("date", "snooze"):
+        value = cleaned_payload.get(key)
+        if isinstance(value, str) and not value.strip():
+            cleaned_payload[key] = None
+    engine = get_engine()
+    target_uuid = invoice_uuid if invoice_uuid else "new"
+    update_result = update_db_row_by_dict(
+        engine,
+        "invoices",
+        target_uuid,
+        cleaned_payload,
+        fuzzy=False,
+    )
+    if isinstance(update_result, tuple) and len(update_result) == 2:
+        response_obj, status_code = update_result
+    else:
+        response_obj = update_result
+        status_code = 200
+    if status_code >= 400:
+        if hasattr(response_obj, "get_json"):
+            try:
+                error_payload = response_obj.get_json()
+            except Exception:
+                error_payload = None
+            if error_payload is not None:
+                return jsonify(error_payload), status_code
+            return response_obj, status_code
+        if isinstance(response_obj, dict):
+            return jsonify(response_obj), status_code
+        return jsonify({"error": str(response_obj)}), status_code
+    response_payload = None
+    if hasattr(response_obj, "get_json"):
+        try:
+            response_payload = response_obj.get_json()
+        except Exception:
+            response_payload = None
+    elif isinstance(response_obj, dict):
+        response_payload = response_obj
+    invoice_data = None
+    if isinstance(response_payload, dict):
+        data_section = response_payload.get("data")
+        if isinstance(data_section, dict):
+            invoice_data = data_section
+        elif response_payload.get("ok") and isinstance(response_payload.get("invoice"), dict):
+            invoice_data = response_payload["invoice"]
+        else:
+            invoice_data = response_payload if response_payload else None
+    invoice_id = None
+    if isinstance(invoice_data, dict):
+        invoice_id = invoice_data.get("id")
+    if not invoice_id:
+        if isinstance(invoice_uuid, str):
+            lowered = invoice_uuid.lower()
+            if lowered not in {"new", "insert"} and invoice_uuid:
+                invoice_id = invoice_uuid
+        elif invoice_uuid is not None:
+            invoice_id = invoice_uuid
+    reloaded_row = None
+    if invoice_id:
+        try:
+            reloaded_row = get_db_item_as_dict(engine, "invoices", invoice_id)
+        except Exception:
+            log.exception("Invoice %s saved but failed to reload", invoice_id)
+            reloaded_row = None
+    final_row: Dict[str, Any]
+    if isinstance(reloaded_row, dict):
+        final_row = reloaded_row
+    elif isinstance(invoice_data, dict):
+        final_row = invoice_data
+    else:
+        fallback = dict(cleaned_payload)
+        if invoice_id:
+            fallback.setdefault("id", invoice_id)
+        final_row = fallback
+    return jsonify(_serialize_invoice_row(final_row)), status_code
 
 @bp.route("/checkemail", methods=["POST"])
 @login_required
