@@ -15,6 +15,11 @@ from .user_login import login_required
 from .db import get_engine, get_db_item_as_dict, update_db_row_by_dict
 from .slugify import slugify
 from .helpers import normalize_pg_uuid
+from .image_handler import (
+    store_image_for_item,
+    BadRequest as ImageBadRequest,
+    UnsupportedMedia as ImageUnsupportedMedia,
+)
 
 log = logging.getLogger(__name__)
 
@@ -440,10 +445,12 @@ def autogen_items_api():
 
             raw_name = entry.get("name")
             raw_url = entry.get("url")
+            raw_image = entry.get("image")
             if isinstance(raw_name, str):
                 name_text = raw_name.strip()
             if isinstance(raw_url, str):
                 url_text = raw_url.strip()
+            image_text = raw_image.strip() if isinstance(raw_image, str) else ""
 
             display_value = name_text or url_text or client_id or "(unnamed entry)"
 
@@ -473,6 +480,40 @@ def autogen_items_api():
                     {"item_id": new_item_id, "invoice_id": invoice_uuid},
                 )
                 # TODO: add post-insert intelligence here, maybe automatically linking up containers, maybe mark duplicates for merge
+
+            if image_text:
+                image_error: Optional[str] = None
+                try:
+                    item_uuid_obj = uuid.UUID(new_item_id)
+                    if image_text.lower().startswith("data:"):
+                        store_image_for_item(
+                            item_uuid=item_uuid_obj,
+                            data_url=image_text,
+                            clipboard_upload=True,
+                        )
+                    else:
+                        store_image_for_item(
+                            item_uuid=item_uuid_obj,
+                            source_url=image_text,
+                        )
+                except (ImageBadRequest, ImageUnsupportedMedia) as img_exc:
+                    image_error = str(img_exc)
+                    log.warning("Image handling rejected for %s: %s", display_value, img_exc)
+                except (RuntimeError, FileNotFoundError, ValueError) as img_exc:
+                    image_error = str(img_exc)
+                    log.warning("Image handling failed for %s: %s", display_value, img_exc)
+                except Exception as img_exc:  # pragma: no cover - defensive guard
+                    image_error = str(img_exc)
+                    log.exception("Unexpected image handling failure for %s", display_value)
+
+                if image_error:
+                    failures.append(
+                        {
+                            "client_id": client_id,
+                            "display": f"{display_value} (image)",
+                            "error": f"Image processing failed: {image_error}",
+                        }
+                    )
 
             succeeded_ids.append(client_id or new_item_id)
         except Exception as exc:

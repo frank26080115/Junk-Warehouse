@@ -6,7 +6,10 @@ import shutil
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Tuple
+from typing import Any, Dict, Optional, Tuple
+import base64
+import binascii
+import re
 
 from flask import Blueprint, request, jsonify
 from werkzeug.utils import secure_filename
@@ -223,25 +226,43 @@ def img_upload():
     return handle_img_upload(item_id)
 
 
-def handle_img_upload(item_id:str):
+def _write_data_url_to_tmp(data_url: str, tmp_dir: Path, *, default_stem: str) -> Tuple[Path, str, str]:
+    match = re.match(r"data:(?P<mime>[^;]+);base64,(?P<data>.+)", data_url, re.DOTALL)
+    if not match:
+        raise BadRequest("Invalid data URL format")
+    mimetype = (match.group("mime") or "image/png").strip()
+    data_segment = match.group("data") or ""
+    try:
+        binary = base64.b64decode(data_segment, validate=True)
+    except binascii.Error as exc:
+        raise BadRequest("Failed to decode image data") from exc
+    if not binary:
+        raise BadRequest("Image data URL did not contain any data")
+    ext = _ext_from_mimetype(mimetype)
+    if not ext:
+        ext = "png"
+    base_name = secure_filename(f"{default_stem}.{ext}") or f"{default_stem}.{ext}"
+    base_name = _truncate_basename(base_name)
+    tmp_name = _unique_name(tmp_dir, base_name)
+    tmp_path = tmp_dir / tmp_name
+    with open(tmp_path, "wb") as handle:
+        handle.write(binary)
+    return tmp_path, base_name, mimetype
+
+
+def store_image_for_item(
+    *,
+    item_uuid: uuid.UUID,
+    upload: Optional[Any] = None,
+    source_url: str = "",
+    data_url: str = "",
+    clipboard_upload: bool = False,
+) -> Dict[str, Any]:
     tmp_dir, imgs_root = _ensure_dirs()
 
-    if not item_id:
-        return jsonify(error="Missing required field 'item_id'"), 400
-    try:
-        item_uuid = _validate_uuid(item_id)
-    except BadRequest as e:
-        return jsonify(error=str(e)), 400
- 
-    clipboard_flag = request.form.get("img_clipboard", "").strip()
-    is_clipboard_upload = clipboard_flag not in {"", "0", "false", "False"}
-
-    # Determine source: file or url (must have one or the other)
-    upload = request.files.get("img_file")
-    url = request.form.get("img_url", "").strip()
-
-    if (not upload and not url) or (upload and url):
-        return jsonify(error="Provide exactly one of 'img_file' or 'img_url'"), 400
+    provided = [bool(upload), bool(source_url), bool(data_url)]
+    if sum(provided) != 1:
+        raise BadRequest("Provide exactly one image source")
 
     try:
         with get_db_conn() as conn:
@@ -249,12 +270,12 @@ def handle_img_upload(item_id:str):
                 text("SELECT short_id FROM items WHERE id = :item_id"),
                 {"item_id": str(item_uuid)},
             ).first()
-    except Exception:
+    except Exception as exc:
         log.exception("Failed to fetch item short_id prior to upload")
-        return jsonify(error="Database error while preparing image upload"), 500
+        raise RuntimeError("Database error while preparing image upload") from exc
 
     if row is None:
-        return jsonify(error="Unknown item for upload"), 404
+        raise FileNotFoundError("Unknown item for upload")
 
     short_value = row[0]
     try:
@@ -262,17 +283,16 @@ def handle_img_upload(item_id:str):
     except (TypeError, ValueError):
         short_id_hex = str(short_value or "0")
 
-    # Save source into tmp, validate extension & readability
-    source_url = ""
+    source_url_value = ""
     has_renamed = False
     try:
-        if upload:
-            incoming_name = secure_filename(upload.filename or "")
-            if incoming_name and not is_clipboard_upload:
+        if upload is not None:
+            incoming_name = secure_filename(getattr(upload, "filename", "") or "")
+            if incoming_name and not clipboard_upload:
                 original_name = incoming_name
             else:
                 timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
-                ext = _ext_from_mimetype(upload.mimetype)
+                ext = _ext_from_mimetype(getattr(upload, "mimetype", "image/png"))
                 original_name = f"{short_id_hex}{timestamp}.{ext}"
                 has_renamed = True
             if not _ext_ok(original_name):
@@ -281,51 +301,51 @@ def handle_img_upload(item_id:str):
             tmp_name = _unique_name(tmp_dir, original_name)
             tmp_path = tmp_dir / tmp_name
             upload.save(tmp_path)
+        elif data_url:
+            timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
+            tmp_path, original_name, _ = _write_data_url_to_tmp(
+                data_url,
+                tmp_dir,
+                default_stem=f"{short_id_hex}{timestamp}",
+            )
+            has_renamed = True
         else:
-            source_url = url
-            tmp_path = _download_to_tmp(url, tmp_dir)
-            original_name = tmp_path.name  # already secured/truncated
+            source_url_value = source_url
+            tmp_path = _download_to_tmp(source_url, tmp_dir)
+            original_name = tmp_path.name
 
-        # Probe image
         width, height = _open_image_probe(tmp_path)
 
-    except BadRequest as e:
-        log.info("BadRequest in handle_img_upload: %s", e)
-        return jsonify(error=str(e)), 400
-    except UnsupportedMedia as e:
-        log.info("Unsupported media in handle_img_upload: %s", e)
-        return jsonify(error=str(e)), 400
-    except Exception as e:
+    except BadRequest:
+        raise
+    except UnsupportedMedia:
+        raise
+    except Exception as exc:
         log.exception("Unexpected error saving image to tmp")
-        return jsonify(error="Failed to receive image"), 500
+        raise RuntimeError("Failed to receive image") from exc
 
-    # Pick permanent directory
     try:
         target_dir = _latest_or_new_img_dir(imgs_root)
-        dir_name = target_dir.name  # YYYY-MM-DD
-    except Exception as e:
+        dir_name = target_dir.name
+    except Exception as exc:
         log.exception("Failed to select/create target image directory")
-        return jsonify(error="Server storage configuration error"), 500
+        raise RuntimeError("Server storage configuration error") from exc
 
-    # Move original image to permanent dir (keep original format/name, ensure uniqueness)
     try:
         final_name = _unique_name(target_dir, original_name)
         final_path = target_dir / final_name
         shutil.move(str(tmp_path), final_path)
-    except Exception as e:
+    except Exception as exc:
         log.exception("Failed to move image from tmp to final")
-        return jsonify(error="Failed to store image"), 500
+        raise RuntimeError("Failed to store image") from exc
 
-    # Generate thumbnail (basename.thumbnail.jpg)
     try:
         base_no_ext = Path(final_name).stem
         thumb_name = _save_thumbnail(final_path, target_dir, base_no_ext)
-    except Exception as e:
+    except Exception as exc:
         log.exception("Failed to create thumbnail for %s", final_path)
-        # Not fatal to the upload itself; you can decide to fail hard:
-        return jsonify(error="Failed to create thumbnail"), 500
+        raise RuntimeError("Failed to create thumbnail") from exc
 
-    # Insert DB rows
     try:
         with get_db_conn() as conn:
             trans = conn.begin()
@@ -354,7 +374,7 @@ def handle_img_upload(item_id:str):
                     {
                         "dir": dir_name,
                         "file_name": final_name,
-                        "source_url": source_url,
+                        "source_url": source_url_value,
                         "has_renamed": has_renamed,
                         "original_file_name": original_name,
                         "notes": "",
@@ -391,30 +411,65 @@ def handle_img_upload(item_id:str):
             final_name, width, height, dir_name, img_id, rel_id, rank
         )
 
-    except Exception as e:
-        log.exception("Database operation failed for image %s", final_name)
-        return jsonify(error="Database error while saving image"), 500
+    except Exception as exc:
+        log.exception("Database operation failed for image %s", locals().get("final_name"))
+        raise RuntimeError("Database error while saving image") from exc
 
-    # Success response
-    return jsonify(
-        ok=True,
-        item_id=str(item_uuid),
-        img={
+    return {
+        "item_id": str(item_uuid),
+        "img": {
             "id": str(img_id),
             "dir": dir_name,
             "file_name": final_name,
             "thumbnail": thumb_name,
-            "source_url": source_url,
+            "source_url": source_url_value,
             "original_file_name": original_name,
             "dim_width": width,
             "dim_height": height,
         },
-        relation={"id": str(rel_id), "rank": rank},
-        public_paths={
+        "relation": {"id": str(rel_id), "rank": rank},
+        "public_paths": {
             "image": f"/imgs/{dir_name}/{final_name}",
             "thumbnail": f"/imgs/{dir_name}/{thumb_name}",
         },
-    ), 201
+    }
+
+
+def handle_img_upload(item_id: str):
+    if not item_id:
+        return jsonify(error="Missing required field 'item_id'"), 400
+    try:
+        item_uuid = _validate_uuid(item_id)
+    except BadRequest as e:
+        return jsonify(error=str(e)), 400
+
+    clipboard_flag = request.form.get("img_clipboard", "").strip()
+    is_clipboard_upload = clipboard_flag not in {"", "0", "false", "False"}
+
+    upload = request.files.get("img_file")
+    url = request.form.get("img_url", "").strip()
+    data_url = request.form.get("img_data", "").strip()
+
+    try:
+        result = store_image_for_item(
+            item_uuid=item_uuid,
+            upload=upload if upload else None,
+            source_url=url,
+            data_url=data_url,
+            clipboard_upload=is_clipboard_upload or bool(data_url),
+        )
+    except FileNotFoundError as exc:
+        return jsonify(error=str(exc)), 404
+    except BadRequest as exc:
+        log.info("BadRequest in handle_img_upload: %s", exc)
+        return jsonify(error=str(exc)), 400
+    except UnsupportedMedia as exc:
+        log.info("Unsupported media in handle_img_upload: %s", exc)
+        return jsonify(error=str(exc)), 400
+    except RuntimeError as exc:
+        return jsonify(error=str(exc)), 500
+
+    return jsonify(ok=True, **result), 201
 
 @bp_image.get("/img_upload")
 def img_upload_2():
