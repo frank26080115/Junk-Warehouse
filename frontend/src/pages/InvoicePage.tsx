@@ -83,6 +83,8 @@ const InvoicePage: React.FC = () => {
   const [error, setError] = useState<string>("");
   const [success, setSuccess] = useState<string>("");
   const [htmlExpanded, setHtmlExpanded] = useState<boolean>(false);
+  const [analyzeHtml, setAnalyzeHtml] = useState<string>("");
+  const [analyzingHtml, setAnalyzingHtml] = useState<boolean>(false);
 
   useEffect(() => {
     let ignore = false;
@@ -365,6 +367,85 @@ const InvoicePage: React.FC = () => {
             />
           </div>
         </div>
+      </div>
+      <div className="mb-3">
+        <label className="form-label" htmlFor="invoice-analyze-html">Analyze More HTML</label>
+        <textarea
+          id="invoice-analyze-html"
+          className="form-control"
+          rows={3}
+          value={analyzeHtml}
+          onChange={(event) => setAnalyzeHtml(event.target.value)}
+          onPaste={(event) => {
+            const htmlData = event.clipboardData?.getData("text/html");
+            if (htmlData) {
+              event.preventDefault();
+              const textarea = event.target as HTMLTextAreaElement;
+              const selectionStart = textarea.selectionStart ?? analyzeHtml.length;
+              const selectionEnd = textarea.selectionEnd ?? analyzeHtml.length;
+              const updatedValue =
+                analyzeHtml.substring(0, selectionStart) + htmlData + analyzeHtml.substring(selectionEnd);
+              setAnalyzeHtml(updatedValue);
+              const caretPosition = selectionStart + htmlData.length;
+              window.setTimeout(() => {
+                try {
+                  textarea.setSelectionRange(caretPosition, caretPosition);
+                } catch (err) {
+                  console.error("Failed to restore selection after HTML paste", err);
+                }
+              }, 0);
+            }
+          }}
+        />
+        <button
+          type="button"
+          className="btn btn-primary mt-2"
+          onClick={async () => {
+            if (!effectiveUuid) {
+              setError("Cannot analyze HTML without an invoice ID.");
+              return;
+            }
+            if (!analyzeHtml.trim()) {
+              setError("Please provide HTML to analyze.");
+              return;
+            }
+            try {
+              setAnalyzingHtml(true);
+              setError("");
+              setSuccess("");
+              const response = await fetch("/api/analyzeinvoicehtml", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ uuid: effectiveUuid, html: analyzeHtml }),
+              });
+              const payload = await response.json().catch(() => null);
+              if (!response.ok) {
+                const message =
+                  (payload && typeof payload === "object" && "error" in payload && typeof payload.error === "string")
+                    ? payload.error
+                    : `Analyze failed: ${response.status}`;
+                throw new Error(message);
+              }
+              const invoiceData =
+                payload && typeof payload === "object" && "invoice" in payload ? payload.invoice : undefined;
+              if (invoiceData && typeof invoiceData === "object") {
+                setInvoice((prev) => ({ ...prev, ...invoiceData }));
+                setSnapshot((prev) => ({ ...prev, ...invoiceData }));
+              }
+              setAnalyzeHtml("");
+              setSuccess("Additional HTML analyzed.");
+              setHtmlExpanded(true);
+            } catch (err: any) {
+              console.error(err);
+              setError(err?.message || "Failed to analyze HTML");
+            } finally {
+              setAnalyzingHtml(false);
+            }
+          }}
+          disabled={analyzingHtml || !effectiveUuid || !analyzeHtml.trim()}
+        >
+          🪄
+        </button>
       </div>
       <AutoInvoiceSummaryPanel invoiceUuid={effectiveUuid} autoSummaryRaw={invoice.auto_summary} />
 
