@@ -12,6 +12,7 @@ from flask import Blueprint, jsonify, request
 from .user_login import login_required
 from .db import deduplicate_rows, get_or_create_session
 from .search_expression import SearchQuery
+from .embeddings import search_items_by_embeddings
 from .helpers import fuzzy_levenshtein_at_most
 from .items import augment_item_dict
 from .slugify import slugify
@@ -120,6 +121,24 @@ def _execute_text_search_query(
     :func:`search_invoices` function so that the fairly involved SQL building
     only lives in a single place.
     """
+
+    smart_directive = False
+    if isinstance(search_query, SearchQuery):
+        for directive in getattr(search_query, "directive_units", []):
+            lhs_value = getattr(directive, "lhs", None)
+            ensure_valid = getattr(directive, "ensure_valid", None)
+            if callable(ensure_valid):
+                try:
+                    if not ensure_valid():
+                        continue
+                except Exception:
+                    log.debug("Directive validation failed", exc_info=True)
+                    continue
+            if isinstance(lhs_value, str) and lhs_value.lower() == "smart":
+                smart_directive = True
+                break
+    if smart_directive and (query_text or "").strip() != "*":
+        return search_items_by_embeddings(search_query, session=session, limit=default_limit)
 
     criteria = search_query.get_sql_conditionals()
 
