@@ -16,7 +16,17 @@ from sqlalchemy.orm import Session
 
 from app.assoc_helper import MERGE_BIT
 from app.helpers import normalize_pg_uuid
-from app.db import get_engine
+from app.db import get_engine, get_db_item_as_dict
+from services.merge_helpers import (
+    _merge_description,
+    _merge_metatext,
+    _merge_name,
+    _merge_product_code,
+    _merge_quantity,
+    _merge_remarks,
+    _merge_source,
+    _merge_url,
+)
 from app.logging_setup import start_log
 from app.static_server import get_public_html_path
 
@@ -415,14 +425,91 @@ def merge_two_items(
     try:
         log.info("Preparing to merge items %s and %s", primary_uuid, secondary_uuid)
 
+        engine = get_engine()
+        items_table = _load_tables(engine, ("items",))["items"]
+
+        try:
+            primary_item = get_db_item_as_dict(engine, "items", primary_uuid)
+        except LookupError as exc:
+            raise ValueError(f"Primary item {primary_uuid} is missing") from exc
+
+        try:
+            secondary_item = get_db_item_as_dict(engine, "items", secondary_uuid)
+        except LookupError as exc:
+            raise ValueError(f"Secondary item {secondary_uuid} is missing") from exc
+
+        if primary_item.get("is_deleted"):
+            raise ValueError(f"Primary item {primary_uuid} is already deleted")
+
+        if not secondary_item.get("is_deleted"):
+            raise ValueError(f"Secondary item {secondary_uuid} must be soft deleted before merging")
+
+        updates: Dict[str, object] = {}
+
+        text_mergers = (
+            ("name", _merge_name),
+            ("description", _merge_description),
+            ("remarks", _merge_remarks),
+            ("quantity", _merge_quantity),
+            ("product_code", _merge_product_code),
+            ("url", _merge_url),
+            ("source", _merge_source),
+        )
+
+        for column, merger in text_mergers:
+            merged_value = merger(primary_item.get(column, ""), secondary_item.get(column, ""))
+            if merged_value != primary_item.get(column):
+                updates[column] = merged_value
+
+        metatext_value = _merge_metatext(primary_item.get("metatext", ""), secondary_item.get("metatext", ""))
+        if metatext_value != primary_item.get("metatext"):
+            updates["metatext"] = metatext_value
+
+        boolean_fields = (
+            "is_container",
+            "is_collection",
+            "is_large",
+            "is_small",
+            "is_fixed_location",
+            "is_consumable",
+        )
+
+        for field in boolean_fields:
+            combined_flag = bool(primary_item.get(field)) or bool(secondary_item.get(field))
+            if combined_flag != bool(primary_item.get(field)):
+                updates[field] = combined_flag
+
+        date_fields = (
+            "date_purchased",
+            "date_reminder",
+            "date_last_modified",
+        )
+
+        for field in date_fields:
+            dates = [primary_item.get(field), secondary_item.get(field)]
+            recent_dates = [value for value in dates if value is not None]
+            if not recent_dates:
+                continue
+            newest = max(recent_dates)
+            if newest != primary_item.get(field):
+                updates[field] = newest
+
+        if not updates:
+            log.info("No field updates were necessary when merging %s into %s", secondary_uuid, primary_uuid)
+
         with transaction_ctx:
-            # TODO: Confirm that both item rows exist and select which one should remain.
+            if updates:
+                executor.execute(
+                    update(items_table)
+                    .where(items_table.c.id == primary_uuid)
+                    .values(**updates)
+                )
+
             # TODO: Consolidate descriptive fields, notes, and metadata into the surviving item.
             # TODO: Reassign tags, categories, and other relationships from the secondary item.
             # TODO: Merge associated images while avoiding duplicate entries in the item_images table.
             # TODO: Transfer inventory, invoice links, or other domain-specific associations.
             # TODO: Remove or update the initiating merge row from the relationships table.
-            # TODO: Soft-delete or archive the secondary item once all data has been transferred.
             # TODO: Trigger any indexing or cache refresh required after the merge completes.
             # TODO: Record an audit trail summarizing the merge for future reference.
     finally:
@@ -438,6 +525,7 @@ def process_pending_merges(
 
     processed_pairs = 0
     seen_pairs: Set[frozenset[uuid.UUID]] = set()
+    engine = get_engine()
 
     try:
         merge_clause = relationships_table.c.assoc_type.op("&")(MERGE_BIT) != 0
@@ -482,6 +570,26 @@ def process_pending_merges(
             seen_pairs.add(pair_key)
 
             try:
+                secondary_snapshot = get_db_item_as_dict(engine, "items", right_uuid)
+            except LookupError:
+                log.warning("Skipping merge candidate with missing secondary item: %s", right_uuid)
+                continue
+
+            if not secondary_snapshot.get("is_deleted"):
+                log.info("Secondary item %s has not been marked deleted; skipping merge", right_uuid)
+                continue
+
+            try:
+                primary_snapshot = get_db_item_as_dict(engine, "items", left_uuid)
+            except LookupError:
+                log.warning("Skipping merge candidate with missing primary item: %s", left_uuid)
+                continue
+
+            if primary_snapshot.get("is_deleted"):
+                log.info("Primary item %s is deleted; skipping merge", left_uuid)
+                continue
+
+            try:
                 merge_two_items(
                     db=executor,
                     first_item_uuid=left_uuid,
@@ -498,6 +606,7 @@ def process_pending_merges(
         return processed_pairs
     finally:
         cleanup()
+
 
 def main():
     # Initialize logger using your existing setup
