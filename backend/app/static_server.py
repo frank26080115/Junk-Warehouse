@@ -52,7 +52,7 @@ def get_public_html_path() -> Path:
     except:
         from app.config_loader import load_app_config
         app_cfg = load_app_config()
-        configured_path = app_cfg["key"]
+        configured_path = app_cfg[key]
 
     if configured_path:
         return Path(configured_path)
