@@ -22,7 +22,7 @@ from automation.order_num_extract import extract_order_number, extract_order_num
 from automation.html_dom_finder import analyze as analyze_dom_report
 from automation.html_invoice_helpers import parse_mhtml_from_string, sniff_format
 from lxml import html as lxml_html
-from app.db import get_engine, update_db_row_by_dict
+from app.db import get_db_item_as_dict, get_engine, update_db_row_by_dict
 
 from .user_login import login_required
 
@@ -565,3 +565,119 @@ def invoice_upload() -> Any:
     }
 
     return jsonify(summary)
+
+
+@bp.route("/analyzeinvoicehtml", methods=["POST"])
+@login_required
+def analyze_invoice_html() -> Any:
+    payload = request.get_json(silent=True) or {}
+    invoice_uuid = payload.get("uuid") or payload.get("invoice_uuid")
+    html_chunk = payload.get("html")
+
+    if not invoice_uuid:
+        return jsonify({"ok": False, "error": "Invoice UUID is required."}), 400
+
+    if not isinstance(html_chunk, str) or not html_chunk.strip():
+        return jsonify({"ok": False, "error": "HTML content is required."}), 400
+
+    try:
+        fragment_parent = lxml_html.fragment_fromstring(html_chunk, create_parent=True)
+    except Exception as exc:
+        log.exception("Failed to parse HTML fragment for invoice %s", invoice_uuid)
+        return jsonify({"ok": False, "error": "Provided HTML could not be parsed."}), 400
+
+    try:
+        report, _ = analyze_dom_report(html_chunk)
+        condensed_summary = _condense_dom_report(report)
+        new_summary_entries = json.loads(condensed_summary)
+    except Exception as exc:
+        log.exception("Failed to analyze HTML fragment for invoice %s", invoice_uuid)
+        return jsonify({"ok": False, "error": "Failed to analyze HTML."}), 500
+
+    if not isinstance(new_summary_entries, list):
+        new_summary_entries = []
+
+    engine = get_engine()
+
+    try:
+        invoice_row = get_db_item_as_dict(engine, "invoices", invoice_uuid)
+    except LookupError:
+        return jsonify({"ok": False, "error": "Invoice not found."}), 404
+    except ValueError:
+        return jsonify({"ok": False, "error": "Invalid invoice UUID."}), 400
+    except Exception as exc:
+        log.exception("Failed to load invoice %s", invoice_uuid)
+        return jsonify({"ok": False, "error": "Failed to load invoice."}), 500
+
+    existing_summary_raw = invoice_row.get("auto_summary")
+    existing_summary_entries: List[Any]
+    if isinstance(existing_summary_raw, str) and existing_summary_raw.strip():
+        try:
+            parsed = json.loads(existing_summary_raw)
+            existing_summary_entries = parsed if isinstance(parsed, list) else []
+        except json.JSONDecodeError:
+            existing_summary_entries = []
+    else:
+        existing_summary_entries = []
+
+    combined_summary_entries = existing_summary_entries + new_summary_entries
+    combined_summary_raw = json.dumps(combined_summary_entries, ensure_ascii=False)
+
+    existing_html = invoice_row.get("html") or ""
+    updated_html: str
+
+    if not str(existing_html).strip():
+        updated_html = html_chunk
+    else:
+        try:
+            existing_root = lxml_html.fromstring(str(existing_html))
+        except Exception as exc:
+            log.exception("Failed to parse stored HTML for invoice %s", invoice_uuid)
+            return jsonify({"ok": False, "error": "Stored invoice HTML is invalid."}), 500
+
+        if fragment_parent.text:
+            if len(existing_root):
+                last_child = existing_root[-1]
+                last_child.tail = (last_child.tail or "") + fragment_parent.text
+            else:
+                existing_root.text = (existing_root.text or "") + fragment_parent.text
+
+        for child in list(fragment_parent):
+            existing_root.append(child)
+
+        if fragment_parent.tail:
+            if len(existing_root):
+                last_child = existing_root[-1]
+                last_child.tail = (last_child.tail or "") + fragment_parent.tail
+            else:
+                existing_root.text = (existing_root.text or "") + fragment_parent.tail
+
+        updated_html = lxml_html.tostring(existing_root, encoding="unicode")
+
+    update_payload = {
+        "id": invoice_row.get("id") or invoice_uuid,
+        "auto_summary": combined_summary_raw,
+        "html": updated_html,
+    }
+
+    update_response, status_code = update_db_row_by_dict(
+        engine, "invoices", invoice_uuid, update_payload, fuzzy=False
+    )
+
+    if status_code >= 400:
+        payload = _unwrap_db_payload(update_response)
+        error_message = payload.get("error") if isinstance(payload, dict) else None
+        message = error_message or "Failed to update invoice with analyzed HTML."
+        return jsonify({"ok": False, "error": message}), status_code
+
+    try:
+        updated_invoice = get_db_item_as_dict(engine, "invoices", invoice_uuid)
+    except Exception:
+        log.exception("Updated invoice %s saved but failed to reload", invoice_uuid)
+        updated_invoice = {
+            "id": invoice_uuid,
+            "auto_summary": combined_summary_raw,
+            "html": updated_html,
+        }
+
+    return jsonify({"ok": True, "invoice": updated_invoice})
