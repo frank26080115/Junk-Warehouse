@@ -296,24 +296,51 @@ def _build_thumbnail_public_url(dir_value: Any, file_name: Any) -> Optional[str]
         return None
 
     raw_dir = str(dir_value or "").strip()
-    safe_dir = raw_dir.strip("/\\")
-    safe_name = raw_name.lstrip("/\\")
+    safe_dir = raw_dir.strip("/\")
+    safe_name = raw_name.lstrip("/\")
 
-    segments: List[str] = ["imgs"]
-    if safe_dir:
-        segments.append(safe_dir)
-    segments.append(safe_name)
+    def _split_segments(value: str) -> list[str]:
+        """Normalize a path-like value into safe URL segments."""
+        sanitized = value.replace("\", "/")
+        return [segment for segment in sanitized.split("/") if segment]
+
+    dir_segments = _split_segments(safe_dir)
+    name_segments = _split_segments(safe_name)
+    if not name_segments:
+        return None
 
     base_path = get_public_html_path()
-    full_path = base_path
-    for segment in segments:
-        full_path = full_path / segment
+
+    def _build_path(segments: list[str]) -> Any:
+        """Construct an absolute path beneath the public HTML root."""
+        current = base_path
+        for part in segments:
+            current = current / part
+        return current
+
+    base_segments = ["imgs"] + dir_segments + name_segments
+    selected_segments = list(base_segments)
+    selected_path = _build_path(selected_segments)
+
+    # Prefer a dedicated thumbnail when it lives beside the original image file.
+    file_segment = name_segments[-1]
+    dot_index = file_segment.rfind(".")
+    if dot_index != -1:
+        thumbnail_file = f"{file_segment[:dot_index]}.thumbnail{file_segment[dot_index:]}"
+    else:
+        thumbnail_file = f"{file_segment}.thumbnail"
+    thumbnail_segments = base_segments[:-1] + [thumbnail_file]
+    thumbnail_path = _build_path(thumbnail_segments)
+
+    if thumbnail_path.exists():
+        selected_segments = thumbnail_segments
+        selected_path = thumbnail_path
 
     try:
-        relative = full_path.relative_to(base_path)
+        relative = selected_path.relative_to(base_path)
         return "/" + "/".join(relative.parts)
     except ValueError:
-        return "/" + "/".join(segments)
+        return "/" + "/".join(selected_segments)
 
 
 def _fetch_item_thumbnail_map(
