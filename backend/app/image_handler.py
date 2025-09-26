@@ -260,7 +260,9 @@ def store_image_for_item(
 ) -> Dict[str, Any]:
     tmp_dir, imgs_root = _ensure_dirs()
 
-    provided = [bool(upload), bool(source_url), bool(data_url)]
+    # Treat any provided upload object as a valid source even if the filename is empty.
+    upload_provided = upload is not None
+    provided = [upload_provided, bool(source_url), bool(data_url)]
     if sum(provided) != 1:
         raise BadRequest("Provide exactly one image source")
 
