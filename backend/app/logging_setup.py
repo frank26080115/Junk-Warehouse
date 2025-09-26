@@ -88,6 +88,9 @@ def start_log(
     # 2) <current working dir>/var/log (repo-root if you run from git dir)
     if log_dir is None:
         log_dir = os.getenv("LOG_DIR", None)
+
+    # TODO: read log dir from appconfig.json
+
     if log_dir is None:
         log_dir = REPO_ROOT / "var" / "logs"
     log_dir = Path(log_dir)
