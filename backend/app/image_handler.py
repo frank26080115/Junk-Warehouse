@@ -20,7 +20,7 @@ from .db import get_db_conn
 from .static_server import get_public_html_path
 
 log = logging.getLogger(__name__)
-bp_image = Blueprint("images", __name__)
+bp_image = Blueprint("images", __name__, url_prefix="/api")
 
 # Acceptable file extensions (Pillow can read more; keep this conservative)
 ALLOWED_EXTENSIONS = {
@@ -203,7 +203,7 @@ class UnsupportedMedia(Exception):
 
 def _validate_uuid(u: str) -> uuid.UUID:
     try:
-        from helpers import normalize_pg_uuid
+        from .helpers import normalize_pg_uuid
         return uuid.UUID(normalize_pg_uuid(u))
     except ValueError as ex:
         raise BadRequest(f"Invalid item_id \"{u}\", ValueError: {ex.message})")
@@ -476,12 +476,15 @@ def img_upload_2():
     return img_upload()
 
 
-@bp_image.get("/api/getimagesfor")
+@bp_image.get("/getimagesfor")
 def get_images_for_item():
     item_id = request.args.get("item_id") or request.args.get("item") or ""
     item_id = item_id.strip()
     if not item_id:
         return jsonify(error="Missing item_id"), 400
+
+    if item_id.lower() == "new":
+        return jsonify({"images": []})
 
     try:
         item_uuid = _validate_uuid(item_id)
@@ -521,7 +524,7 @@ def get_images_for_item():
     return jsonify({"images": images})
 
 
-@bp_image.post("/api/deleteimagefor")
+@bp_image.post("/deleteimagefor")
 def delete_image_for_item():
     payload = request.get_json(silent=True) or {}
     item_id = (payload.get("item_id") or payload.get("item") or "").strip()
@@ -567,7 +570,7 @@ def delete_image_for_item():
     return jsonify(ok=True)
 
 
-@bp_image.post("/api/setmainimagesfor")
+@bp_image.post("/setmainimagesfor")
 def set_main_image_for_item():
     payload = request.get_json(silent=True) or {}
     item_id = (payload.get("item_id") or payload.get("item") or "").strip()

@@ -718,7 +718,7 @@ def search_api():
         return jsonify(ok=False, error=str(e)), 400
 
 
-@bp.route("/search/invoices", methods=["POST"])
+@bp.route("/searchinvoices", methods=["POST"])
 @login_required
 def search_invoices_api():
     """Endpoint for invoice search requests."""

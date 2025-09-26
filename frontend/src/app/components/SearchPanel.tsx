@@ -47,13 +47,13 @@ const API_ENDPOINTS: Record<
 > = {
   items: {
     search: "/api/search",
-    delete: "/api/items/bulk-delete",
-    relate: "/api/items/associations",
+    delete: "/api/bulkdelete",
+    relate: "/api/associations",
   },
   invoices: {
-    search: "/api/ledger/search",
-    delete: "/api/ledger/bulk-delete",
-    relate: "/api/ledger/associations",
+    search: "/api/searchinvoices",
+    delete: "/api/invoicesbulkdelete",
+    relate: "/api/invoicesassociations",
   },
 };
 
