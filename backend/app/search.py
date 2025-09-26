@@ -15,9 +15,8 @@ from .db import deduplicate_rows, get_or_create_session
 from .search_expression import SearchQuery, get_sql_order_and_limit
 from .embeddings import search_items_by_embeddings
 from .helpers import fuzzy_levenshtein_at_most
-from .items import augment_item_dict
+from .items import augment_item_dict, get_item_thumbnails
 from .slugify import slugify
-from .static_server import get_public_html_path
 
 from sqlalchemy import bindparam, text
 
@@ -355,116 +354,6 @@ def _to_bool(value: Any) -> bool:
         if normalized in {"0", "false", "no", "off"}:
             return False
     return bool(value)
-
-
-def _build_thumbnail_public_url(dir_value: Any, file_name: Any) -> Optional[str]:
-    """Return a browser-accessible thumbnail path for an image row."""
-
-    raw_name = str(file_name or "").strip()
-    if not raw_name:
-        return None
-
-    raw_dir = str(dir_value or "").strip()
-    safe_dir = raw_dir.strip("/\")
-    safe_name = raw_name.lstrip("/\")
-
-    def _split_segments(value: str) -> list[str]:
-        """Normalize a path-like value into safe URL segments."""
-        sanitized = value.replace("\", "/")
-        return [segment for segment in sanitized.split("/") if segment]
-
-    dir_segments = _split_segments(safe_dir)
-    name_segments = _split_segments(safe_name)
-    if not name_segments:
-        return None
-
-    base_path = get_public_html_path()
-
-    def _build_path(segments: list[str]) -> Any:
-        """Construct an absolute path beneath the public HTML root."""
-        current = base_path
-        for part in segments:
-            current = current / part
-        return current
-
-    base_segments = ["imgs"] + dir_segments + name_segments
-    selected_segments = list(base_segments)
-    selected_path = _build_path(selected_segments)
-
-    # Prefer a dedicated thumbnail when it lives beside the original image file.
-    file_segment = name_segments[-1]
-    dot_index = file_segment.rfind(".")
-    if dot_index != -1:
-        thumbnail_file = f"{file_segment[:dot_index]}.thumbnail{file_segment[dot_index:]}"
-    else:
-        thumbnail_file = f"{file_segment}.thumbnail"
-    thumbnail_segments = base_segments[:-1] + [thumbnail_file]
-    thumbnail_path = _build_path(thumbnail_segments)
-
-    if thumbnail_path.exists():
-        selected_segments = thumbnail_segments
-        selected_path = thumbnail_path
-
-    try:
-        relative = selected_path.relative_to(base_path)
-        return "/" + "/".join(relative.parts)
-    except ValueError:
-        return "/" + "/".join(selected_segments)
-
-
-def _fetch_item_thumbnail_map(
-    session: Any, item_ids: Iterable[Any]
-) -> Dict[str, str]:
-    """Fetch thumbnail URLs for the provided item identifiers."""
-
-    unique_ids: List[str] = []
-    seen: set[str] = set()
-    for raw in item_ids:
-        if not raw:
-            continue
-        value = str(raw)
-        if value in seen:
-            continue
-        seen.add(value)
-        unique_ids.append(value)
-
-    if not unique_ids:
-        return {}
-
-    thumb_sql = text(
-        """
-        SELECT DISTINCT ON (ii.item_id)
-            ii.item_id,
-            img.dir,
-            img.file_name,
-            ii.rank,
-            img.date_updated,
-            img.id AS image_id
-        FROM item_images AS ii
-        JOIN images AS img ON img.id = ii.img_id
-        WHERE NOT img.is_deleted
-          AND ii.item_id IN :item_ids
-        ORDER BY
-            ii.item_id,
-            ii.rank ASC,
-            img.date_updated DESC,
-            img.id ASC
-        """
-    ).bindparams(bindparam("item_ids", expanding=True))
-
-    rows = session.execute(thumb_sql, {"item_ids": unique_ids}).mappings().all()
-
-    thumbnails: Dict[str, str] = {}
-    for row in rows:
-        identifier = row.get("item_id")
-        if identifier is None:
-            continue
-        url = _build_thumbnail_public_url(row.get("dir"), row.get("file_name"))
-        if not url:
-            continue
-        thumbnails[str(identifier)] = url
-
-    return thumbnails
 
 
 def search_items(
@@ -832,9 +721,9 @@ def search_api():
 
         if include_thumbnails and items:
             session = get_or_create_session()
-            thumbnail_map = _fetch_item_thumbnail_map(
-                session,
+            thumbnail_map = get_item_thumbnails(
                 (item.get("pk") for item in items),
+                db_session=session,
             )
             for item in items:
                 pk_value = item.get("pk")
