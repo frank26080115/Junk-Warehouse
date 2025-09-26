@@ -213,7 +213,8 @@ CREATE TABLE public.invoices (
     notes text DEFAULT ''::text NOT NULL,
     has_been_processed boolean DEFAULT false NOT NULL,
     snooze timestamp with time zone DEFAULT now() NOT NULL,
-    is_deleted boolean DEFAULT false NOT NULL
+    is_deleted boolean DEFAULT false NOT NULL,
+    pin_as_opened timestamp with time zone
 );
 
 
@@ -270,6 +271,7 @@ CREATE TABLE public.items (
     product_code text DEFAULT ''::text NOT NULL,
     url text DEFAULT ''::text NOT NULL,
     date_purchased timestamp with time zone,
+    pin_as_opened timestamp with time zone,
     source text DEFAULT ''::text NOT NULL
 );
 
