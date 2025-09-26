@@ -140,17 +140,46 @@ def _save_thumbnail(src_path: Path, dst_dir: Path, base_no_ext: str) -> str:
 
 def _download_to_tmp(url: str, tmp_dir: Path) -> Path:
     import requests  # local import to avoid dependency for users who don't need URL mode
+    from urllib.parse import urlparse, unquote
 
-    resp = requests.get(url, stream=True, timeout=20)
+    parsed_url = urlparse(url)
+
+    # Present the request as if it were made by a regular browser so that servers
+    # with simple bot protection are more likely to cooperate.
+    polite_headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+        ),
+        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Connection": "keep-alive",
+    }
+    if parsed_url.scheme and parsed_url.netloc:
+        polite_headers["Referer"] = f"{parsed_url.scheme}://{parsed_url.netloc}"
+
+    try:
+        resp = requests.get(
+            url,
+            stream=True,
+            timeout=20,
+            headers=polite_headers,
+        )
+    except requests.RequestException as exc:
+        raise BadRequest(
+            "Failed to download image because the network request could not be completed"
+        ) from exc
+
+    if resp.status_code == 403:
+        raise BadRequest(
+            "Failed to download image because the remote server denied access (HTTP 403)"
+        )
     if resp.status_code != 200:
         raise BadRequest(f"Failed to download image (HTTP {resp.status_code})")
 
     # Attempt to infer a name from URL path
-    from urllib.parse import urlparse, unquote
-    parsed = urlparse(url)
-    raw_name = unquote(Path(parsed.path).name) or "downloaded"
+    raw_name = unquote(Path(parsed_url.path).name) or "downloaded"
     raw_name = secure_filename(raw_name)
-
     # Add extension from Content-Type if missing
     if "." not in raw_name:
         ct = resp.headers.get("Content-Type", "")
