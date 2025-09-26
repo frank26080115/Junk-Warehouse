@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import Container from "react-bootstrap/Container";
 import Navbar from "react-bootstrap/Navbar";
 import Nav from "react-bootstrap/Nav";
+import PinnedItemsIndicator from "./components/PinnedItemsIndicator";
 import "../styles/nav.css";
 
 const Shell: React.FC<{ children: React.ReactNode }> = ({ children }) => (
@@ -63,6 +64,8 @@ const Shell: React.FC<{ children: React.ReactNode }> = ({ children }) => (
           color: "#6c757d",
         }}
       >
+        {/* Show a quick summary of pinned entities on the far left. */}
+        <PinnedItemsIndicator aria-label="Pinned items summary" />
         <a
           href="http://github.com/frank26080115/Junk-Warehouse"
           target="_blank"
