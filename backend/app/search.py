@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 import logging
@@ -23,6 +24,32 @@ from sqlalchemy import bindparam, text
 log = logging.getLogger(__name__)
 
 DEFAULT_LIMIT = 50
+
+
+PIN_OPEN_WINDOW_HOURS = 36
+
+
+def _count_open_pins(session: Any, table_name: str) -> int:
+    """Count rows in the requested table whose pins remain within the open window."""
+    if table_name not in {"items", "invoices"}:
+        raise ValueError("table_name must be either 'items' or 'invoices'")
+
+    threshold = datetime.now(timezone.utc) - timedelta(hours=PIN_OPEN_WINDOW_HOURS)
+
+    # Use explicit SQL so the logic remains transparent and easy to audit.
+    sql = text(
+        f"""
+        SELECT COUNT(*) AS opened_count
+        FROM {table_name}
+        WHERE pin_as_opened IS NOT NULL
+          AND pin_as_opened >= :threshold
+          AND NOT is_deleted
+        """
+    )
+
+    result = session.execute(sql, {"threshold": threshold})
+    count_value = result.scalar() or 0
+    return int(count_value)
 
 # Expose this blueprint from your app factory / main to register:
 #   from app.search import bp as search_bp
@@ -690,6 +717,28 @@ def search_invoices(
 
     return _finalize_invoice_rows(results)
 
+
+
+@bp.route("/pinsummary", methods=["GET"])
+@login_required
+def pin_summary_api():
+    """Return how many items and invoices are still considered opened pins."""
+    try:
+        session = get_or_create_session()
+
+        # Follow the shared 36-hour window to decide whether a pin is still active.
+        items_opened = _count_open_pins(session, "items")
+        invoices_opened = _count_open_pins(session, "invoices")
+
+        payload = {
+            "items_opened": items_opened,
+            "invoices_opened": invoices_opened,
+        }
+
+        return jsonify(ok=True, data=payload)
+    except Exception as exc:
+        log.exception("pin_summary_api: unable to compute pin summary")
+        return jsonify(ok=False, error=str(exc)), 500
 
 @bp.route("/search", methods=["POST"])
 @login_required
