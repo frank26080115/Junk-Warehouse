@@ -16,6 +16,7 @@ from .db import get_engine, get_db_item_as_dict, update_db_row_by_dict, unwrap_d
 from .embeddings import update_embeddings_for_item
 from .slugify import slugify
 from .helpers import normalize_pg_uuid
+from .assoc_helper import CONTAINMENT_BIT  # Shared containment association flag defined centrally.
 from .image_handler import (
     store_image_for_item,
     BadRequest as ImageBadRequest,
@@ -30,8 +31,6 @@ bp = Blueprint("items", __name__, url_prefix="/api")
 
 TABLE = "items"
 ID_COL = "id"
-# Bit 0 represents a containment-style relationship between records.
-CONTAINMENT_ASSOC_BIT = 1
 
 
 def _fetch_recent_pin_ids(conn: Any, table_name: str) -> List[str]:
@@ -76,7 +75,9 @@ def _ensure_containment_relationship(conn: Any, source_id: str, target_id: str) 
 
     if existing:
         current_bits = int(existing.get("assoc_type") or 0)
-        desired_bits = current_bits | CONTAINMENT_ASSOC_BIT
+        # Combine the existing association flags with the containment bit so we preserve
+        # any previously established relationships while guaranteeing containment is set.
+        desired_bits = current_bits | CONTAINMENT_BIT
         if desired_bits != current_bits:
             conn.execute(
                 text(
@@ -103,7 +104,7 @@ def _ensure_containment_relationship(conn: Any, source_id: str, target_id: str) 
         {
             "item_id": source_id,
             "assoc_id": target_id,
-            "assoc_type": CONTAINMENT_ASSOC_BIT,
+            "assoc_type": CONTAINMENT_BIT,
         },
     )
 
