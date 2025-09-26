@@ -8,14 +8,15 @@ import random
 import uuid
 
 from flask import Blueprint, jsonify, request, current_app
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Engine
 
 from .user_login import login_required
-from .db import get_engine, get_db_item_as_dict, update_db_row_by_dict, unwrap_db_result
+from .db import get_engine, get_db_item_as_dict, update_db_row_by_dict, unwrap_db_result, get_or_create_session
 from .embeddings import update_embeddings_for_item
 from .slugify import slugify
 from .helpers import normalize_pg_uuid
+from .static_server import get_public_html_path
 from .assoc_helper import CONTAINMENT_BIT  # Shared containment association flag defined centrally.
 from .image_handler import (
     store_image_for_item,
@@ -137,21 +138,145 @@ def _synchronize_pinned_relationships(
                 _ensure_containment_relationship(conn, normalized_source, pinned_invoice_id)
 
 
+def _build_thumbnail_public_url(dir_value: Any, file_name: Any) -> Optional[str]:
+    """Resolve a browser-accessible URL for either a thumbnail or the original image."""
+
+    raw_name = str(file_name or "").strip()
+    if not raw_name:
+        return None
+
+    raw_dir = str(dir_value or "").strip()
+    safe_dir = raw_dir.strip("/\\")
+    safe_name = raw_name.lstrip("/\\")
+
+    def _split_segments(value: str) -> List[str]:
+        """Normalize a path-like string into safe URL segments."""
+        sanitized = value.replace("\", "/")
+        return [segment for segment in sanitized.split("/") if segment]
+
+    dir_segments = _split_segments(safe_dir)
+    name_segments = _split_segments(safe_name)
+    if not name_segments:
+        return None
+
+    base_path = get_public_html_path()
+
+    def _build_path(segments: List[str]) -> Any:
+        """Construct an absolute path beneath the public HTML root."""
+        current = base_path
+        for part in segments:
+            current = current / part
+        return current
+
+    base_segments = ["imgs"] + dir_segments + name_segments
+    selected_segments = list(base_segments)
+    selected_path = _build_path(selected_segments)
+
+    # Prefer a dedicated thumbnail when it exists beside the original image.
+    file_segment = name_segments[-1]
+    dot_index = file_segment.rfind(".")
+    if dot_index != -1:
+        thumbnail_file = f"{file_segment[:dot_index]}.thumbnail{file_segment[dot_index:]}"
+    else:
+        thumbnail_file = f"{file_segment}.thumbnail"
+    thumbnail_segments = base_segments[:-1] + [thumbnail_file]
+    thumbnail_path = _build_path(thumbnail_segments)
+
+    if thumbnail_path.exists():
+        selected_segments = thumbnail_segments
+        selected_path = thumbnail_path
+
+    try:
+        relative = selected_path.relative_to(base_path)
+        return "/" + "/".join(relative.parts)
+    except ValueError:
+        return "/" + "/".join(selected_segments)
+
+
+def _query_item_thumbnails(session: Any, item_ids: List[str]) -> Dict[str, str]:
+    """Fetch thumbnail (or fallback image) URLs for the given item identifiers."""
+
+    if not item_ids:
+        return {}
+
+    thumb_sql = text(
+        """
+        SELECT DISTINCT ON (ii.item_id)
+            ii.item_id,
+            img.dir,
+            img.file_name,
+            ii.rank,
+            img.date_updated,
+            img.id AS image_id
+        FROM item_images AS ii
+        JOIN images AS img ON img.id = ii.img_id
+        WHERE NOT img.is_deleted
+          AND ii.item_id IN :item_ids
+        ORDER BY
+            ii.item_id,
+            ii.rank ASC,
+            img.date_updated DESC,
+            img.id ASC
+        """
+    ).bindparams(bindparam("item_ids", expanding=True))
+
+    rows = session.execute(thumb_sql, {"item_ids": item_ids}).mappings().all()
+
+    thumbnails: Dict[str, str] = {}
+    for row in rows:
+        identifier = row.get("item_id")
+        if identifier is None:
+            continue
+        url = _build_thumbnail_public_url(row.get("dir"), row.get("file_name"))
+        if not url:
+            continue
+        thumbnails[str(identifier)] = url
+
+    return thumbnails
+
+
+def get_item_thumbnails(
+    item_ids: Iterable[Optional[str]],
+    *,
+    db_session: Any = None
+) -> Dict[str, str]:
+    """Return a mapping of item ids to thumbnail URLs.
+
+    The lookup gracefully falls back to the original image when a dedicated
+    thumbnail file is missing, ensuring callers always receive a usable URL.
+    """
+
+    unique_ids: List[str] = []
+    seen: set[str] = set()
+    for raw in item_ids:
+        if not raw:
+            continue
+        value = str(raw)
+        if value in seen:
+            continue
+        seen.add(value)
+        unique_ids.append(value)
+
+    if not unique_ids:
+        return {}
+
+    session = db_session or get_or_create_session()
+    return _query_item_thumbnails(session, unique_ids)
+
+
 def get_item_thumbnail(item_uuid: Optional[str], *, db_session: Any = None) -> str:
-    """
-    Placeholder: return a thumbnail URL for an item.
+    """Return the best thumbnail URL for a specific item.
 
-    Parameters
-    ----------
-    item_uuid : Optional[str]
-        Identifier for the item the thumbnail belongs to.
-    db_session : Any, optional
-        Optional database session/connection handle for future implementations.
+    When the expected thumbnail asset cannot be located, the caller receives
+    the original image path instead of an empty string.
     """
 
-    # TODO: Implement lookup (e.g., join to images table and build public URL)
-    return ""
+    if not item_uuid:
+        return ""
 
+    normalized = str(item_uuid)
+    thumbnails = get_item_thumbnails([normalized], db_session=db_session)
+    return thumbnails.get(normalized, "")
 
 def augment_item_dict(
     data: Mapping[str, Any],
