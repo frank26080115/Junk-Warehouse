@@ -4,6 +4,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import "../styles/forms.css";
 
 import AutoInvoiceSummaryPanel from "../app/components/AutoInvoiceSummaryPanel";
+import { PIN_OPEN_EXPIRY_MS } from "../app/config";
 
 type JobStatus = "queued" | "busy" | "done" | "error";
 
@@ -75,7 +76,6 @@ function splitUrls(value?: string): string[] {
     .filter((url) => url.length > 0);
 }
 
-const PIN_WINDOW_MS = 36 * 60 * 60 * 1000; // 36 hours expressed in milliseconds
 
 function describePinTimestamp(value?: string | null): { readable: string; instant: Date | null } {
   if (!value) {
@@ -209,7 +209,7 @@ const InvoicePage: React.FC = () => {
   const isPinCurrentlyActive = pinDetails.instant
     ? (() => {
         const ageMs = Date.now() - pinDetails.instant.getTime();
-        return ageMs >= 0 && ageMs <= PIN_WINDOW_MS;
+        return ageMs >= 0 && ageMs <= PIN_OPEN_EXPIRY_MS;
       })()
     : false;
 

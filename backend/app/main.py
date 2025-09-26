@@ -1,10 +1,9 @@
 from flask import Flask, jsonify
 from flask_cors import CORS
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-from zoneinfo import ZoneInfo
 import json
 import logging
 from app.logging_setup import start_log
@@ -19,7 +18,7 @@ from .search import bp as bp_search
 from .job_manager import JobManager, bp as bp_jobs
 import app.helpers as helpers
 import app.db as db
-from app.config_loader import CONFIG_PATH, CONFIG_DIR
+from app.config_loader import CONFIG_PATH, initialize_app_config
 
 # Load backend/.env explicitly (does nothing if file doesn't exist)
 DOTENV_PATH = Path(__file__).resolve().parents[1] / ".env"
@@ -54,26 +53,8 @@ def create_app():
     app.register_blueprint(bp_maint)
     app.register_blueprint(bp_jobs)
 
-    # Load JSON (silently ignore if missing/bad)
-    try:
-        app_cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        app.config.update(app_cfg)
-    except Exception:
-        app.logger.warning("Could not read %s; using defaults", CONFIG_PATH)
-
-    # Precompute helpful objects derived from config (e.g., ZoneInfo)
-    tz_name = (app.config.get("timezone") or app.config.get("TIMEZONE") or "UTC").strip()
-    try:
-        app.config["TZ"] = ZoneInfo(tz_name)
-    except Exception:
-        app.logger.warning("Unknown timezone %r; falling back to UTC", tz_name)
-        app.config["TZ"] = ZoneInfo("UTC")
-
-    try:
-        secrets = json.loads((CONFIG_DIR / "secrets.json").read_text(encoding="utf-8"))
-        app.config["SECRET_KEY"] = secrets["user_password_salt"]
-    except Exception as ex:
-        app.logger.error(f"Unable to load user_password_salt. Exception: {ex!r}")
+    # Delegate configuration loading so the logic stays in one place.
+    initialize_app_config(app)
 
     register_error_handlers(app)
     return app
