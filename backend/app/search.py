@@ -37,31 +37,6 @@ def _pin_open_window_hours() -> int:
     return get_pin_open_expiry_hours(cfg)
 
 
-def _has_directive(search_query: Any, directive_name: str) -> bool:
-    """Return True when the search query declares the requested directive."""
-    if not directive_name:
-        return False
-    directive_key = str(directive_name).strip().lower()
-    if not directive_key:
-        return False
-    query_object = search_query
-    directive_units = getattr(query_object, "directive_units", [])
-    for directive in directive_units:
-        # Each directive validates itself so we never rely on malformed tokens.
-        ensure_valid = getattr(directive, "ensure_valid", None)
-        if callable(ensure_valid):
-            try:
-                if not ensure_valid():
-                    continue
-            except Exception:
-                log.debug("_has_directive: directive validation raised", exc_info=True)
-                continue
-        lhs_value = getattr(directive, "lhs", None)
-        if isinstance(lhs_value, str) and lhs_value.strip().lower() == directive_key:
-            return True
-    return False
-
-
 def append_pinned_items(
     session: Any,
     table_name: str,
@@ -216,19 +191,9 @@ def _execute_text_search_query(
 
     smart_directive = False
     if isinstance(search_query, SearchQuery):
-        for directive in getattr(search_query, "directive_units", []):
-            lhs_value = getattr(directive, "lhs", None)
-            ensure_valid = getattr(directive, "ensure_valid", None)
-            if callable(ensure_valid):
-                try:
-                    if not ensure_valid():
-                        continue
-                except Exception:
-                    log.debug("Directive validation failed", exc_info=True)
-                    continue
-            if isinstance(lhs_value, str) and lhs_value.lower() == "smart":
-                smart_directive = True
-                break
+        # Delegate to SearchQuery.has_directive so validation remains consistent
+        # and so this function does not need to inspect directive internals.
+        smart_directive = search_query.has_directive("smart")
     if smart_directive and (query_text or "").strip() != "*":
         return search_items_by_embeddings(search_query, session=session, limit=default_limit)
 
@@ -606,7 +571,7 @@ def search_items(
         if sq.evaluate(row_dict):
             results.append(augment_item_dict(row_dict))
 
-    if _has_directive(sq, "pinned"):
+    if sq.has_directive("pinned"):
         append_pinned_items(
             session,
             "items",
@@ -750,7 +715,7 @@ def search_invoices(
         if sq.evaluate(row_dict):
             results.append(row_dict)
 
-    if _has_directive(sq, "pinned"):
+    if sq.has_directive("pinned"):
         append_pinned_items(
             session,
             "invoices",
