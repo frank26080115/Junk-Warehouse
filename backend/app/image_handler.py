@@ -449,13 +449,15 @@ def handle_img_upload(item_id: str):
     is_clipboard_upload = clipboard_flag not in {"", "0", "false", "False"}
 
     upload = request.files.get("img_file")
+    has_upload_object = upload is not None
+    # Flask returns FileStorage objects that evaluate to False when the filename is empty.
     url = request.form.get("img_url", "").strip()
     data_url = request.form.get("img_data", "").strip()
 
     try:
         result = store_image_for_item(
             item_uuid=item_uuid,
-            upload=upload if upload else None,
+            upload=upload if has_upload_object else None,
             source_url=url,
             data_url=data_url,
             clipboard_upload=is_clipboard_upload or bool(data_url),
