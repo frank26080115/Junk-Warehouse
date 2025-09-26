@@ -7,7 +7,7 @@ import logging
 import random
 import uuid
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, current_app
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
@@ -21,18 +21,12 @@ from .image_handler import (
     BadRequest as ImageBadRequest,
     UnsupportedMedia as ImageUnsupportedMedia,
 )
+from .job_manager import get_job_manager
 
 log = logging.getLogger(__name__)
 
 bp = Blueprint("items", __name__, url_prefix="/api")
 
-
-
-def _get_job_manager() -> JobManager:
-    manager = current_app.extensions.get("job_manager")
-    if not isinstance(manager, JobManager):
-        raise RuntimeError("Background job manager is unavailable.")
-    return manager
 
 TABLE = "items"
 ID_COL = "id"
@@ -541,7 +535,7 @@ def _autogen_items_task(context: Dict[str, Any]) -> Dict[str, Any]:
 def autogen_items_api():
     payload = request.get_json(silent=True) or {}
     try:
-        manager = _get_job_manager()
+        manager = get_job_manager(current_app)
         job_id = manager.start_job(_autogen_items_task, {"payload": payload})
     except Exception as exc:
         log.exception("Failed to enqueue auto-generated item job")

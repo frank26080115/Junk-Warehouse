@@ -8,7 +8,7 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, current_app
 from sqlalchemy import text
 from werkzeug.datastructures import FileStorage
 
@@ -23,8 +23,8 @@ from automation.html_dom_finder import analyze as analyze_dom_report
 from automation.html_invoice_helpers import parse_mhtml_from_string, sniff_format
 from lxml import html as lxml_html
 from app.db import get_db_item_as_dict, get_engine, update_db_row_by_dict, unwrap_db_result
-
 from .user_login import login_required
+from .job_manager import get_job_manager
 
 bp = Blueprint("invoice_handlers", __name__, url_prefix="/api")
 
@@ -566,14 +566,6 @@ def set_invoice_api() -> Any:
     return jsonify(_serialize_invoice_row(final_row)), status_code
 
 
-
-def _get_job_manager() -> JobManager:
-    manager = current_app.extensions.get("job_manager")
-    if not isinstance(manager, JobManager):
-        raise RuntimeError("Background job manager is unavailable.")
-    return manager
-
-
 def _check_email_task(_context: Dict[str, Any]) -> Dict[str, Any]:
     log.info("Mailbox check requested")
     try:
@@ -837,7 +829,7 @@ def _analyze_invoice_html_task(context: Dict[str, Any]) -> Dict[str, Any]:
 @login_required
 def check_email() -> Any:
     try:
-        manager = _get_job_manager()
+        manager = get_job_manager(current_app)
         job_id = manager.start_job(_check_email_task, {})
     except Exception as exc:
         log.exception("Failed to enqueue mailbox check job")
@@ -886,7 +878,7 @@ def invoice_upload() -> Any:
         )
 
     try:
-        manager = _get_job_manager()
+        manager = get_job_manager(current_app)
         job_id = manager.start_job(_invoice_upload_task, {"files": context_files})
     except Exception as exc:
         log.exception("Failed to enqueue invoice upload job")
@@ -908,7 +900,7 @@ def analyze_invoice_html() -> Any:
     }
 
     try:
-        manager = _get_job_manager()
+        manager = get_job_manager(current_app)
         job_id = manager.start_job(_analyze_invoice_html_task, context)
     except Exception as exc:
         log.exception("Failed to enqueue invoice HTML analysis job")
