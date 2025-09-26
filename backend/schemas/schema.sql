@@ -271,8 +271,8 @@ CREATE TABLE public.items (
     product_code text DEFAULT ''::text NOT NULL,
     url text DEFAULT ''::text NOT NULL,
     date_purchased timestamp with time zone,
-    pin_as_opened timestamp with time zone,
-    source text DEFAULT ''::text NOT NULL
+    source text DEFAULT ''::text NOT NULL,
+    pin_as_opened timestamp with time zone
 );
 
 
