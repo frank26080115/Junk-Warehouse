@@ -58,15 +58,27 @@ def append_pinned_items(
         WHERE pin_as_opened IS NOT NULL
           AND pin_as_opened >= :threshold
           AND NOT is_deleted
+        ORDER BY pin_as_opened DESC
         """
     )
     pinned_rows = session.execute(sql, {"threshold": threshold}).mappings().all()
+
+    prepared_rows: List[Dict[str, Any]] = []
     for row in pinned_rows:
         row_dict = dict(row)
         if callable(augment_row):
             # Allow callers to decorate the row so it matches existing result formatting.
             row_dict = augment_row(row_dict)
-        destination.append(row_dict)
+        prepared_rows.append(row_dict)
+
+    if not prepared_rows:
+        # Nothing to merge, so leave the destination list untouched.
+        return
+
+    # Place pinned rows before the existing results, then drop duplicates so pinned versions win.
+    combined_rows = prepared_rows + list(destination)
+    deduped_rows = deduplicate_rows(combined_rows, key="id", keep="first")
+    destination[:] = deduped_rows
 
 
 def _count_open_pins(session: Any, table_name: str) -> int:
