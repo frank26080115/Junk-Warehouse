@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
 import logging
 import uuid
@@ -27,6 +27,64 @@ DEFAULT_LIMIT = 50
 
 
 PIN_OPEN_WINDOW_HOURS = 36
+
+
+
+def _has_directive(search_query: Any, directive_name: str) -> bool:
+    """Return True when the search query declares the requested directive."""
+    if not directive_name:
+        return False
+    directive_key = str(directive_name).strip().lower()
+    if not directive_key:
+        return False
+    query_object = search_query
+    directive_units = getattr(query_object, "directive_units", [])
+    for directive in directive_units:
+        # Each directive validates itself so we never rely on malformed tokens.
+        ensure_valid = getattr(directive, "ensure_valid", None)
+        if callable(ensure_valid):
+            try:
+                if not ensure_valid():
+                    continue
+            except Exception:
+                log.debug("_has_directive: directive validation raised", exc_info=True)
+                continue
+        lhs_value = getattr(directive, "lhs", None)
+        if isinstance(lhs_value, str) and lhs_value.strip().lower() == directive_key:
+            return True
+    return False
+
+
+def append_pinned_items(
+    session: Any,
+    table_name: str,
+    destination: List[Dict[str, Any]],
+    *,
+    augment_row: Optional[Any] = None,
+) -> None:
+    """Fetch and append rows that remain pinned within the configured window."""
+    valid_tables = {"items", "invoices"}
+    if table_name not in valid_tables:
+        raise ValueError("append_pinned_items only supports 'items' or 'invoices'")
+    threshold = datetime.now(timezone.utc) - timedelta(hours=PIN_OPEN_WINDOW_HOURS)
+    # Pull every row that remains pinned; this intentionally ignores any additional filters.
+    sql = text(
+        f"""
+        SELECT
+            *
+        FROM {table_name}
+        WHERE pin_as_opened IS NOT NULL
+          AND pin_as_opened >= :threshold
+          AND NOT is_deleted
+        """
+    )
+    pinned_rows = session.execute(sql, {"threshold": threshold}).mappings().all()
+    for row in pinned_rows:
+        row_dict = dict(row)
+        if callable(augment_row):
+            # Allow callers to decorate the row so it matches existing result formatting.
+            row_dict = augment_row(row_dict)
+        destination.append(row_dict)
 
 
 def _count_open_pins(session: Any, table_name: str) -> int:
@@ -527,7 +585,6 @@ def search_items(
 
     query_text = sq.query_text or raw_query  # fallback just in case
 
-    
     rows = _execute_text_search_query(
         session,
         sq,
@@ -541,6 +598,14 @@ def search_items(
         row_dict = dict(row)
         if sq.evaluate(row_dict):
             results.append(augment_item_dict(row_dict))
+
+    if _has_directive(sq, "pinned"):
+        append_pinned_items(
+            session,
+            "items",
+            results,
+            augment_row=augment_item_dict,
+        )
 
     # --- RELATION / TARGET-UUID ENHANCEMENT ---
     # This is intentionally *not* an else-if. The base search above should always take place.
@@ -677,6 +742,13 @@ def search_invoices(
         row_dict = dict(row)
         if sq.evaluate(row_dict):
             results.append(row_dict)
+
+    if _has_directive(sq, "pinned"):
+        append_pinned_items(
+            session,
+            "invoices",
+            results,
+        )
 
     if target_uuid and results:
         invoice_ids: List[str] = []
