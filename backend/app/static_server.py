@@ -2,11 +2,14 @@
 from __future__ import annotations
 from pathlib import Path
 from flask import Blueprint, send_from_directory, abort, Response
+import logging
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DIST_DIR = REPO_ROOT / "frontend" / "dist"
 
 bp_overlay = Blueprint("overlay", __name__)
+
+log = logging.getLogger(__name__)
 
 def _maybe_file(p: Path) -> bool:
     try:
@@ -37,6 +40,8 @@ def overlay_root(path: str):
     # 3. If looks like a client-side route (no ".ext"), serve SPA index
     if "." not in path:
         return send_from_directory(DIST_DIR, "index.html")
+
+    log.error(f"static server overlay_root 404 \"{path}\" -> \"{pub_path}\"")
 
     # 4. Otherwise, not found
     abort(404)
