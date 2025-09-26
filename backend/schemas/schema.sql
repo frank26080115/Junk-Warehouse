@@ -612,11 +612,3 @@ ALTER TABLE ONLY public.relationships
 
 ALTER TABLE ONLY public.relationships
     ADD CONSTRAINT relationships_item_id_fkey FOREIGN KEY (item_id) REFERENCES public.items(id) ON DELETE CASCADE;
-
-
---
--- PostgreSQL database dump complete
---
-
-\unrestrict Vn3Tma4R5cSORuitMQRwDnwpybkqB5Ggzd10I7TMikC4IPgl3UffNENslgyi8k9
-
