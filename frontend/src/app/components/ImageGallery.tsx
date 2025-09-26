@@ -305,7 +305,7 @@ const ImageGallery: React.FC<ImageGalleryProps> = ({ targetUuid, refreshToken })
           onPaste={handlePaste}
           style={{ minHeight: "220px", backgroundColor: "#fafafa" }}
         >
-          <div className="mb-3 text-center fw-semibold">Add new image</div>
+          <div className="mb-3 text-center fw-semibold">➕📸</div>
           <div className="d-grid gap-2 mb-3">
             <button
               type="button"
@@ -313,7 +313,7 @@ const ImageGallery: React.FC<ImageGalleryProps> = ({ targetUuid, refreshToken })
               onClick={() => fileInputRef.current?.click()}
               disabled={uploading}
             >
-              Upload from device
+              🖇️⬆️☁️
             </button>
             <input
               ref={fileInputRef}
@@ -331,17 +331,15 @@ const ImageGallery: React.FC<ImageGalleryProps> = ({ targetUuid, refreshToken })
                 onChange={(event) => setUrlInput(event.target.value)}
                 disabled={uploading}
               />
-              <button type="submit" className="btn btn-primary" disabled={uploading || !urlInput.trim()}>
-                Add
-              </button>
+              <button type="submit" className="btn btn-primary" disabled={uploading || !urlInput.trim()}>🔗</button>
             </form>
           </div>
-          <small className="text-muted text-center">Paste an image here (Ctrl+V)</small>
+          <small className="text-muted text-center">📋 (Ctrl+V)</small>
         </div>
       </div>
 
       {loading && (
-        <div className="text-center mt-3 text-muted">Loading images…</div>
+        <div className="text-center mt-3 text-muted">⏳📸…</div>
       )}
     </div>
   );
