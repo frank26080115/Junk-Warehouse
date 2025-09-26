@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Optional
 from logging.handlers import RotatingFileHandler
 
+from .config_loader import get_private_dir_path
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 class DateSizeRotatingFileHandler(RotatingFileHandler):
@@ -89,7 +91,11 @@ def start_log(
     if log_dir is None:
         log_dir = os.getenv("LOG_DIR", None)
 
-    # TODO: read log dir from appconfig.json
+    if log_dir is None:
+        private_dir = get_private_dir_path()
+        if private_dir is not None:
+            # Store logs within the private directory when available so sensitive data stays together.
+            log_dir = Path(private_dir) / "logs"
 
     if log_dir is None:
         log_dir = REPO_ROOT / "var" / "logs"

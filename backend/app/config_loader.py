@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from zoneinfo import ZoneInfo  # Python 3.9+
+from typing import Optional
 import logging
 log = logging.getLogger(__name__)
 
@@ -29,6 +30,41 @@ def get_timezone(cfg = None):
     except Exception:
         log.warning("Unknown timezone %r; falling back to UTC", name)
         return ZoneInfo("UTC")
+
+def get_private_dir_path(cfg: Optional[dict] = None) -> Optional[Path]:
+    """
+    Provide a central place to resolve where sensitive runtime files should live.
+
+    The configuration may specify a "private_dir"; when present we interpret
+    it as either an absolute path or one relative to the config directory.
+    Returning None signals the caller to fall back to the project defaults.
+    """
+    if cfg is None:
+        cfg = load_app_config()
+
+    if not isinstance(cfg, dict):
+        log.debug("App configuration did not load as a mapping; ignoring private_dir hint.")
+        return None
+
+    raw_value = cfg.get("private_dir")
+    if not raw_value:
+        return None
+
+    try:
+        candidate = Path(str(raw_value)).expanduser()
+    except Exception:
+        log.warning(
+            "private_dir in %s could not be interpreted as a filesystem path; ignoring it.",
+            CONFIG_PATH,
+            exc_info=True,
+        )
+        return None
+
+    if not candidate.is_absolute():
+        # Helpful during development where the path might be expressed relative to the repo.
+        candidate = (CONFIG_DIR / candidate).resolve()
+
+    return candidate
 
 class AppConfig(object):
     def __init__(self):
