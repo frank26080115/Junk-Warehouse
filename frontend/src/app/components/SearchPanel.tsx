@@ -479,14 +479,20 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
   );
 
   const formatAssociationEmojis = useCallback((value: number): string => {
-    const normalized = Number.isFinite(value)
-      ? value & ALL_ASSOCIATION_MASK
-      : 0;
+    if (!Number.isFinite(value)) {
+      return "";
+    }
+    if (value < 0) {
+      // Negative association values represent unknown states, so do not render an icon.
+      return "";
+    }
+    const normalized = value & ALL_ASSOCIATION_MASK;
     const icons = collect_emoji_characters_from_int(normalized);
     if (icons.length > 0) {
       return icons.join("");
     }
-    return normalized === 0 ? "⚫" : "";
+    // Show a question mark when the association value is explicitly zero or unrecognized.
+    return "❓";
   }, []);
 
   const containmentChecked = int_has_containment(associationBits);
