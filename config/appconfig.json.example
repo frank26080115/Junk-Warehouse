@@ -3,5 +3,6 @@
   "public_html_path": "C:/public_html",
   "timezone": "Asaskba/Lxp_Cvbeyah",
   "ai_model_online": "tpo-1-cctb",
-  "ai_model_offline": "viw-egq:48c"
+  "ai_model_offline": "viw-egq:48c",
+  "pin_open_expiry_hours": 36
 }
