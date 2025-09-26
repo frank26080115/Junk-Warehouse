@@ -1,9 +1,11 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import "../styles/forms.css";
 
 import AutoInvoiceSummaryPanel from "../app/components/AutoInvoiceSummaryPanel";
+
+type JobStatus = "queued" | "busy" | "done" | "error";
 
 interface InvoiceDto {
   id?: string;
@@ -85,6 +87,59 @@ const InvoicePage: React.FC = () => {
   const [htmlExpanded, setHtmlExpanded] = useState<boolean>(false);
   const [analyzeHtml, setAnalyzeHtml] = useState<string>("");
   const [analyzingHtml, setAnalyzingHtml] = useState<boolean>(false);
+
+  const [analyzeJobId, setAnalyzeJobId] = useState<string | null>(null);
+  const [analyzeJobStatus, setAnalyzeJobStatus] = useState<JobStatus | null>(null);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  const pollJobUntilComplete = async (
+    jobId: string,
+    onStatusUpdate: (status: JobStatus) => void,
+  ): Promise<any> => {
+    let delay = 1000;
+    while (isMountedRef.current) {
+      const response = await fetch(`/api/jobstatus?id=${encodeURIComponent(jobId)}`);
+      let payload: any = null;
+      try {
+        payload = await response.json();
+      } catch (error) {
+        payload = null;
+      }
+      if (!response.ok) {
+        const message =
+          (payload && (payload.error || payload.message)) ||
+          response.statusText ||
+          "Failed to query job status.";
+        throw new Error(message);
+      }
+      const rawStatus = typeof payload?.status === "string" ? payload.status : "";
+      let normalised: JobStatus = "queued";
+      if (rawStatus === "busy" || rawStatus === "done" || rawStatus === "error" || rawStatus === "queued") {
+        normalised = rawStatus as JobStatus;
+      }
+      onStatusUpdate(normalised);
+      if (normalised === "done") {
+        return payload?.result;
+      }
+      if (normalised === "error") {
+        const message =
+          typeof payload?.error === "string" && payload.error.trim()
+            ? payload.error
+            : "Job failed.";
+        throw new Error(message);
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      delay = Math.min(5000, delay + 500);
+    }
+    throw new Error("Job monitoring cancelled.");
+  };
 
   useEffect(() => {
     let ignore = false;
@@ -205,6 +260,79 @@ const InvoicePage: React.FC = () => {
       setError(e?.message || "Failed to save invoice");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleAnalyzeHtmlJob = async () => {
+    const targetUuid = invoice.id || uuid || "";
+    if (!targetUuid) {
+      setError("Cannot analyze HTML without an invoice ID.");
+      return;
+    }
+    if (!analyzeHtml.trim()) {
+      setError("Please provide HTML to analyze.");
+      return;
+    }
+    try {
+      setAnalyzingHtml(true);
+      setAnalyzeJobId(null);
+      setAnalyzeJobStatus(null);
+      setError("");
+      setSuccess("");
+      const response = await fetch("/api/analyzeinvoicehtml", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uuid: targetUuid, html: analyzeHtml }),
+      });
+      let payload: any = null;
+      try {
+        payload = await response.json();
+      } catch (error) {
+        payload = null;
+      }
+      if (!response.ok) {
+        const message =
+          payload && typeof payload === "object" && "error" in payload && typeof (payload as any).error === "string"
+            ? (payload as any).error
+            : `Analyze failed: ${response.status}`;
+        throw new Error(message);
+      }
+      const jobId: string | null =
+        (payload && ((payload as any).job_id || (payload as any).jobId)) || null;
+      if (!jobId || typeof jobId !== "string") {
+        throw new Error("Job identifier was not provided.");
+      }
+      setAnalyzeJobId(jobId);
+      setAnalyzeJobStatus("queued");
+      const result = await pollJobUntilComplete(jobId, (status) => {
+        if (isMountedRef.current) {
+          setAnalyzeJobStatus(status);
+        }
+      });
+      if (!isMountedRef.current) {
+        return;
+      }
+      const invoiceData =
+        result && typeof result === "object" && "invoice" in result ? (result as any).invoice : undefined;
+      if (invoiceData && typeof invoiceData === "object") {
+        setInvoice((prev) => ({ ...prev, ...(invoiceData as InvoiceDto) }));
+        setSnapshot((prev) => ({ ...prev, ...(invoiceData as InvoiceDto) }));
+      }
+      setAnalyzeHtml("");
+      setSuccess("Additional HTML analyzed.");
+      setHtmlExpanded(true);
+    } catch (err: any) {
+      if (!isMountedRef.current) {
+        return;
+      }
+      console.error(err);
+      setError(err?.message || "Failed to analyze HTML");
+    } finally {
+      if (isMountedRef.current) {
+        setAnalyzingHtml(false);
+        setAnalyzeJobId(null);
+        setAnalyzeJobStatus(null);
+      }
     }
   };
 
@@ -400,52 +528,17 @@ const InvoicePage: React.FC = () => {
         <button
           type="button"
           className="btn btn-primary mt-2"
-          onClick={async () => {
-            if (!effectiveUuid) {
-              setError("Cannot analyze HTML without an invoice ID.");
-              return;
-            }
-            if (!analyzeHtml.trim()) {
-              setError("Please provide HTML to analyze.");
-              return;
-            }
-            try {
-              setAnalyzingHtml(true);
-              setError("");
-              setSuccess("");
-              const response = await fetch("/api/analyzeinvoicehtml", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ uuid: effectiveUuid, html: analyzeHtml }),
-              });
-              const payload = await response.json().catch(() => null);
-              if (!response.ok) {
-                const message =
-                  (payload && typeof payload === "object" && "error" in payload && typeof payload.error === "string")
-                    ? payload.error
-                    : `Analyze failed: ${response.status}`;
-                throw new Error(message);
-              }
-              const invoiceData =
-                payload && typeof payload === "object" && "invoice" in payload ? payload.invoice : undefined;
-              if (invoiceData && typeof invoiceData === "object") {
-                setInvoice((prev) => ({ ...prev, ...invoiceData }));
-                setSnapshot((prev) => ({ ...prev, ...invoiceData }));
-              }
-              setAnalyzeHtml("");
-              setSuccess("Additional HTML analyzed.");
-              setHtmlExpanded(true);
-            } catch (err: any) {
-              console.error(err);
-              setError(err?.message || "Failed to analyze HTML");
-            } finally {
-              setAnalyzingHtml(false);
-            }
-          }}
+          onClick={handleAnalyzeHtmlJob}
           disabled={analyzingHtml || !effectiveUuid || !analyzeHtml.trim()}
         >
           🪄
         </button>
+        {analyzingHtml && analyzeJobStatus === "queued" && (
+          <div className="text-muted small">Job queued…</div>
+        )}
+        {analyzingHtml && analyzeJobId && (
+          <div className="text-muted small">Job ID: {analyzeJobId}</div>
+        )}
       </div>
       <AutoInvoiceSummaryPanel invoiceUuid={effectiveUuid} autoSummaryRaw={invoice.auto_summary} />
 

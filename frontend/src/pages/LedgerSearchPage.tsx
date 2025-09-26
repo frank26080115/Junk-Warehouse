@@ -9,6 +9,10 @@ const LedgerSearchPage: React.FC = () => {
   const [searchPrefill, setSearchPrefill] = useState(prefilled);
   const [checkEmailBusy, setCheckEmailBusy] = useState(false);
   const [uploadBusy, setUploadBusy] = useState(false);
+  const [checkEmailJobId, setCheckEmailJobId] = useState<string | null>(null);
+  const [checkEmailStatus, setCheckEmailStatus] = useState<JobStatus | null>(null);
+  const [uploadJobId, setUploadJobId] = useState<string | null>(null);
+  const [uploadStatus, setUploadStatus] = useState<JobStatus | null>(null);
   const [modalMessage, setModalMessage] = useState<
     | {
         title: string;
@@ -18,6 +22,14 @@ const LedgerSearchPage: React.FC = () => {
   >(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     setSearchPrefill(prefilled);
@@ -27,11 +39,55 @@ const LedgerSearchPage: React.FC = () => {
     setModalMessage({ title, body });
   };
 
+  const pollJobUntilComplete = async (
+    jobId: string,
+    onStatusUpdate: (status: JobStatus) => void,
+  ): Promise<any> => {
+    let delay = 1000;
+    while (isMountedRef.current) {
+      const response = await fetch(`/api/jobstatus?id=${encodeURIComponent(jobId)}`);
+      let payload: any = null;
+      try {
+        payload = await response.json();
+      } catch (error) {
+        payload = null;
+      }
+      if (!response.ok) {
+        const message =
+          (payload && (payload.error || payload.message)) ||
+          response.statusText ||
+          "Failed to query job status.";
+        throw new Error(message);
+      }
+      const rawStatus = typeof payload?.status === "string" ? payload.status : "";
+      let normalised: JobStatus = "queued";
+      if (rawStatus === "busy" || rawStatus === "done" || rawStatus === "error" || rawStatus === "queued") {
+        normalised = rawStatus as JobStatus;
+      }
+      onStatusUpdate(normalised);
+      if (normalised === "done") {
+        return payload?.result;
+      }
+      if (normalised === "error") {
+        const message =
+          typeof payload?.error === "string" && payload.error.trim()
+            ? payload.error
+            : "Job failed.";
+        throw new Error(message);
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      delay = Math.min(5000, delay + 500);
+    }
+    throw new Error("Job monitoring cancelled.");
+  };
+
   const handleCheckEmail = async () => {
     if (checkEmailBusy) {
       return;
     }
     setCheckEmailBusy(true);
+    setCheckEmailJobId(null);
+    setCheckEmailStatus(null);
     try {
       const response = await fetch("/api/checkemail", {
         method: "POST",
@@ -51,17 +107,41 @@ const LedgerSearchPage: React.FC = () => {
           "Failed to contact email checker.";
         throw new Error(message);
       }
-      setSearchPrefill("* ?!has_been_processed \\bydate \\orderrev");
+      const jobId: string | null =
+        (payload && (payload.job_id || payload.jobId)) || null;
+      if (!jobId || typeof jobId !== "string") {
+        throw new Error("Job identifier was not provided.");
+      }
+      setCheckEmailJobId(jobId);
+      setCheckEmailStatus("queued");
+      const result = await pollJobUntilComplete(jobId, (status) => {
+        if (isMountedRef.current) {
+          setCheckEmailStatus(status);
+        }
+      });
+      if (!isMountedRef.current) {
+        return;
+      }
+      setSearchPrefill("* ?!has_been_processed \bydate \orderrev");
       const message =
-        (payload && (payload.message || payload.detail)) ||
+        (result && (result.message || result.detail)) ||
         "Email check completed successfully.";
       showModal("Email check complete", message);
     } catch (error: any) {
+      if (!isMountedRef.current) {
+        return;
+      }
       const message = error?.message || "Email check failed.";
       showModal("Email check failed", message);
     } finally {
-      setCheckEmailBusy(false);
+      if (isMountedRef.current) {
+        setCheckEmailBusy(false);
+        setCheckEmailJobId(null);
+        setCheckEmailStatus(null);
+      }
     }
+  };
+
   };
 
   const handleFileSelection = (
@@ -80,6 +160,8 @@ const LedgerSearchPage: React.FC = () => {
       return;
     }
     setUploadBusy(true);
+    setUploadJobId(null);
+    setUploadStatus(null);
     try {
       const formData = new FormData();
       selectedFiles.forEach((file) => {
@@ -102,9 +184,24 @@ const LedgerSearchPage: React.FC = () => {
           "Invoice upload failed.";
         throw new Error(message);
       }
-      setSearchPrefill("* ?!has_been_processed \\bydate \\orderrev");
+      const jobId: string | null =
+        (payload && (payload.job_id || payload.jobId)) || null;
+      if (!jobId || typeof jobId !== "string") {
+        throw new Error("Job identifier was not provided.");
+      }
+      setUploadJobId(jobId);
+      setUploadStatus("queued");
+      const result = await pollJobUntilComplete(jobId, (status) => {
+        if (isMountedRef.current) {
+          setUploadStatus(status);
+        }
+      });
+      if (!isMountedRef.current) {
+        return;
+      }
+      setSearchPrefill("* ?!has_been_processed \bydate \orderrev");
       const message =
-        (payload && (payload.message || payload.detail)) ||
+        (result && (result.message || result.detail)) ||
         "Invoices uploaded successfully.";
       showModal("Invoice upload complete", message);
       setSelectedFiles([]);
@@ -112,10 +209,17 @@ const LedgerSearchPage: React.FC = () => {
         fileInputRef.current.value = "";
       }
     } catch (error: any) {
+      if (!isMountedRef.current) {
+        return;
+      }
       const message = error?.message || "Invoice upload failed.";
       showModal("Invoice upload failed", message);
     } finally {
-      setUploadBusy(false);
+      if (isMountedRef.current) {
+        setUploadBusy(false);
+        setUploadJobId(null);
+        setUploadStatus(null);
+      }
     }
   };
 
@@ -149,7 +253,12 @@ const LedgerSearchPage: React.FC = () => {
         >
           {checkEmailBusy ? "Checking…" : "Check email"}
         </button>
-        {checkEmailBusy && renderBusyIndicator("Checking mailbox for invoices…")}
+        {checkEmailBusy &&
+          renderBusyIndicator(
+            checkEmailStatus === "queued"
+              ? `Job queued${checkEmailJobId ? ` (${checkEmailJobId})` : ""}…`
+              : `Checking mailbox for invoices${checkEmailJobId ? ` (${checkEmailJobId})` : ""}…`
+          )}
       </div>
 
       <div className="mt-4">
@@ -176,7 +285,12 @@ const LedgerSearchPage: React.FC = () => {
             {uploadBusy ? "Uploading…" : "Upload"}
           </button>
         </div>
-        {uploadBusy && renderBusyIndicator("Uploading invoices…")}
+        {uploadBusy &&
+          renderBusyIndicator(
+            uploadStatus === "queued"
+              ? `Job queued${uploadJobId ? ` (${uploadJobId})` : ""}…`
+              : `Uploading invoices${uploadJobId ? ` (${uploadJobId})` : ""}…`
+          )}
       </div>
 
       {modalMessage && (

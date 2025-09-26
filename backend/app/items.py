@@ -26,6 +26,14 @@ log = logging.getLogger(__name__)
 
 bp = Blueprint("items", __name__, url_prefix="/api")
 
+
+
+def _get_job_manager() -> JobManager:
+    manager = current_app.extensions.get("job_manager")
+    if not isinstance(manager, JobManager):
+        raise RuntimeError("Background job manager is unavailable.")
+    return manager
+
 TABLE = "items"
 ID_COL = "id"
 
@@ -385,12 +393,13 @@ def insert_item_api():
         log.exception("insertitem failed")
         return jsonify({"error": str(e)}), 400
 
-@bp.route("/autogenitems", methods=["POST"])
-@login_required
-def autogen_items_api():
-    payload = request.get_json(silent=True) or {}
+
+
+
+def _autogen_items_task(context: Dict[str, Any]) -> Dict[str, Any]:
+    payload = context.get("payload") if isinstance(context, dict) else None
     if not isinstance(payload, Mapping):
-        return jsonify({"success": False, "error": "Request payload must be an object."}), 400
+        raise ValueError("Request payload must be an object.")
 
     invoice_value = (
         payload.get("invoice_uuid")
@@ -398,15 +407,15 @@ def autogen_items_api():
         or payload.get("invoice_id")
     )
     if not invoice_value:
-        return jsonify({"success": False, "error": "Missing invoice UUID."}), 400
+        raise ValueError("Missing invoice UUID.")
     try:
         invoice_uuid = normalize_pg_uuid(str(invoice_value))
     except Exception as exc:
-        return jsonify({"success": False, "error": f"Invalid invoice UUID: {exc}"}), 400
+        raise ValueError(f"Invalid invoice UUID: {exc}")
 
     raw_items = payload.get("items")
     if not isinstance(raw_items, list) or len(raw_items) == 0:
-        return jsonify({"success": False, "error": "Items payload must be a non-empty list."}), 400
+        raise ValueError("Items payload must be a non-empty list.")
 
     engine = get_engine()
     succeeded_ids: List[str] = []
@@ -447,7 +456,6 @@ def autogen_items_api():
                 "is_staging": True,
             }
 
-            # TODO: add pre-insert intelligence here
             inserted_item = insert_item(row_payload, engine=engine)
 
             new_item_id_value = inserted_item.get(ID_COL) if isinstance(inserted_item, Mapping) else None
@@ -462,7 +470,6 @@ def autogen_items_api():
                     ),
                     {"item_id": new_item_id, "invoice_id": invoice_uuid},
                 )
-                # TODO: add post-insert intelligence here, maybe automatically linking up containers, maybe mark duplicates for merge
 
             if image_text:
                 image_error: Optional[str] = None
@@ -485,7 +492,7 @@ def autogen_items_api():
                 except (RuntimeError, FileNotFoundError, ValueError) as img_exc:
                     image_error = str(img_exc)
                     log.warning("Image handling failed for %s: %s", display_value, img_exc)
-                except Exception as img_exc:  # pragma: no cover - defensive guard
+                except Exception as img_exc:
                     image_error = str(img_exc)
                     log.exception("Unexpected image handling failure for %s", display_value)
 
@@ -528,5 +535,16 @@ def autogen_items_api():
         response_payload["message"] = summary
         response_payload["success"] = False
 
-    return jsonify(response_payload), 200
+    return response_payload
+@bp.route("/autogenitems", methods=["POST"])
+@login_required
+def autogen_items_api():
+    payload = request.get_json(silent=True) or {}
+    try:
+        manager = _get_job_manager()
+        job_id = manager.start_job(_autogen_items_task, {"payload": payload})
+    except Exception as exc:
+        log.exception("Failed to enqueue auto-generated item job")
+        return jsonify({"success": False, "error": str(exc)}), 503
 
+    return jsonify({"job_id": job_id})

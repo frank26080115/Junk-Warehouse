@@ -565,25 +565,31 @@ def set_invoice_api() -> Any:
         final_row.setdefault("id", invoice_id)
     return jsonify(_serialize_invoice_row(final_row)), status_code
 
-@bp.route("/checkemail", methods=["POST"])
-@login_required
-def check_email() -> Any:
-    log.info("Mailbox check requested")
 
+
+def _get_job_manager() -> JobManager:
+    manager = current_app.extensions.get("job_manager")
+    if not isinstance(manager, JobManager):
+        raise RuntimeError("Background job manager is unavailable.")
+    return manager
+
+
+def _check_email_task(_context: Dict[str, Any]) -> Dict[str, Any]:
+    log.info("Mailbox check requested")
     try:
         service = _build_gmail_service()
     except Exception as exc:
         log.exception("Unable to initialise Gmail client")
-        return jsonify({"ok": False, "error": "Failed to initialise Gmail client", "detail": str(exc)}), 500
+        raise RuntimeError("Failed to initialise Gmail client.") from exc
 
     lookback_days = _determine_lookback_days()
     query = gmail_date_x_days_query(lookback_days)
 
     try:
         message_ids = list_message_ids(service, query)
-    except Exception as exc:  # pragma: no cover - network interaction
+    except Exception as exc:
         log.exception("Unable to list Gmail messages for query %s", query)
-        return jsonify({"ok": False, "error": "Failed to query Gmail", "detail": str(exc)}), 502
+        raise RuntimeError("Failed to query Gmail.") from exc
 
     seen_ids = list(_fetch_seen_ids())
     seen_normalized = {_normalize_gmail_id(value) for value in seen_ids if value}
@@ -599,7 +605,7 @@ def check_email() -> Any:
     for mid in new_ids:
         try:
             msg = get_full_message(service, mid)
-        except Exception as exc:  # pragma: no cover - network interaction
+        except Exception as exc:
             log.exception("Failed to fetch Gmail message %s", mid)
             processed.append({"message_id": mid, "status": "fetch_error", "error": str(exc)})
             continue
@@ -620,31 +626,68 @@ def check_email() -> Any:
         "processed": processed,
     }
 
-    return jsonify(summary)
+    return summary
 
 
-@bp.route("/invoiceupload", methods=["POST"])
-@login_required
-def invoice_upload() -> Any:
-    """Accept uploaded invoice files and process them like inbound emails."""
-
-    files = request.files.getlist("files") or request.files.getlist("file")
-    if not files:
-        return jsonify({"error": "No invoice files provided."}), 400
+def _invoice_upload_task(context: Dict[str, Any]) -> Dict[str, Any]:
+    files = context.get("files")
+    if not isinstance(files, list) or len(files) == 0:
+        raise ValueError("No invoice files provided.")
 
     processed: List[Dict[str, Any]] = []
-    for storage in files:
-        if not storage:
+    for entry in files:
+        if not isinstance(entry, dict):
             continue
+        filename = str(entry.get("filename") or "")
+        read_error = entry.get("read_error")
+        if read_error:
+            processed.append({
+                "filename": filename,
+                "status": "read_error",
+                "order_number": None,
+                "invoice_error": "Unable to read uploaded file.",
+                "error": str(read_error),
+            })
+            continue
+
+        raw_data = entry.get("data")
+        if raw_data is None:
+            processed.append({
+                "filename": filename,
+                "status": "read_error",
+                "order_number": None,
+                "invoice_error": "Unable to read uploaded file.",
+            })
+            continue
+
+        try:
+            if isinstance(raw_data, str):
+                raw_bytes = raw_data.encode("utf-8")
+            else:
+                raw_bytes = bytes(raw_data)
+        except Exception as exc:
+            log.exception("Failed to normalise uploaded invoice %s", filename)
+            processed.append({
+                "filename": filename,
+                "status": "processing_error",
+                "error": str(exc),
+            })
+            continue
+
+        storage = FileStorage(
+            stream=io.BytesIO(raw_bytes),
+            filename=filename,
+            content_type=entry.get("content_type") or "application/octet-stream",
+        )
         try:
             result = _ingest_invoice_file(storage)
         except Exception as exc:
             log.exception(
                 "Failed to ingest uploaded invoice %s",
-                getattr(storage, "filename", ""),
+                filename,
             )
             result = {
-                "filename": getattr(storage, "filename", ""),
+                "filename": filename,
                 "status": "processing_error",
                 "error": str(exc),
             }
@@ -665,27 +708,24 @@ def invoice_upload() -> Any:
         "empty_files": empty,
     }
 
-    return jsonify(summary)
+    return summary
 
 
-@bp.route("/analyzeinvoicehtml", methods=["POST"])
-@login_required
-def analyze_invoice_html() -> Any:
-    payload = request.get_json(silent=True) or {}
-    invoice_uuid = payload.get("uuid") or payload.get("invoice_uuid")
-    html_chunk = payload.get("html")
+def _analyze_invoice_html_task(context: Dict[str, Any]) -> Dict[str, Any]:
+    invoice_uuid = str(context.get("invoice_uuid") or "").strip()
+    html_chunk = context.get("html")
 
     if not invoice_uuid:
-        return jsonify({"ok": False, "error": "Invoice UUID is required."}), 400
+        raise ValueError("Invoice UUID is required.")
 
     if not isinstance(html_chunk, str) or not html_chunk.strip():
-        return jsonify({"ok": False, "error": "HTML content is required."}), 400
+        raise ValueError("HTML content is required.")
 
     try:
         fragment_parent = lxml_html.fragment_fromstring(html_chunk, create_parent=True)
     except Exception as exc:
         log.exception("Failed to parse HTML fragment for invoice %s", invoice_uuid)
-        return jsonify({"ok": False, "error": "Provided HTML could not be parsed."}), 400
+        raise RuntimeError("Provided HTML could not be parsed.") from exc
 
     try:
         report, _ = analyze_dom_report(html_chunk)
@@ -693,7 +733,7 @@ def analyze_invoice_html() -> Any:
         new_summary_entries = json.loads(condensed_summary)
     except Exception as exc:
         log.exception("Failed to analyze HTML fragment for invoice %s", invoice_uuid)
-        return jsonify({"ok": False, "error": "Failed to analyze HTML."}), 500
+        raise RuntimeError("Failed to analyze HTML.") from exc
 
     if not isinstance(new_summary_entries, list):
         new_summary_entries = []
@@ -703,15 +743,14 @@ def analyze_invoice_html() -> Any:
     try:
         invoice_row = get_db_item_as_dict(engine, "invoices", invoice_uuid)
     except LookupError:
-        return jsonify({"ok": False, "error": "Invoice not found."}), 404
+        raise ValueError("Invoice not found.")
     except ValueError:
-        return jsonify({"ok": False, "error": "Invalid invoice UUID."}), 400
+        raise ValueError("Invalid invoice UUID.")
     except Exception as exc:
         log.exception("Failed to load invoice %s", invoice_uuid)
-        return jsonify({"ok": False, "error": "Failed to load invoice."}), 500
+        raise RuntimeError("Failed to load invoice.") from exc
 
     existing_summary_raw = invoice_row.get("auto_summary")
-    existing_summary_entries: List[Any]
     if isinstance(existing_summary_raw, str) and existing_summary_raw.strip():
         try:
             parsed = json.loads(existing_summary_raw)
@@ -725,7 +764,6 @@ def analyze_invoice_html() -> Any:
     combined_summary_raw = json.dumps(combined_summary_entries, ensure_ascii=False)
 
     existing_html = invoice_row.get("html") or ""
-    updated_html: str
 
     if not str(existing_html).strip():
         updated_html = html_chunk
@@ -734,7 +772,7 @@ def analyze_invoice_html() -> Any:
             existing_root = lxml_html.fromstring(str(existing_html))
         except Exception as exc:
             log.exception("Failed to parse stored HTML for invoice %s", invoice_uuid)
-            return jsonify({"ok": False, "error": "Stored invoice HTML is invalid."}), 500
+            raise RuntimeError("Stored invoice HTML is invalid.") from exc
 
         if fragment_parent.text:
             if len(existing_root):
@@ -774,7 +812,16 @@ def analyze_invoice_html() -> Any:
     ) = unwrap_db_result(update_result)
 
     if is_error:
-        return jsonify(reply_obj), status_code
+        message = "Failed to update invoice."
+        if isinstance(reply_obj, dict):
+            message = (
+                reply_obj.get("error")
+                or reply_obj.get("message")
+                or json.dumps(reply_obj, ensure_ascii=False)
+            )
+        else:
+            message = str(reply_obj)
+        raise RuntimeError(message or "Failed to update invoice.")
 
     try:
         updated_invoice = get_db_item_as_dict(engine, "invoices", invoice_uuid)
@@ -785,4 +832,86 @@ def analyze_invoice_html() -> Any:
         fallback_invoice.setdefault("html", updated_html)
         updated_invoice = fallback_invoice
 
-    return jsonify({"ok": True, "invoice": updated_invoice})
+    return {"ok": True, "invoice": updated_invoice}
+@bp.route("/checkemail", methods=["POST"])
+@login_required
+def check_email() -> Any:
+    try:
+        manager = _get_job_manager()
+        job_id = manager.start_job(_check_email_task, {})
+    except Exception as exc:
+        log.exception("Failed to enqueue mailbox check job")
+        return jsonify({"ok": False, "error": str(exc)}), 503
+
+    return jsonify({"job_id": job_id})
+
+
+@bp.route("/invoiceupload", methods=["POST"])
+@login_required
+def invoice_upload() -> Any:
+    files = request.files.getlist("files") or request.files.getlist("file")
+
+    context_files: List[Dict[str, Any]] = []
+    for storage in files:
+        if not storage:
+            continue
+        filename = storage.filename or ""
+        content_type = storage.content_type or "application/octet-stream"
+        read_error: Optional[str] = None
+        data_bytes: Optional[bytes] = None
+        try:
+            raw_data = storage.read()
+            if isinstance(raw_data, bytes):
+                data_bytes = raw_data
+            elif isinstance(raw_data, str):
+                data_bytes = raw_data.encode("utf-8")
+            else:
+                data_bytes = bytes(raw_data)
+        except Exception as exc:
+            read_error = str(exc)
+            log.exception("Failed to read uploaded invoice %s", filename)
+        finally:
+            try:
+                storage.stream.seek(0)
+            except Exception:
+                pass
+
+        context_files.append(
+            {
+                "filename": filename,
+                "content_type": content_type,
+                "data": data_bytes,
+                "read_error": read_error,
+            }
+        )
+
+    try:
+        manager = _get_job_manager()
+        job_id = manager.start_job(_invoice_upload_task, {"files": context_files})
+    except Exception as exc:
+        log.exception("Failed to enqueue invoice upload job")
+        return jsonify({"error": str(exc)}), 503
+
+    return jsonify({"job_id": job_id})
+
+
+@bp.route("/analyzeinvoicehtml", methods=["POST"])
+@login_required
+def analyze_invoice_html() -> Any:
+    payload = request.get_json(silent=True) or {}
+    invoice_uuid = payload.get("uuid") or payload.get("invoice_uuid")
+    html_chunk = payload.get("html")
+
+    context = {
+        "invoice_uuid": None if invoice_uuid is None else str(invoice_uuid),
+        "html": html_chunk,
+    }
+
+    try:
+        manager = _get_job_manager()
+        job_id = manager.start_job(_analyze_invoice_html_task, context)
+    except Exception as exc:
+        log.exception("Failed to enqueue invoice HTML analysis job")
+        return jsonify({"ok": False, "error": str(exc)}), 503
+
+    return jsonify({"job_id": job_id})
