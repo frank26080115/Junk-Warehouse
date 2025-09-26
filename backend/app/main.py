@@ -16,6 +16,7 @@ from .invoice_handlers import bp as bp_invoice
 from .items import bp as bp_items
 from .maint import bp as bp_maint
 from .search import bp as bp_search
+from .job_manager import JobManager, bp as bp_jobs
 import app.helpers as helpers
 import app.db as db
 from app.config_loader import CONFIG_PATH, CONFIG_DIR
@@ -34,6 +35,10 @@ def create_app():
     app = Flask(__name__)
     CORS(app)
 
+    job_manager = JobManager()
+    job_manager.attach_app(app)
+    app.extensions["job_manager"] = job_manager
+
     log.info("Flask ENV: " + os.getenv("FLASK_ENV"))
     if os.getenv("FLASK_ENV") == "development":
         log.setLevel(logging.DEBUG)
@@ -47,6 +52,7 @@ def create_app():
     app.register_blueprint(bp_invoice)
     app.register_blueprint(bp_items)
     app.register_blueprint(bp_maint)
+    app.register_blueprint(bp_jobs)
 
     # Load JSON (silently ignore if missing/bad)
     try:
