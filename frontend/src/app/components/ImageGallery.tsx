@@ -319,6 +319,7 @@ const ImageGallery: React.FC<ImageGalleryProps> = ({ targetUuid, refreshToken })
               ref={fileInputRef}
               type="file"
               accept="image/*"
+              capture="environment"
               hidden
               onChange={handleFileInput}
             />
