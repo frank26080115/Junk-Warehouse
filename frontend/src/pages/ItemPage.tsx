@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 
 import ImageGallery from "../app/components/ImageGallery";
 import SearchPanel from "../app/components/SearchPanel";
+import { PIN_OPEN_EXPIRY_MS } from "../app/config";
 
 import "../styles/forms.css";
 
@@ -130,7 +131,6 @@ function formatPinTimestamp(value?: string | null): { readable: string; instant:
   return { readable: `${month}/${day}-${hours}:${minutes}`, instant };
 }
 
-const PIN_WINDOW_MS = 36 * 60 * 60 * 1000; // 36 hours expressed in milliseconds
 
 const booleanFlags = [
   { key: "is_container",      emoji: "📦", label: "Container" },
@@ -300,7 +300,7 @@ const ItemPage: React.FC = () => {
     }
     const nowMs = Date.now();
     const ageMs = nowMs - pinDetails.instant.getTime();
-    return ageMs >= 0 && ageMs <= PIN_WINDOW_MS;
+    return ageMs >= 0 && ageMs <= PIN_OPEN_EXPIRY_MS;
   })();
 
   const handlePinUpdate = useCallback(

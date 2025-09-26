@@ -21,6 +21,7 @@ import {
   int_has_related,
   int_has_similar,
 } from "../helpers/assocHelper";
+import { PIN_OPEN_EXPIRY_MS } from "../config";
 
 type TableName = "items" | "invoices";
 interface SearchRow {
@@ -59,8 +60,6 @@ const API_ENDPOINTS: Record<
 
 const ITEM_NAME_MAX_LENGTH = 30;
 const INVOICE_LINE_MAX_LENGTH = 40;
-const PIN_OPEN_WINDOW_MS = 36 * 60 * 60 * 1000;
-
 /**
  * Convert an unknown value into a usable Date instance so that we can evaluate pin freshness.
  */
@@ -87,7 +86,7 @@ function coerceToDate(value: unknown): Date | null {
 }
 
 /**
- * Determine whether the provided pin_as_opened timestamp is still within the active 36 hour window.
+ * Determine whether the provided pin_as_opened timestamp is still within the active pin window defined in configuration.
  */
 function isPinOpenedRecently(value: unknown): boolean {
   const pinDate = coerceToDate(value);
@@ -104,7 +103,7 @@ function isPinOpenedRecently(value: unknown): boolean {
     // Treat future timestamps as opened because they are certainly recent and should be highlighted.
     return true;
   }
-  return difference <= PIN_OPEN_WINDOW_MS;
+  return difference <= PIN_OPEN_EXPIRY_MS;
 }
 
 function isBlank(value?: string | null): boolean {

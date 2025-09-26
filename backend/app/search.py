@@ -8,7 +8,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 import logging
 import uuid
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, current_app
 
 from .user_login import login_required
 from .db import deduplicate_rows, get_or_create_session
@@ -21,13 +21,20 @@ from .static_server import get_public_html_path
 
 from sqlalchemy import bindparam, text
 
+from app.config_loader import get_pin_open_expiry_hours
+
 log = logging.getLogger(__name__)
 
 DEFAULT_LIMIT = 50
 
 
-PIN_OPEN_WINDOW_HOURS = 36
-
+def _pin_open_window_hours() -> int:
+    """Return the configured pin window in hours, consulting Flask config when available."""
+    try:
+        cfg = current_app.config
+    except RuntimeError:
+        return get_pin_open_expiry_hours()
+    return get_pin_open_expiry_hours(cfg)
 
 
 def _has_directive(search_query: Any, directive_name: str) -> bool:
@@ -66,7 +73,7 @@ def append_pinned_items(
     valid_tables = {"items", "invoices"}
     if table_name not in valid_tables:
         raise ValueError("append_pinned_items only supports 'items' or 'invoices'")
-    threshold = datetime.now(timezone.utc) - timedelta(hours=PIN_OPEN_WINDOW_HOURS)
+    threshold = datetime.now(timezone.utc) - timedelta(hours=_pin_open_window_hours())
     # Pull every row that remains pinned; this intentionally ignores any additional filters.
     sql = text(
         f"""
@@ -92,7 +99,7 @@ def _count_open_pins(session: Any, table_name: str) -> int:
     if table_name not in {"items", "invoices"}:
         raise ValueError("table_name must be either 'items' or 'invoices'")
 
-    threshold = datetime.now(timezone.utc) - timedelta(hours=PIN_OPEN_WINDOW_HOURS)
+    threshold = datetime.now(timezone.utc) - timedelta(hours=_pin_open_window_hours())
 
     # Use explicit SQL so the logic remains transparent and easy to audit.
     sql = text(
