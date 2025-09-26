@@ -15,6 +15,12 @@ export default defineConfig({
         // If Flask routes are like "/items" (no "/api" prefix), strip it:
         // rewrite: (path) => path.replace(/^\/api/, ''),
       },
+      '/imgs': {
+        target: 'http://127.0.0.1:5000',   // Flask server
+        changeOrigin: true,
+        // If Flask routes are like "/items" (no "/api" prefix), strip it:
+        // rewrite: (path) => path.replace(/^\/api/, ''),
+      },
     },
   },
 });
