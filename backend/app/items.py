@@ -30,6 +30,110 @@ bp = Blueprint("items", __name__, url_prefix="/api")
 
 TABLE = "items"
 ID_COL = "id"
+# Bit 0 represents a containment-style relationship between records.
+CONTAINMENT_ASSOC_BIT = 1
+
+
+def _fetch_recent_pin_ids(conn: Any, table_name: str) -> List[str]:
+    """Return normalized UUID strings for the currently pinned rows."""
+
+    from .search import append_pinned_items  # Local import avoids circular dependency.
+
+    pinned_rows: List[Dict[str, Any]] = []
+    append_pinned_items(conn, table_name, pinned_rows)
+
+    normalized_ids: List[str] = []
+    for row in pinned_rows:
+        raw_identifier = row.get("id")
+        if not raw_identifier:
+            continue
+        try:
+            normalized_ids.append(str(uuid.UUID(str(raw_identifier))))
+        except (ValueError, TypeError, AttributeError):
+            log.debug("Skipping pinned %s with invalid id: %r", table_name, raw_identifier)
+    return normalized_ids
+
+
+def _ensure_containment_relationship(conn: Any, source_id: str, target_id: str) -> None:
+    """Create or update the containment relationship between two records."""
+
+    if not source_id or not target_id or source_id == target_id:
+        return
+
+    query_parameters = {"item_id": source_id, "assoc_id": target_id}
+    existing = conn.execute(
+        text(
+            """
+            SELECT id, assoc_type
+            FROM relationships
+            WHERE item_id = :item_id
+              AND assoc_id = :assoc_id
+            LIMIT 1
+            """
+        ),
+        query_parameters,
+    ).mappings().first()
+
+    if existing:
+        current_bits = int(existing.get("assoc_type") or 0)
+        desired_bits = current_bits | CONTAINMENT_ASSOC_BIT
+        if desired_bits != current_bits:
+            conn.execute(
+                text(
+                    """
+                    UPDATE relationships
+                    SET assoc_type = :assoc_type
+                    WHERE id = :relationship_id
+                    """
+                ),
+                {
+                    "assoc_type": desired_bits,
+                    "relationship_id": existing.get("id"),
+                },
+            )
+        return
+
+    conn.execute(
+        text(
+            """
+            INSERT INTO relationships (item_id, assoc_id, assoc_type)
+            VALUES (:item_id, :assoc_id, :assoc_type)
+            """
+        ),
+        {
+            "item_id": source_id,
+            "assoc_id": target_id,
+            "assoc_type": CONTAINMENT_ASSOC_BIT,
+        },
+    )
+
+
+def _synchronize_pinned_relationships(
+    engine: Engine,
+    *,
+    source_item_id: Optional[str],
+    include_invoices: bool = True,
+) -> None:
+    """Ensure the new item points to any currently pinned entities."""
+
+    if not source_item_id:
+        return
+
+    try:
+        normalized_source = str(uuid.UUID(str(source_item_id)))
+    except (ValueError, TypeError, AttributeError):
+        log.debug("Unable to normalize source item id for relationship sync: %r", source_item_id)
+        return
+
+    with engine.begin() as conn:
+        pinned_item_ids = _fetch_recent_pin_ids(conn, "items")
+        for pinned_item_id in pinned_item_ids:
+            _ensure_containment_relationship(conn, normalized_source, pinned_item_id)
+
+        if include_invoices:
+            pinned_invoice_ids = _fetch_recent_pin_ids(conn, "invoices")
+            for pinned_invoice_id in pinned_invoice_ids:
+                _ensure_containment_relationship(conn, normalized_source, pinned_invoice_id)
 
 
 def get_item_thumbnail(item_uuid: Optional[str], *, db_session: Any = None) -> str:
@@ -227,6 +331,7 @@ def insert_item(
     payload: Mapping[str, Any],
     *,
     engine: Optional[Engine] = None,
+    include_pinned_invoices: bool = True,
 ) -> Dict[str, Any]:
     """
     Insert a new item row and return the augmented item dict.
@@ -363,6 +468,15 @@ def insert_item(
     except Exception:
         log.exception("Failed to refresh item embeddings after insert")
 
+    try:
+        _synchronize_pinned_relationships(
+            engine,
+            source_item_id=str(db_row.get(ID_COL)),
+            include_invoices=include_pinned_invoices,
+        )
+    except Exception:
+        log.exception("Failed to synchronize pinned relationships for new item")
+
     return _augment_item(db_row)
 
 
@@ -386,8 +500,6 @@ def insert_item_api():
     except Exception as e:
         log.exception("insertitem failed")
         return jsonify({"error": str(e)}), 400
-
-
 
 
 def _autogen_items_task(context: Dict[str, Any]) -> Dict[str, Any]:
@@ -450,7 +562,31 @@ def _autogen_items_task(context: Dict[str, Any]) -> Dict[str, Any]:
                 "is_staging": True,
             }
 
-            inserted_item = insert_item(row_payload, engine=engine)
+            inserted_item = insert_item(
+                row_payload,
+                engine=engine,
+                include_pinned_invoices=False,
+            )
+
+            # Keep embeddings fresh for items created via the background job.
+            try:
+                update_embeddings_for_item(inserted_item)
+            except Exception:
+                log.exception(
+                    "Failed to refresh item embeddings during auto-generation"
+                )
+
+            # Mirror pinned item relationships without touching invoices for this flow.
+            try:
+                _synchronize_pinned_relationships(
+                    engine,
+                    source_item_id=str(inserted_item.get(ID_COL)),
+                    include_invoices=False,
+                )
+            except Exception:
+                log.exception(
+                    "Failed to synchronize pinned relationships for auto-generated item"
+                )
 
             new_item_id_value = inserted_item.get(ID_COL) if isinstance(inserted_item, Mapping) else None
             new_item_id: Optional[str] = str(new_item_id_value) if new_item_id_value else None
@@ -530,6 +666,8 @@ def _autogen_items_task(context: Dict[str, Any]) -> Dict[str, Any]:
         response_payload["success"] = False
 
     return response_payload
+
+
 @bp.route("/autogenitems", methods=["POST"])
 @login_required
 def autogen_items_api():
