@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import "../styles/forms.css";
@@ -19,6 +19,7 @@ interface InvoiceDto {
   snooze?: string | null;
   is_deleted?: boolean;
   auto_summary?: string | null;
+  pin_as_opened?: string | null; // ISO timestamp when the invoice was pinned as opened
 }
 
 const EMPTY_INVOICE: InvoiceDto = {
@@ -33,6 +34,7 @@ const EMPTY_INVOICE: InvoiceDto = {
   snooze: null,
   is_deleted: false,
   auto_summary: "",
+  pin_as_opened: null,
 };
 
 function fmtDateTime(value?: string | null): string {
@@ -71,6 +73,23 @@ function splitUrls(value?: string): string[] {
     .split(";")
     .map((url) => url.trim())
     .filter((url) => url.length > 0);
+}
+
+const PIN_WINDOW_MS = 36 * 60 * 60 * 1000; // 36 hours expressed in milliseconds
+
+function describePinTimestamp(value?: string | null): { readable: string; instant: Date | null } {
+  if (!value) {
+    return { readable: "not yet pinned", instant: null };
+  }
+  const instant = new Date(value);
+  if (Number.isNaN(+instant)) {
+    return { readable: "not yet pinned", instant: null };
+  }
+  const month = `${instant.getMonth() + 1}`.padStart(2, "0");
+  const day = `${instant.getDate()}`.padStart(2, "0");
+  const hours = `${instant.getHours()}`.padStart(2, "0");
+  const minutes = `${instant.getMinutes()}`.padStart(2, "0");
+  return { readable: `${month}/${day}-${hours}:${minutes}`, instant };
 }
 
 const InvoicePage: React.FC = () => {
@@ -185,6 +204,14 @@ const InvoicePage: React.FC = () => {
   }, [uuid, isNewInvoice]);
 
   const urlEntries = useMemo(() => splitUrls(invoice.urls), [invoice.urls]);
+  const effectiveUuid = invoice.id || uuid || "";
+  const pinDetails = describePinTimestamp(invoice.pin_as_opened);
+  const isPinCurrentlyActive = pinDetails.instant
+    ? (() => {
+        const ageMs = Date.now() - pinDetails.instant.getTime();
+        return ageMs >= 0 && ageMs <= PIN_WINDOW_MS;
+      })()
+    : false;
 
   const snoozeNeedsAttention = useMemo(() => {
     if (invoice.has_been_processed) return false;
@@ -232,36 +259,68 @@ const InvoicePage: React.FC = () => {
     setError("");
   };
 
-  const handleSave = async () => {
-    try {
-      setSaving(true);
-      setError("");
-      const payload: InvoiceDto = {
-        ...invoice,
-        id: invoice.id || (!isNewInvoice && uuid ? uuid : invoice.id),
-      };
-      const res = await fetch("/api/setinvoice", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) throw new Error(`Save failed: ${res.status}`);
-      const data: InvoiceDto = await res.json();
-      const merged = { ...EMPTY_INVOICE, ...data };
-      setInvoice(merged);
-      setSnapshot(merged);
-      setIsReadOnly(true);
-      setSuccess("Invoice saved.");
-      if (merged.id && uuid !== merged.id) {
-        navigate(`/invoice/${merged.id}`, { replace: true });
+  const persistInvoice = useCallback(
+    async (
+      proposedInvoice: InvoiceDto,
+      options?: { successMessage?: string; lockAfterSave?: boolean; navigateOnIdChange?: boolean },
+    ) => {
+      const {
+        successMessage = "Invoice saved.",
+        lockAfterSave = true,
+        navigateOnIdChange = true,
+      } = options || {};
+      try {
+        setSaving(true);
+        setError("");
+        setSuccess("");
+        const payload: InvoiceDto = {
+          ...proposedInvoice,
+          id: proposedInvoice.id || (!isNewInvoice && uuid ? uuid : proposedInvoice.id),
+        };
+        const res = await fetch("/api/setinvoice", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) throw new Error(`Save failed: ${res.status}`);
+        const data: InvoiceDto = await res.json();
+        const merged = { ...EMPTY_INVOICE, ...data };
+        setInvoice(merged);
+        setSnapshot(merged);
+        if (lockAfterSave) {
+          setIsReadOnly(true);
+        }
+        if (successMessage) {
+          setSuccess(successMessage);
+        }
+        if (navigateOnIdChange && merged.id && uuid !== merged.id) {
+          navigate(`/invoice/${merged.id}`, { replace: true });
+        }
+      } catch (e: any) {
+        console.error(e);
+        setError(e?.message || "Failed to save invoice");
+      } finally {
+        setSaving(false);
       }
-    } catch (e: any) {
-      console.error(e);
-      setError(e?.message || "Failed to save invoice");
-    } finally {
-      setSaving(false);
-    }
+    },
+    [isNewInvoice, navigate, uuid],
+  );
+
+  const handleSave = async () => {
+    await persistInvoice(invoice);
   };
+
+  const handlePinUpdate = useCallback(
+    async (nextValue: string | null) => {
+      const proposedInvoice: InvoiceDto = { ...invoice, pin_as_opened: nextValue };
+      setInvoice(proposedInvoice);
+      if (!effectiveUuid) {
+        return;
+      }
+      await persistInvoice(proposedInvoice, { successMessage: "Pin state saved." });
+    },
+    [effectiveUuid, invoice, persistInvoice],
+  );
 
   const handleAnalyzeHtmlJob = async () => {
     const targetUuid = invoice.id || uuid || "";
@@ -344,8 +403,6 @@ const InvoicePage: React.FC = () => {
     if (snoozeNeedsAttention) classes.push("border-warning", "bg-warning-subtle");
     return classes.join(" ");
   }, [isReadOnly, snoozeNeedsAttention]);
-
-  const effectiveUuid = invoice.id || uuid || "";
 
   return (
     <div className="container py-4">
@@ -541,6 +598,54 @@ const InvoicePage: React.FC = () => {
         )}
       </div>
       <AutoInvoiceSummaryPanel invoiceUuid={effectiveUuid} autoSummaryRaw={invoice.auto_summary} />
+
+      {/* Pin controls live at the bottom so they are easy to access after reviewing invoice details */}
+      <div className="mt-4">
+        <div className="d-flex flex-column flex-md-row align-items-start align-items-md-center gap-3">
+          <div className="fw-semibold">
+            {/* Always report the last timestamp even if it is outside of the active window */}
+            📌🕒 Opened at: {pinDetails.readable}
+            {pinDetails.instant && !isPinCurrentlyActive && (
+              <span className="text-muted ms-2">(pin expired)</span>
+            )}
+          </div>
+          <div className="d-flex flex-wrap gap-2">
+            {!isPinCurrentlyActive && (
+              <button
+                type="button"
+                className="btn btn-outline-primary"
+                onClick={() => handlePinUpdate(new Date().toISOString())}
+                disabled={saving || loading || !effectiveUuid}
+                title={effectiveUuid ? "Mark this invoice as opened" : "Save the invoice before pinning"}
+              >
+                📌 Pin as Opened
+              </button>
+            )}
+            {isPinCurrentlyActive && (
+              <>
+                <button
+                  type="button"
+                  className="btn btn-outline-danger"
+                  onClick={() => handlePinUpdate(null)}
+                  disabled={saving || loading || !effectiveUuid}
+                  title={effectiveUuid ? "Clear the opened marker" : "Save the invoice before clearing"}
+                >
+                  ❌📌 Close Pinned
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-outline-secondary"
+                  onClick={() => handlePinUpdate(new Date().toISOString())}
+                  disabled={saving || loading || !effectiveUuid}
+                  title={effectiveUuid ? "Refresh the opened timestamp" : "Save the invoice before pinning"}
+                >
+                  📌➕🕒 Re-pin as Opened
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
 
       <footer className="mt-4 text-muted small">
         Invoice UUID: {effectiveUuid ? (

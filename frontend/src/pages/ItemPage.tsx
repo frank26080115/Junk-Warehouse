@@ -27,6 +27,7 @@ export interface ItemDto {
   is_deleted?: boolean;
   is_lost?: boolean;
   date_reminder?: string | null; // ISO timestamp or null
+  pin_as_opened?: string | null; // ISO timestamp when the item was pinned as opened
   product_code?: string;
   url?: string; // purchase url
   date_purchased?: string | null; // ISO timestamp or null
@@ -57,6 +58,7 @@ const EMPTY_ITEM: ItemDto = {
   date_last_modified: null,
   date_purchased: null,
   date_reminder: null,
+  pin_as_opened: null,
   slug: "",
 };
 
@@ -112,6 +114,23 @@ function truncateWithEllipsis(value: string, maxLength: number): string {
   }
   return `${value.slice(0, maxLength - 1)}…`;
 }
+
+function formatPinTimestamp(value?: string | null): { readable: string; instant: Date | null } {
+  if (!value) {
+    return { readable: "not yet pinned", instant: null };
+  }
+  const instant = new Date(value);
+  if (Number.isNaN(+instant)) {
+    return { readable: "not yet pinned", instant: null };
+  }
+  const month = `${instant.getMonth() + 1}`.padStart(2, "0");
+  const day = `${instant.getDate()}`.padStart(2, "0");
+  const hours = `${instant.getHours()}`.padStart(2, "0");
+  const minutes = `${instant.getMinutes()}`.padStart(2, "0");
+  return { readable: `${month}/${day}-${hours}:${minutes}`, instant };
+}
+
+const PIN_WINDOW_MS = 36 * 60 * 60 * 1000; // 36 hours expressed in milliseconds
 
 const booleanFlags = [
   { key: "is_container",      emoji: "📦", label: "Container" },
@@ -199,13 +218,14 @@ const ItemPage: React.FC = () => {
     setItem((prev) => ({ ...prev, [key]: !prev[key] } as ItemDto));
   }, [isReadOnly]);
 
-  const commonSave = useCallback(async (endpoint: string, options?: { stripIdentifiers?: boolean }) => {
+  const commonSave = useCallback(async (endpoint: string, options?: { stripIdentifiers?: boolean; itemOverride?: ItemDto }) => {
+    const sourceItem = options?.itemOverride ?? item;
     const payload: Partial<ItemDto> = options?.stripIdentifiers
       ? (() => {
-          const { id: _omitId, short_id: _omitShortId, ...rest } = item;
+          const { id: _omitId, short_id: _omitShortId, ...rest } = sourceItem;
           return rest;
         })()
-      : item;
+      : sourceItem;
     // Save/Insert. Backend returns the authoritative updated object
     const res = await fetch(endpoint, {
       method: "POST",
@@ -273,6 +293,36 @@ const ItemPage: React.FC = () => {
   const hasExistingId = Boolean(item?.id);
   const insertEmoji = hasExistingId ? "👯" : "➕";
   const insertTitle = `Insert new item (${insertEmoji})`;
+  const pinDetails = formatPinTimestamp(item.pin_as_opened);
+  const isPinCurrentlyActive = (() => {
+    if (!pinDetails.instant) {
+      return false;
+    }
+    const nowMs = Date.now();
+    const ageMs = nowMs - pinDetails.instant.getTime();
+    return ageMs >= 0 && ageMs <= PIN_WINDOW_MS;
+  })();
+
+  const handlePinUpdate = useCallback(
+    async (nextValue: string | null) => {
+      const proposedItem: ItemDto = { ...item, pin_as_opened: nextValue };
+      setItem(proposedItem);
+      if (!hasExistingId) {
+        return;
+      }
+      try {
+        setLoading(true);
+        setError("");
+        await commonSave("/api/saveitem", { itemOverride: proposedItem });
+      } catch (e: any) {
+        console.error(e);
+        setError(e?.message || "Failed to update pin state");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [commonSave, hasExistingId, item],
+  );
 
   return (
     <div className="container-lg" style={{ maxWidth: "960px" }}>
@@ -561,6 +611,54 @@ const ItemPage: React.FC = () => {
           <h2 className="h5 mb-0">Photos</h2>
         </div>
         <ImageGallery targetUuid={targetUuid} refreshToken={refreshToken} />
+      </div>
+
+      {/* Pin management controls appear before related search panels so they are easy to find */}
+      <div className="mb-4">
+        <div className="d-flex flex-column flex-md-row align-items-start align-items-md-center gap-3">
+          <div className="fw-semibold">
+            {/* Always show the last known opened time so the operator has context */}
+            📌🕒 Opened at: {pinDetails.readable}
+            {pinDetails.instant && !isPinCurrentlyActive && (
+              <span className="text-muted ms-2">(pin expired)</span>
+            )}
+          </div>
+          <div className="d-flex flex-wrap gap-2">
+            {!isPinCurrentlyActive && (
+              <button
+                type="button"
+                className="btn btn-outline-primary"
+                onClick={() => handlePinUpdate(new Date().toISOString())}
+                disabled={loading || !hasExistingId}
+                title={hasExistingId ? "Mark this item as opened" : "Save the item before pinning"}
+              >
+                📌 Pin as Opened
+              </button>
+            )}
+            {isPinCurrentlyActive && (
+              <>
+                <button
+                  type="button"
+                  className="btn btn-outline-danger"
+                  onClick={() => handlePinUpdate(null)}
+                  disabled={loading || !hasExistingId}
+                  title={hasExistingId ? "Clear the opened marker" : "Save the item before clearing"}
+                >
+                  ❌📌 Close Pinned
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-outline-secondary"
+                  onClick={() => handlePinUpdate(new Date().toISOString())}
+                  disabled={loading || !hasExistingId}
+                  title={hasExistingId ? "Refresh the opened timestamp" : "Save the item before pinning"}
+                >
+                  📌➕🕒 Re-pin as Opened
+                </button>
+              </>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Relationships/Links */}
