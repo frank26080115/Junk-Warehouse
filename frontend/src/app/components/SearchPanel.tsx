@@ -59,6 +59,53 @@ const API_ENDPOINTS: Record<
 
 const ITEM_NAME_MAX_LENGTH = 30;
 const INVOICE_LINE_MAX_LENGTH = 40;
+const PIN_OPEN_WINDOW_MS = 36 * 60 * 60 * 1000;
+
+/**
+ * Convert an unknown value into a usable Date instance so that we can evaluate pin freshness.
+ */
+function coerceToDate(value: unknown): Date | null {
+  if (value == null) {
+    return null;
+  }
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const fromNumber = new Date(value);
+    return Number.isNaN(fromNumber.getTime()) ? null : fromNumber;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const fromString = new Date(trimmed);
+    return Number.isNaN(fromString.getTime()) ? null : fromString;
+  }
+  return null;
+}
+
+/**
+ * Determine whether the provided pin_as_opened timestamp is still within the active 36 hour window.
+ */
+function isPinOpenedRecently(value: unknown): boolean {
+  const pinDate = coerceToDate(value);
+  if (!pinDate) {
+    return false;
+  }
+  const nowMs = Date.now();
+  const pinMs = pinDate.getTime();
+  if (!Number.isFinite(pinMs)) {
+    return false;
+  }
+  const difference = nowMs - pinMs;
+  if (difference < 0) {
+    // Treat future timestamps as opened because they are certainly recent and should be highlighted.
+    return true;
+  }
+  return difference <= PIN_OPEN_WINDOW_MS;
+}
 
 function isBlank(value?: string | null): boolean {
   return !value || value.trim().length === 0;
@@ -592,6 +639,11 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
       }
       const truncated = truncateText(raw, ITEM_NAME_MAX_LENGTH);
       const emojiParts: string[] = [];
+      const pinOpened = isPinOpenedRecently((row as any).pin_as_opened);
+      if (pinOpened) {
+        // Place the pin icon at the front so it appears to the left of the other emojis.
+        emojiParts.push("📌");
+      }
       const isCollection = Boolean((row as any).is_collection);
       const isContainer = Boolean((row as any).is_container);
       const isFixedLocation = Boolean((row as any).is_fixed_location);
@@ -933,6 +985,10 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
                     normalizedTable === "invoices" ? extractInvoiceLines(row) : [];
                   const invoiceHref =
                     normalizedTable === "invoices" ? buildInvoiceHref(row) : "";
+                  const pinOpened = isPinOpenedRecently((row as any).pin_as_opened);
+                  const invoiceTextClass = pinOpened
+                    ? "small text-decoration-none text-danger"
+                    : "small text-body text-decoration-none";
 
                   return (
                     <tr key={row.pk} style={{ backgroundColor: rowShade }}>
@@ -995,8 +1051,12 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
                         ) : (
                           <a
                             href={invoiceHref || undefined}
-                            className="small text-body text-decoration-none"
-                            style={{ display: "inline-block", whiteSpace: "nowrap" }}
+                            className={invoiceTextClass}
+                            style={{
+                              display: "inline-block",
+                              whiteSpace: "nowrap",
+                              color: pinOpened ? "var(--bs-danger)" : undefined,
+                            }}
                           >
                             {invoiceLines.map((line, idx) => (
                               <div
