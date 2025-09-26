@@ -65,10 +65,3 @@ def get_private_dir_path(cfg: Optional[dict] = None) -> Optional[Path]:
         candidate = (CONFIG_DIR / candidate).resolve()
 
     return candidate
-
-class AppConfig(object):
-    def __init__(self):
-        self.data = load_app_config()
-
-    def get_timezone(self):
-        return get_timezone(self.data)
