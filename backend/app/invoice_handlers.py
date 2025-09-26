@@ -176,12 +176,6 @@ def _parse_email_date(header_value: Optional[str]) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def _unwrap_db_payload(response: Any) -> Tuple[Dict[str, Any], str]:
-    _, _, reply_obj, row_dict, _, message_text = unwrap_db_result(response)
-    payload = row_dict if row_dict else reply_obj
-    return payload, message_text
-
-
 def _serialize_invoice_row(row: Dict[str, Any]) -> Dict[str, Any]:
     data = dict(row)
     raw_id = data.get("id")
