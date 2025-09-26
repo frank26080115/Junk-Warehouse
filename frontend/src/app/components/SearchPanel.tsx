@@ -159,6 +159,7 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
   allowDelete = false,
 }) => {
   const normalizedTable: TableName = tableName ?? "items";
+  const isInvoiceMode = normalizedTable === "invoices";
   const [query, setQuery] = useState<string>(prefilledQuery ?? "");
   const [rawResults, setRawResults] = useState<SearchRow[]>([]);
   const [errorMessage, setErrorMessage] = useState<string>("");
@@ -173,9 +174,12 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
     CONTAINMENT_BIT,
   );
   const associationSummary = useMemo(() => {
+    if (isInvoiceMode) {
+      return "link";
+    }
     const words = collect_words_from_int(associationBits);
     return words.length ? words.join(", ") : "unlink";
-  }, [associationBits]);
+  }, [associationBits, isInvoiceMode]);
   const [modalMessage, setModalMessage] = useState<
     | {
         title: string;
@@ -183,6 +187,19 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
       }
     | null
   >(null);
+
+  // When the table switches between items and invoices, adjust the association bits accordingly so the footer buttons behave predictably.
+  useEffect(() => {
+    setAssociationBits((previous) => {
+      if (isInvoiceMode) {
+        return RELATED_BIT;
+      }
+      const sanitized = Number.isFinite(previous)
+        ? previous & ALL_ASSOCIATION_MASK
+        : 0;
+      return sanitized === 0 ? CONTAINMENT_BIT : sanitized;
+    });
+  }, [isInvoiceMode]);
 
   const abortRef = useRef<AbortController | null>(null);
   const pinnedRef = useRef<Map<string, SearchRow>>(new Map());
@@ -758,11 +775,16 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
       await runSearch(lastQueryRef.current || query);
 
       setModalMessage({
-        title: associationBits === 0 ? "Links removed" : "Relations updated",
-        body:
-          associationBits === 0
-            ? "Selected relations have been removed."
-            : `Association set to ${associationSummary} for the selected entries.`,
+        title: isInvoiceMode
+          ? "Invoices linked"
+          : associationBits === 0
+          ? "Links removed"
+          : "Relations updated",
+        body: isInvoiceMode
+          ? "Selected invoices have been linked to the target."
+          : associationBits === 0
+          ? "Selected relations have been removed."
+          : `Association set to ${associationSummary} for the selected entries.`,
       });
     } catch (error: any) {
       setModalMessage({
@@ -772,7 +794,7 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
     } finally {
       setIsActionBusy(false);
     }
-  }, [associationBits, associationSummary, normalizedTable, query, relationDirection, runSearch, selectedCount, selectedPks, targetUuid]);
+  }, [associationBits, associationSummary, isInvoiceMode, normalizedTable, query, relationDirection, runSearch, selectedCount, selectedPks, targetUuid]);
 
   const handleUnlinkAssociation = useCallback(async () => {
     if (!targetUuid || selectedCount === 0) {
@@ -1040,100 +1062,122 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
 
             {targetUuid && (
               <div className="d-flex flex-wrap align-items-center gap-2">
-                <button
-                  type="button"
-                  className="btn btn-outline-secondary btn-sm"
-                  onClick={() =>
-                    setRelationDirection((prev) =>
-                      prev === "forward" ? "reverse" : "forward"
-                    )
-                  }
-                  disabled={isBusy}
-                  aria-pressed={relationDirection === "reverse"}
-                  title={
-                    relationDirection === "forward"
-                      ? "Link from selected entries to target"
-                      : "Link from target to selected entries"
-                  }
-                >
-                  {relationDirection === "forward" ? "➡️" : "⬅️"}
-                </button>
+                {isInvoiceMode ? (
+                  <>
+                    {/* Invoice associations are binary, so only show link and unlink buttons. */}
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={handleSetAssociation}
+                      disabled={isBusy || !selectedCount}
+                      title="Link selected invoices to the target"
+                      aria-label="Link selected invoices to the target"
+                    >
+                      <span aria-hidden>🔗</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-outline-danger btn-sm"
+                      onClick={handleUnlinkAssociation}
+                      disabled={isBusy || !selectedCount}
+                      title="Unlink selected invoices from the target"
+                      aria-label="Unlink selected invoices from the target"
+                    >
+                      <span aria-hidden>💥</span>
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="btn btn-outline-secondary btn-sm"
+                      onClick={() =>
+                        setRelationDirection((prev) =>
+                          prev === "forward" ? "reverse" : "forward"
+                        )
+                      }
+                      disabled={isBusy}
+                      aria-pressed={relationDirection === "reverse"}
+                      title={
+                        relationDirection === "forward"
+                          ? "Link from selected entries to target"
+                          : "Link from target to selected entries"
+                      }
+                    >
+                      {relationDirection === "forward" ? "➡️" : "⬅️"}
+                    </button>
 
-                <div className="d-flex align-items-center gap-2">
-                  {ALL_ASSOCIATION_BITS.map((bit) => {
-                    const checked =
-                      bit === CONTAINMENT_BIT
-                        ? containmentChecked
-                        : bit === RELATED_BIT
-                        ? relatedChecked
-                        : bit === SIMILAR_BIT
-                        ? similarChecked
-                        : bit === MERGE_BIT
-                        ? mergeChecked
-                        : (associationBits & bit) === bit;
-                    const emoji = bit_to_emoji_character(bit);
-                    const label = bit_to_word(bit) || "association";
-                    return (
-                      <label
-                        key={bit}
-                        className="mb-0"
-                        style={{
-                          cursor: isBusy ? "not-allowed" : "pointer",
-                          userSelect: "none",
-                        }}
-                        title={label}
-                      >
-                        <input
-                          type="checkbox"
-                          className="form-check-input d-none"
-                          checked={checked}
-                          onChange={(event) =>
-                            handleAssociationBitToggle(bit, event.target.checked)
-                          }
-                          disabled={isBusy}
-                        />
-                        <span
-                          aria-hidden
-                          style={{
-                            display: "inline-block",
-                            fontSize: "1.5rem",
-                            opacity: checked ? 1 : 0.25,
-                            transition: "opacity 0.2s ease",
-                          }}
-                        >
-                          {emoji}
-                        </span>
-                        <span className="visually-hidden">{label}</span>
-                      </label>
-                    );
-                  })}
-                </div>
+                    <div className="d-flex align-items-center gap-2">
+                      {ALL_ASSOCIATION_BITS.map((bit) => {
+                        const checked =
+                          bit === CONTAINMENT_BIT
+                            ? containmentChecked
+                            : bit === RELATED_BIT
+                            ? relatedChecked
+                            : bit === SIMILAR_BIT
+                            ? similarChecked
+                            : bit === MERGE_BIT
+                            ? mergeChecked
+                            : (associationBits & bit) === bit;
+                        const emoji = bit_to_emoji_character(bit);
+                        const label = bit_to_word(bit) || "association";
+                        return (
+                          <label
+                            key={bit}
+                            className="mb-0"
+                            style={{
+                              cursor: isBusy ? "not-allowed" : "pointer",
+                              userSelect: "none",
+                            }}
+                            title={label}
+                          >
+                            <input
+                              type="checkbox"
+                              className="form-check-input d-none"
+                              checked={checked}
+                              onChange={(event) =>
+                                handleAssociationBitToggle(bit, event.target.checked)
+                              }
+                              disabled={isBusy}
+                            />
+                            <span
+                              aria-hidden
+                              style={{
+                                display: "inline-block",
+                                fontSize: "1.5rem",
+                                opacity: checked ? 1 : 0.25,
+                                transition: "opacity 0.2s ease",
+                              }}
+                            >
+                              {emoji}
+                            </span>
+                            <span className="visually-hidden">{label}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
 
-                <button
-                  type="button"
-                  className="btn btn-primary btn-sm"
-                  onClick={handleSetAssociation}
-                  disabled={isBusy || !selectedCount}
-                  aria-label={
-                    normalizedTable === "invoices"
-                      ? "Create relationship"
-                      : "Save association"
-                  }
-                >
-                  <span aria-hidden>
-                    {normalizedTable === "invoices" ? "🔗" : "💾"}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-outline-danger btn-sm"
-                  onClick={handleUnlinkAssociation}
-                  disabled={isBusy || !selectedCount}
-                  title="Completely unlink selected relationships"
-                  aria-label="Completely unlink selected relationships"
-                >
-                  <span aria-hidden>💥</span>
-                </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={handleSetAssociation}
+                      disabled={isBusy || !selectedCount}
+                      aria-label="Save association"
+                    >
+                      <span aria-hidden>💾</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-outline-danger btn-sm"
+                      onClick={handleUnlinkAssociation}
+                      disabled={isBusy || !selectedCount}
+                      title="Completely unlink selected relationships"
+                      aria-label="Completely unlink selected relationships"
+                    >
+                      <span aria-hidden>💥</span>
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </>

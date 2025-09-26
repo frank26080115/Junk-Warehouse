@@ -169,6 +169,15 @@ class JobManager:
         return data
 
 
+def get_job_manager(capp = None) -> JobManager:
+    if capp is None:
+        capp = current_app
+    manager = capp.extensions.get("job_manager")
+    if not isinstance(manager, JobManager):
+        raise RuntimeError("Background job manager is unavailable.")
+    return manager
+
+
 bp = Blueprint("job_manager", __name__, url_prefix="/api")
 
 
