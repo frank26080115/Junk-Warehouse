@@ -92,7 +92,7 @@ const ImageGallery: React.FC<ImageGalleryProps> = ({ targetUuid, refreshToken })
 
     setUploading(true);
     try {
-      const response = await fetch("/img_upload", {
+      const response = await fetch("/api/img_upload", {
         method: "POST",
         body: formData,
       });
