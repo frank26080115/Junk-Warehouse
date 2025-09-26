@@ -23,6 +23,7 @@ from automation.html_dom_finder import analyze as analyze_dom_report
 from automation.html_invoice_helpers import parse_mhtml_from_string, sniff_format
 from lxml import html as lxml_html
 from app.db import get_db_item_as_dict, get_engine, update_db_row_by_dict, unwrap_db_result
+from .config_loader import get_private_dir_path
 from .user_login import login_required
 from .job_manager import get_job_manager
 
@@ -34,8 +35,19 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SECRETS_PATH = REPO_ROOT / "config" / "secrets.json"
 
 
+def _gmail_token_path() -> Path:
+    """
+    Resolve the Gmail OAuth token cache location, honoring the optional private_dir hint.
+    """
+    private_dir = get_private_dir_path()
+    if private_dir is not None:
+        # Keep the token beside other private runtime artifacts when configured.
+        return Path(private_dir) / "gmail_token.json"
+    return SECRETS_PATH.with_name("gmail_token.json")
+
+
 def _load_gmail_token() -> Dict[str, Any]:
-    token_path = SECRETS_PATH.with_name("gmail_token.json")
+    token_path = _gmail_token_path()
 
     if token_path.exists():
         raw_token = token_path.read_text(encoding="utf-8")
@@ -60,7 +72,7 @@ def _load_gmail_token() -> Dict[str, Any]:
 
 
 def _build_gmail_service() -> Any:
-    token_path = SECRETS_PATH.with_name("gmail_token.json")
+    token_path = _gmail_token_path()
     token_info = _load_gmail_token()
 
     try:
@@ -84,6 +96,7 @@ def _build_gmail_service() -> Any:
         persist_token = True
 
     if persist_token:
+        token_path.parent.mkdir(parents=True, exist_ok=True)
         token_path.write_text(creds.to_json(), encoding="utf-8")
 
     return build("gmail", "v1", credentials=creds)
