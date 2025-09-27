@@ -307,22 +307,70 @@ def extract_rows_from_container(el, min_repeat=3):
 
 SKIP_TAGS = {"script", "style", "noscript", "template"}
 
-def sanitize_dom(root):
+def _is_blank_text(s: str | None) -> bool:
+    if not s:
+        return True
+    # normalize NBSP (U+00A0) to a regular space, then strip
+    return s.replace("\u00A0", " ").strip() == ""
+
+def _element_text_is_blank(el: ET._Element) -> bool:
+    # full text content (including descendants)
+    txt = "".join(el.itertext())
+    return _is_blank_text(txt)
+
+def _has_src_or_href_like_attr(el: ET._Element) -> bool:
+    # guard: if the element itself has any attribute whose name contains src/href (case-insensitive),
+    # we consider it "contentful" and keep it (covers src, data-src, xlink:href, etc.)
+    for k in el.attrib.keys():
+        kl = k.lower()
+        if "href" in kl or "src" in kl:
+            return True
+    return False
+
+def _replace_element_with_space(el: ET._Element) -> None:
+    parent = el.getparent()
+    if parent is None:
+        # no parent: just drop it; nowhere sensible to inject a space
+        el.drop_tree()
+        return
+    prev = el.getprevious()
+    if prev is not None:
+        prev.tail = (prev.tail or "") + " "
+    else:
+        parent.text = (parent.text or "") + " "
+    el.drop_tree()
+
+def sanitize_dom(root: ET._Element) -> ET._Element:
     """
     Mutates the tree:
       - removes <script>, <style>, <noscript>, <template> (and their content)
       - removes HTML comments <!-- ... -->
+      - removes tags that are text-empty (only whitespace/nbsp), *iff* the tag itself
+        lacks any src/href-like attribute; replaces the removed tag with a single space.
     """
-    # strip entire elements (no tail kept)
+    # 🧨 strip whole elements
     for tag in list(SKIP_TAGS):
-        for el in root.xpath(f'//{tag}'):
+        for el in root.xpath(f"//{tag}"):
             el.drop_tree()
 
-    # remove comments
-    for c in root.xpath('//comment()'):
+    # 💬 remove comments
+    for c in root.xpath("//comment()"):
         p = c.getparent()
         if p is not None:
             p.remove(c)
+
+    # 🧽 remove text-empty elements (deepest-first so parents re-evaluate naturally)
+    # NOTE: we iterate over a snapshot list because we mutate the tree.
+    for el in reversed(list(root.iter())):
+        # skip root itself and already-removed tag types (paranoia)
+        if el.tag in SKIP_TAGS:
+            continue
+        # keep elements that declare src/href-like attributes (likely meaningful even if text-empty)
+        if _has_src_or_href_like_attr(el):
+            continue
+        # if element has *no* textual content (only whitespace/nbsp), replace with a single space
+        if _element_text_is_blank(el):
+            _replace_element_with_space(el)
 
     return root
 
