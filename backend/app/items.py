@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Mapping, Optional, Union, List
+from typing import Any, Callable, Dict, Mapping, Optional, Union, List, cast
+from datetime import datetime, timedelta, timezone
 import logging
 import random
 import uuid
@@ -24,6 +25,7 @@ from .image_handler import (
     UnsupportedMedia as ImageUnsupportedMedia,
 )
 from .job_manager import get_job_manager
+from app.config_loader import get_pin_open_expiry_hours
 
 log = logging.getLogger(__name__)
 
@@ -302,6 +304,37 @@ def augment_item_dict(
 
     getter = thumbnail_getter or (lambda uuid: get_item_thumbnail(uuid))
     out["thumbnail"] = getter(out.get(ID_COL))
+
+    pin_opened_value = out.get("pin_as_opened")
+    if pin_opened_value is not None:
+        pin_opened_moment: Optional[datetime] = None
+        if hasattr(pin_opened_value, "isoformat"):
+            pin_opened_moment = cast(datetime, pin_opened_value)
+        elif isinstance(pin_opened_value, str):
+            try:
+                pin_opened_moment = datetime.fromisoformat(pin_opened_value)
+            except ValueError:
+                pin_opened_moment = None
+
+        if pin_opened_moment is not None:
+            if pin_opened_moment.tzinfo is None:
+                pin_opened_moment = pin_opened_moment.replace(tzinfo=timezone.utc)
+
+            try:
+                active_config = current_app.config
+            except RuntimeError:
+                # No active Flask application context, so fall back to the static loader.
+                configured_hours = get_pin_open_expiry_hours()
+            else:
+                # Use the live application configuration when a request context is present.
+                configured_hours = get_pin_open_expiry_hours(active_config)
+
+            expiry_threshold = datetime.now(timezone.utc) - timedelta(hours=configured_hours)
+
+            if pin_opened_moment < expiry_threshold:
+                # Present expired pins as cleared so the caller sees the same behaviour
+                # as the database-level filtering without mutating the stored value.
+                out["pin_as_opened"] = None
 
     for key, value in list(out.items()):
         if hasattr(value, "isoformat"):
