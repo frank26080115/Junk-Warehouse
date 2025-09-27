@@ -57,8 +57,27 @@ def merge_example_content(existing: Any, updated: Any) -> Any:
             existing_value = existing.get(key) if isinstance(existing, dict) else None
             merged[key] = merge_example_content(existing_value, updated_value)
         return merged
+    if isinstance(updated, list):
+        if isinstance(existing, list):
+            if len(existing) == len(updated):
+                existing_all_strings = all(isinstance(item, str) for item in existing)
+                updated_all_strings = all(isinstance(item, str) for item in updated)
+                if existing_all_strings and updated_all_strings:
+                    # When both lists contain string data with matching lengths, keep the existing obfuscation.
+                    return existing
+                existing_all_dicts = all(isinstance(item, dict) for item in existing)
+                updated_all_dicts = all(isinstance(item, dict) for item in updated)
+                if existing_all_dicts and updated_all_dicts:
+                    merged_items = []
+                    for existing_item, updated_item in zip(existing, updated):
+                        # Merge dictionaries element-by-element so nested content retains any prior obfuscation.
+                        merged_items.append(merge_example_content(existing_item, updated_item))
+                    return merged_items
+        # Lists either differ in length or contain non-string entries, so use the updated list as-is.
+        return updated
     if isinstance(updated, str):
         if isinstance(existing, str) and len(existing) == len(updated):
+            # Preserve the previously obfuscated string when it has the same length as the updated value.
             return existing
         return updated
     return updated if updated is not None else existing
