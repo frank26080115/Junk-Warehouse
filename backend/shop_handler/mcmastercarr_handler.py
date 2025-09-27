@@ -14,6 +14,7 @@ class McMasterCarrHandler(ShopHandler):
         "McMaster",
     )
     ORDER_NUMBER_REGEX = re.compile(r"(?i)order\s*[#:]*\s*(\d{4,6}[A-Z]{3,20})")
+    PRODUCT_CODE_REGEX = re.compile(r"^[A-Z0-9]+$")
 
     def guess_items(self) -> List[Dict[str, str]]:
         """Attempt to extract item details from McMaster-Carr order tables."""
@@ -128,34 +129,50 @@ class McMasterCarrHandler(ShopHandler):
         items: List[Dict[str, str]] = []
 
         for row in fallback_rows:
-            # Find the first hyperlink that looks like a product link so we can harvest details.
+            # Walk every hyperlink in the row so we can pinpoint the one that truly
+            # represents a product. Some rows carry additional links such as images or
+            # ancillary resources, so the first <a> tag may not be the correct match.
             hyperlink = None
+            href = ''
+            product_code = ''
+            anchor_text_collapsed = ''
+
             for candidate_anchor in row.xpath('.//a'):
-                href = (candidate_anchor.get('href') or '').strip()
-                if href:
-                    hyperlink = candidate_anchor
-                    break
+                candidate_href = (candidate_anchor.get('href') or '').strip()
+                if not candidate_href:
+                    continue
+
+                # Examine every <p> inside the anchor, because the product code might be
+                # rendered in any of them. We only accept strings that match the expected
+                # "capital letters and digits" pattern so we avoid misidentifying other
+                # text snippets as a code.
+                candidate_product_code = ''
+                for node in candidate_anchor.xpath('./p'):
+                    node_text = node.text_content().strip()
+                    if node_text and self.PRODUCT_CODE_REGEX.fullmatch(node_text):
+                        candidate_product_code = node_text
+                        break
+
+                if not candidate_product_code or candidate_product_code not in candidate_href:
+                    continue
+
+                candidate_anchor_text = candidate_anchor.text_content()
+                candidate_anchor_text_collapsed = re.sub(r"\s+", " ", candidate_anchor_text).strip()
+                if not candidate_anchor_text_collapsed or candidate_product_code not in candidate_anchor_text_collapsed:
+                    continue
+
+                hyperlink = candidate_anchor
+                href = candidate_href
+                product_code = candidate_product_code
+                anchor_text_collapsed = candidate_anchor_text_collapsed
+                break
 
             if hyperlink is None:
                 continue
 
-            href = (hyperlink.get('href') or '').strip()
-            if not href:
-                continue
-
-            product_code = ''
-            product_code_nodes = hyperlink.xpath('./p')
-            if product_code_nodes:
-                product_code = product_code_nodes[0].text_content().strip()
-
-            if not product_code or product_code not in href:
-                continue
-
-            # Flatten the descriptive hyperlink text into a human-readable sentence.
-            anchor_text_raw = hyperlink.text_content()
-            anchor_text_clean = re.sub(r"\s+", " ", anchor_text_raw).strip()
-            if product_code:
-                anchor_text_clean = anchor_text_clean.replace(product_code, '').strip()
+            # Remove the product code from the collapsed text so we can craft a
+            # human-friendly description while keeping the surrounding narrative intact.
+            anchor_text_clean = anchor_text_collapsed.replace(product_code, '', 1).strip()
             anchor_text_clean = re.sub(r"\s+", " ", anchor_text_clean).strip()
 
             if not anchor_text_clean:
