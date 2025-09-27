@@ -95,13 +95,18 @@ class AmazonHandler(ShopHandler):
         if not base_name or not base_url:
             return None
 
-        final_url, final_name, description = self._fetch_remote_details(session, base_url, base_name)
+        # Capture extra metadata from the remote details call, including any detected product code.
+        final_url, final_name, description, product_code = self._fetch_remote_details(session, base_url, base_name)
 
         item: Dict[str, str] = {
             'name': final_name,
             'url': final_url,
             'source': self.POSSIBLE_NAMES[0],
         }
+
+        if product_code is not None:
+            # Only attach the product code when it has been confidently extracted.
+            item['product_code'] = product_code
 
         if price_match:
             item['price'] = price_match.group(0).replace(' ', '')
@@ -128,10 +133,12 @@ class AmazonHandler(ShopHandler):
         session: requests.Session,
         url: str,
         fallback_name: str,
-    ) -> tuple[str, str, str]:
+    ) -> tuple[str, str, str, Optional[str]]:
         final_url = url
         final_name = fallback_name
         description = ''
+        # Default product code to None until we discover a valid value.
+        product_code: Optional[str] = None
 
         try:
             response = session.get(
@@ -141,17 +148,17 @@ class AmazonHandler(ShopHandler):
                 timeout=self.REQUEST_TIMEOUT,
             )
         except Exception:
-            return final_url, final_name, description
+            return final_url, final_name, description, product_code
 
         if not response.ok:
-            return response.url or final_url, final_name, description
+            return response.url or final_url, final_name, description, product_code
 
         final_url = response.url or final_url
 
         try:
             remote_root = lxml_html.fromstring(response.text)
         except Exception:
-            return final_url, final_name, description
+            return final_url, final_name, description, product_code
 
         title_element = remote_root.xpath('.//span[@id="productTitle"]')
         if title_element:
@@ -172,7 +179,20 @@ class AmazonHandler(ShopHandler):
                 description = "\r\n".join(bullet_lines)
                 # TODO: Use backend.automation.ai_helpers to summarize the feature bullets into a concise paragraph without marketing fluff.
 
-        return final_url, final_name, description
+        # Normalize the URL so that it always points at amazon.com without duplicate slashes.
+        if 'amazon.com' not in final_url.lower():
+            normalized_path = final_url.lstrip('/')
+            if normalized_path:
+                final_url = f"https://amazon.com/{normalized_path}"
+            else:
+                final_url = 'https://amazon.com/'
+
+        # Attempt to extract the product code from the normalized URL when present.
+        dp_match = re.search(r"/dp/([^/?]+)", final_url)
+        if dp_match:
+            product_code = dp_match.group(1)
+
+        return final_url, final_name, description, product_code
 
     def _is_total_row(self, text: str) -> bool:
         if not text:
