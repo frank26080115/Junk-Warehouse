@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -18,7 +19,12 @@ def normalize_to_crlf(path: Path) -> bool:
     if b"\0" in data or b"\r\n" not in data:
         return False
 
-    normalized = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    # When a file contains multiple carriage return characters before a newline,
+    # such as "\r\r\n", we collapse that sequence down to a single carriage
+    # return to avoid creating duplicate blank lines after normalization.
+    cleaned = re.sub(rb"\r+\n", b"\r\n", data)
+
+    normalized = cleaned.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
     converted = normalized.replace(b"\n", b"\r\n")
 
     if converted != data:
