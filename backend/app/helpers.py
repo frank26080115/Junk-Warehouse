@@ -438,6 +438,7 @@ def parse_tagged_text_to_dict(text: str, required_key: str = "name", def_req_val
     Parse a multiline string into a dict where sections start with lines beginning with '#'.
       - A line starting with '#' defines a new key: everything after '#' (stripped) is the key.
       - The value for that key is all subsequent lines up to (but not including) the next '#' line.
+      - If the '#'-line contains a ':' then the text immediately following the ':' becomes the first value line.
       - Keys and values are stripped of leading/trailing whitespace (values preserve inner newlines).
       - If acceptable_keys is provided, each parsed key is fuzzy-corrected to the closest entry
         in that list using fuzzy_word_list_match; if no reasonable match is found, the original key is used.
@@ -469,21 +470,29 @@ def parse_tagged_text_to_dict(text: str, required_key: str = "name", def_req_val
             match, _ = fuzzy_word_list_match(acceptable_keys, key)
             if match:
                 key = match  # fuzzy-correct the key if we got a reasonable match
-        value = "\n".join(current_buf).strip()
+        value = chr(10).join(current_buf).strip()  # Use a literal LF to prevent accidental CRLF artifacts in stored text
         result[key] = value
         current_key, current_buf = None, []
 
     for raw in lines:
-        # preserve original line content for values; only use stripped to detect markers
+        # Preserve original line content for values; only use stripped to detect markers
         stripped = raw.lstrip()  # we only care that the line *starts* with '#', ignoring leading spaces
         if stripped.startswith("#"):
             # New section starts: commit previous
             _commit()
-            # Everything after the first '#' is the key (strip surrounding whitespace)
-            # Example: "#   Title   " -> "Title"
-            after = stripped[1:].strip()
-            current_key = after
+            after_hash = stripped[1:]
+            inline_fragment: str | None = None
+            if ':' in after_hash:
+                # Respect inline values such as "# Title: My Value" by splitting at the first ':'
+                key_fragment, inline_fragment = after_hash.split(':', 1)
+            else:
+                key_fragment = after_hash
+            current_key = key_fragment.strip()
             current_buf = []
+            if inline_fragment is not None:
+                # Inline values begin immediately after the ':' and should not carry leading spaces
+                inline_text = inline_fragment.lstrip()
+                current_buf.append(inline_text)
         else:
             # part of current value (even if it's empty or whitespace)
             if current_key is not None:
@@ -497,7 +506,7 @@ def parse_tagged_text_to_dict(text: str, required_key: str = "name", def_req_val
 
     return result
 
-def dict_to_tagged_text(d: dict[str, str]) -> str:
+def dict_to_tagged_text(d: dict[str, str], inline_threshold: int = 30) -> str:
     """
     Convert a dict back into the tagged text format that parse_tagged_text_to_dict parses.
 
@@ -505,11 +514,12 @@ def dict_to_tagged_text(d: dict[str, str]) -> str:
     Values are written exactly as they are (multiline preserved).
     Leading/trailing whitespace is stripped for keys but values are preserved.
     Keys are emitted in dict iteration order.
+    If a value is a single trimmed line shorter than `inline_threshold`, the output uses "# Key: value" form.
 
     Example:
         {"Title": "My Document", "Body": "hello\nworld"}
 
-    → 
+    →
         # Title
         My Document
         # Body
@@ -518,7 +528,23 @@ def dict_to_tagged_text(d: dict[str, str]) -> str:
     """
     parts: list[str] = []
     for key, value in d.items():
-        parts.append(f"# {key.strip()}")
-        if value is not None and value != "":
-            parts.append(value)
-    return "\n".join(parts)
+        safe_key = key.strip()
+        value_text = '' if value is None else str(value)
+        trimmed_value = value_text.strip()
+        has_newline = chr(10) in trimmed_value  # Detect embedded newlines without rewriting literal escape sequences
+        should_inline = not has_newline and len(trimmed_value) < inline_threshold
+
+        if should_inline:
+            # Inline short, single-line values so the parser can recover them without extra blank lines
+            if trimmed_value == '':
+                parts.append(f"# {safe_key}:")
+            else:
+                parts.append(f"# {safe_key}: {trimmed_value}")
+            continue
+
+        parts.append(f"# {safe_key}")
+        if trimmed_value != '':
+            # Preserve the original value text (including intentional spaces or newlines)
+            parts.append(value_text)
+    return chr(10).join(parts)  # Emit consistent LF separators so the parser can reliably split sections
+
