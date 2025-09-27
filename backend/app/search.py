@@ -281,6 +281,56 @@ def find_code_matched_items(target_uuid: Any) -> List[str]:
     return matched_ids
 
 
+def append_code_matched_items(
+    destination: List[Dict[str, Any]],
+    matched_ids: Iterable[Any],
+    *,
+    augment_row: Optional[Callable[[Mapping[str, Any]], Dict[str, Any]]] = None,
+) -> None:
+    """Hydrate matched item identifiers and prepend them to the destination list."""
+
+    identifiers = [str(identifier) for identifier in matched_ids if identifier]
+    if not identifiers:
+        # Nothing to do when there are no candidate identifiers to hydrate.
+        return
+
+    engine = get_engine()
+
+    existing_ids: set[str] = set()
+    for item in destination:
+        pk_value = item.get("pk") or item.get("id")
+        if pk_value is None:
+            continue
+        existing_ids.add(str(pk_value))
+
+    # Track which identifiers we have already materialized to avoid duplicates.
+    seen_ids = set(existing_ids)
+    hydrated_rows: List[Dict[str, Any]] = []
+
+    formatter = augment_row or augment_item_dict
+
+    for identifier in identifiers:
+        if identifier in seen_ids:
+            continue
+
+        try:
+            raw_row = get_db_item_as_dict(engine, "items", identifier)
+        except LookupError:
+            # The row vanished between discovery and hydration; ignore quietly.
+            continue
+        except ValueError:
+            # Defensive guard in case an identifier cannot be coerced to UUID.
+            continue
+
+        hydrated_rows.append(formatter(raw_row))
+        seen_ids.add(identifier)
+
+    if not hydrated_rows:
+        return
+
+    destination[:0] = hydrated_rows
+
+
 def _execute_text_search_query(
     session: Any,
     search_query: SearchQuery,
@@ -572,40 +622,11 @@ def search_items(
         if sq.evaluate(row_dict):
             results.append(augment_item_dict(row_dict))
 
+
     if target_uuid and sq.has_directive("codematched"):
         matched_ids = find_code_matched_items(target_uuid)
-        if matched_ids:
-            engine = get_engine()
-            existing_ids: set[str] = set()
-            for item in results:
-                pk_value = item.get("pk") or item.get("id")
-                if pk_value is None:
-                    continue
-                existing_ids.add(str(pk_value))
-
-            codematched_items: List[Dict[str, Any]] = []
-            # Track IDs we have already appended so we do not request them twice.
-            seen_ids = set(existing_ids)
-
-            for match_id in matched_ids:
-                if match_id in seen_ids:
-                    continue
-                try:
-                    raw_item = get_db_item_as_dict(engine, "items", match_id)
-                except LookupError:
-                    # The row disappeared between discovery and hydration; skip it quietly.
-                    continue
-                except ValueError:
-                    # Should not happen because the UUIDs came from the database, but guard anyway.
-                    continue
-
-                codematched_items.append(augment_item_dict(raw_item))
-                seen_ids.add(match_id)
-
-            if codematched_items:
-                # Insert these matches at the top so they appear before ordinary results while
-                # still allowing pinned rows to prepend themselves afterwards.
-                results[:0] = codematched_items
+        # Hydrate and prepend code-matched results ahead of standard search items.
+        append_code_matched_items(results, matched_ids, augment_row=augment_item_dict)
 
     if sq.has_directive("pinned"):
         append_pinned_items(
