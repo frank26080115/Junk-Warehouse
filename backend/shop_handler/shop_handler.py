@@ -134,7 +134,7 @@ class ShopHandler:
                 working[key_text] = normalized_value
 
             if shop_name:
-                working.setdefault("shop", shop_name)
+                working.setdefault("source", shop_name)
 
             name_candidates = [
                 working.get("name"),
@@ -198,6 +198,7 @@ class ShopHandler:
 
 class GenericShopHandler(ShopHandler):
     ORDER_NUMBER_REGEX = None
+    TEXT_LENGTH_LIMIT = 12
 
     def get_order_number(self) -> Optional[str]:
         try:
@@ -228,11 +229,11 @@ class GenericShopHandler(ShopHandler):
 
             chosen_text = ""
             if url:
-                chosen_text = anchor_text if len(anchor_text) >= 12 else preview_text
-                if len(chosen_text) < 12:
+                chosen_text = anchor_text if len(anchor_text) >= TEXT_LENGTH_LIMIT else preview_text
+                if len(chosen_text) < TEXT_LENGTH_LIMIT:
                     chosen_text = ""
             else:
-                if len(preview_text) >= 12:
+                if len(preview_text) >= TEXT_LENGTH_LIMIT:
                     chosen_text = preview_text
 
             if not chosen_text and not url:
@@ -248,8 +249,6 @@ class GenericShopHandler(ShopHandler):
             entry: Dict[str, str] = {"name": sanitized_name}
             if url:
                 entry["url"] = url
-            if chosen_text:
-                entry["notes"] = chosen_text
 
             summary.append(entry)
 

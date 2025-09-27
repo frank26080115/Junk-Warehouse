@@ -11,9 +11,6 @@ class AmazonHandler(ShopHandler):
 
     POSSIBLE_NAMES = (
         "Amazon",
-        "Amazon.com",
-        "Amazon.com Services",
-        "Amazon Marketplace",
     )
     ORDER_NUMBER_REGEX = re.compile(r"(?i)order\s*[#:]*\s*(\d{3}-\d{7}-\d{7})")
 
