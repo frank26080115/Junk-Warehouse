@@ -495,26 +495,26 @@ class SearchQuery:
         return d
 
 
-    def has_directive(self, directive_name: str) -> bool:
-        """Return True when a directive token with the requested name is present."""
-        # Validate the directive name early so the method is safe for any caller.
-        if not isinstance(directive_name, str):
-            return False
-        directive_key = directive_name.strip().lower()
-        if not directive_key:
-            return False
-        # Walk through each parsed directive token and use the normalized left-hand
-        # side value for comparison. Invalid tokens are ignored because
-        # DirectiveUnit.ensure_valid() reports any parsing issues.
-        for directive_unit in self.directive_units:
-            if not directive_unit.ensure_valid():
-                continue
-            lhs_value = (directive_unit.lhs or "").strip().lower()
-            if lhs_value == directive_key:
-                return True
-        return False
-
-
+    def has_directive(self, directive_name: str) -> bool:
+        """Return True when a directive token with the requested name is present."""
+        # Validate the directive name early so the method is safe for any caller.
+        if not isinstance(directive_name, str):
+            return False
+        directive_key = directive_name.strip().lower()
+        if not directive_key:
+            return False
+        # Walk through each parsed directive token and use the normalized left-hand
+        # side value for comparison. Invalid tokens are ignored because
+        # DirectiveUnit.ensure_valid() reports any parsing issues.
+        for directive_unit in self.directive_units:
+            if not directive_unit.ensure_valid():
+                continue
+            lhs_value = (directive_unit.lhs or "").strip().lower()
+            if lhs_value == directive_key:
+                return True
+        return False
+
+
     def get_sql_conditionals(self) -> Dict[str, Any]:
         table = "items"
         alias: Optional[str] = None
