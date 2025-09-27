@@ -506,7 +506,11 @@ def parse_tagged_text_to_dict(text: str, required_key: str = "name", def_req_val
 
     return result
 
-def dict_to_tagged_text(d: dict[str, str], inline_threshold: int = 30) -> str:
+def dict_to_tagged_text(
+    d: dict[str, str],
+    inline_threshold: int = 30,
+    key_order: list[str] | None = None,
+) -> str:
     """
     Convert a dict back into the tagged text format that parse_tagged_text_to_dict parses.
 
@@ -527,7 +531,28 @@ def dict_to_tagged_text(d: dict[str, str], inline_threshold: int = 30) -> str:
         world
     """
     parts: list[str] = []
-    for key, value in d.items():
+
+    # Determine which keys we will iterate over and in what order.
+    # When a key_order hint is provided, we honor that explicit ordering first
+    # and then append any remaining dictionary keys in their original order.
+    if key_order is not None:
+        ordered_keys: list[str] = []
+        seen_keys: set[str] = set()
+
+        for desired_key in key_order:
+            if desired_key in d and desired_key not in seen_keys:
+                ordered_keys.append(desired_key)
+                seen_keys.add(desired_key)
+
+        for fallback_key in d.keys():
+            if fallback_key not in seen_keys:
+                ordered_keys.append(fallback_key)
+                seen_keys.add(fallback_key)
+    else:
+        ordered_keys = list(d.keys())
+
+    for key in ordered_keys:
+        value = d.get(key, '')
         safe_key = key.strip()
         value_text = '' if value is None else str(value)
         trimmed_value = value_text.strip()
