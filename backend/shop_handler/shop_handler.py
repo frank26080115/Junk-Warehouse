@@ -163,6 +163,12 @@ class ShopHandler:
             if "title" in working and working["title"] == working["name"]:
                 working.pop("title", None)
 
+            # TODO: call from file `backend\app\search.py` the function `find_code_matched_items`
+            # to get a count of how many possible duplicates already exist in the database
+            # and show it to the user with `matchesbycode`, but only if it is non-zero.
+            # this will be shown in the textbox in the `frontend\src\app\components\AutoInvoiceSummaryPanel.tsx`
+            # as a hint to the user that they should not create the duplicate
+
             tagged_text = dict_to_tagged_text(
                 working,
                 key_order=[
@@ -174,6 +180,7 @@ class ShopHandler:
                     "product_code",
                     "url",
                     "source",
+                    "matchesbycode",
                 ],
             )
 
