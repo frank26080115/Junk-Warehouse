@@ -602,13 +602,15 @@ const InvoicePage: React.FC = () => {
       {/* Pin controls live at the bottom so they are easy to access after reviewing invoice details */}
       <div className="mt-4">
         <div className="d-flex flex-column flex-md-row align-items-start align-items-md-center gap-3">
-          <div className="fw-semibold">
-            {/* Always report the last timestamp even if it is outside of the active window */}
-            📌🕒 Opened at: {pinDetails.readable}
-            {pinDetails.instant && !isPinCurrentlyActive && (
-              <span className="text-muted ms-2">(pin expired)</span>
-            )}
-          </div>
+          {pinDetails.instant && (
+            <div className="fw-semibold">
+              {/* Only render the opened timestamp when a valid pin exists to avoid placeholder text */}
+              📌🕒 Opened at: {pinDetails.readable}
+              {!isPinCurrentlyActive && (
+                <span className="text-muted ms-2">(pin expired)</span>
+              )}
+            </div>
+          )}
           <div className="d-flex flex-wrap gap-2">
             {!isPinCurrentlyActive && (
               <button
