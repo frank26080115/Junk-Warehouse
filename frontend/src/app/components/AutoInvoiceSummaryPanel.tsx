@@ -44,6 +44,80 @@ const createBlankEntry = (seed: number): AutoSummaryEntry => ({
   selected: false,
 });
 
+const PUNCTUATION_FOR_NAME = /[!"#$%&'()*+,\-./:;<=>?@[\]^_`{|}~]/g;
+
+const extractTaggedSection = (text: string, tag: string): string => {
+  const pattern = new RegExp(`#\s*${tag}\b([^#]*)`, "i");
+  const match = pattern.exec(text);
+  if (!match) {
+    return "";
+  }
+  const rawValue = match[1] ?? "";
+  const withoutPrefix = rawValue.replace(/^:\s*/, "");
+  return withoutPrefix.trim();
+};
+
+const sanitizeNameForSearch = (value: string): string => {
+  const normalizedWhitespace = value.replace(/\r?\n/g, " ");
+  const withoutPunctuation = normalizedWhitespace.replace(PUNCTUATION_FOR_NAME, " ");
+  return withoutPunctuation.replace(/\s+/g, " ").trim();
+};
+
+const sanitizeFilterToken = (value: string): string => {
+  const normalizedWhitespace = value.replace(/\r?\n/g, " ");
+  const withoutControl = normalizedWhitespace.replace(/[\[\]\|?]/g, " ");
+  return withoutControl.replace(/\s+/g, " ").trim();
+};
+
+const extractSemicolonValues = (text: string, tag: string): string[] => {
+  const section = extractTaggedSection(text, tag);
+  if (!section) {
+    return [];
+  }
+  const rawParts = section.split(";");
+  const cleaned: string[] = [];
+  rawParts.forEach((part) => {
+    const sanitized = sanitizeFilterToken(part);
+    if (sanitized) {
+      cleaned.push(sanitized);
+    }
+  });
+  return cleaned;
+};
+
+const buildNameSearchQuery = (text: string): string | null => {
+  const section = extractTaggedSection(text, "name");
+  if (!section) {
+    return null;
+  }
+  const sanitized = sanitizeNameForSearch(section);
+  return sanitized || null;
+};
+
+const buildCodeOrUrlSearchQuery = (text: string): string | null => {
+  const productCodes = extractSemicolonValues(text, "product_code");
+  const urls = extractSemicolonValues(text, "url");
+  const filters: string[] = [];
+  productCodes.forEach((code) => {
+    filters.push(`?product_code[${code}]`);
+  });
+  urls.forEach((url) => {
+    filters.push(`?url[${url}]`);
+  });
+  if (filters.length === 0) {
+    return null;
+  }
+  return `* ${filters.join(" | ")}`;
+};
+
+const openSearchWindow = (query: string): void => {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const encodedQuery = encodeURIComponent(query);
+  window.open(`/search/${encodedQuery}`, "_blank", "noopener,noreferrer");
+};
+
 const ensureFreeformRows = (list: AutoSummaryEntry[]): AutoSummaryEntry[] => {
   const next = [...list];
   let blanks = next.filter(isEntryBlank).length;
@@ -192,6 +266,36 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
         )
       )
     );
+  };
+
+  const handleTextAreaKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Provide keyboard shortcuts so users can research potential duplicates without losing focus.
+    if (!event.ctrlKey || !event.shiftKey || !event.altKey) {
+      return;
+    }
+    if (event.repeat) {
+      return;
+    }
+
+    const pressedKey = event.key.toLowerCase();
+    const currentValue = event.currentTarget.value;
+
+    if (pressedKey === "f") {
+      const query = buildNameSearchQuery(currentValue);
+      if (query) {
+        event.preventDefault();
+        openSearchWindow(query);
+      }
+      return;
+    }
+
+    if (pressedKey === "g") {
+      const query = buildCodeOrUrlSearchQuery(currentValue);
+      if (query) {
+        event.preventDefault();
+        openSearchWindow(query);
+      }
+    }
   };
 
   const handleImagePaste = (id: string, event: React.ClipboardEvent<HTMLInputElement>) => {
@@ -475,6 +579,7 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
                           placeholder="use # Name, # URL, # Notes, …"
                           rows={3}
                           style={{ resize: "vertical" }}
+                          onKeyDown={handleTextAreaKeyDown}
                           onChange={(event) => handleEntryChange(entry.id, "text", event.target.value)}
                           disabled={isBusy}
                         />

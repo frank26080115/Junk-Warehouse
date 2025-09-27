@@ -12,6 +12,7 @@ from automation.html_dom_finder import analyze as analyze_dom_report, sanitize_d
 from automation.order_num_extract import extract_order_number
 
 from app.helpers import dict_to_tagged_text
+from app.search import find_code_matched_items
 
 log = logging.getLogger(__name__)
 
@@ -163,11 +164,37 @@ class ShopHandler:
             if "title" in working and working["title"] == working["name"]:
                 working.pop("title", None)
 
-            # TODO: call from file `backend\app\search.py` the function `find_code_matched_items`
-            # to get a count of how many possible duplicates already exist in the database
-            # and show it to the user with `matchesbycode`, but only if it is non-zero.
-            # this will be shown in the textbox in the `frontend\src\app\components\AutoInvoiceSummaryPanel.tsx`
-            # as a hint to the user that they should not create the duplicate
+            def _split_semicolon_values(raw_value: Optional[str]) -> List[str]:
+                """Break semicolon-delimited fields into trimmed tokens."""
+
+                if not isinstance(raw_value, str):
+                    return []
+
+                parts = [segment.strip() for segment in raw_value.split(";")]
+                return [segment for segment in parts if segment]
+
+            product_code_candidates = _split_semicolon_values(working.get("product_code"))
+            url_candidates = _split_semicolon_values(working.get("url"))
+
+            matches: List[str] = []
+            if product_code_candidates or url_candidates:
+                try:
+                    # Reuse the search helper so potential duplicates are discovered consistently.
+                    matches = find_code_matched_items(
+                        product_codes=product_code_candidates,
+                        urls=url_candidates,
+                    )
+                except Exception:
+                    # Avoid failing auto-summary generation if the duplicate lookup encounters an error.
+                    log.exception("Unable to evaluate potential code/url duplicates during auto summary generation.")
+                    matches = []
+
+            if matches:
+                duplicate_count = len(matches)
+                plural_suffix = "s" if duplicate_count != 1 else ""
+                working["matchesbycode"] = (
+                    f"{duplicate_count} possible duplicate{plural_suffix} by code or URL"
+                )
 
             tagged_text = dict_to_tagged_text(
                 working,

@@ -181,56 +181,85 @@ def _pick_best_short_id_row(
     return min(rows, key=_distance)
 
 
-def find_code_matched_items(target_uuid: Any) -> List[str]:
+def find_code_matched_items(
+    target_uuid: Any = None,
+    *,
+    product_codes: Optional[Iterable[Any]] = None,
+    urls: Optional[Iterable[Any]] = None,
+) -> List[str]:
     """Return identifiers of items with matching product codes or URLs."""
-
-    if not target_uuid:
-        # Nothing to look up, so return early with an empty collection.
-        return []
-
-    try:
-        normalized_uuid = normalize_pg_uuid(str(target_uuid))
-    except Exception:
-        log.warning("find_code_matched_items: unable to normalize UUID %r", target_uuid)
-        return []
-
-    try:
-        target_uuid_obj = uuid.UUID(normalized_uuid)
-    except (ValueError, AttributeError, TypeError):
-        log.warning("find_code_matched_items: invalid UUID %r after normalization", normalized_uuid)
-        return []
-
-    engine = get_engine()
-
-    try:
-        target_item = get_db_item_as_dict(engine, "items", normalized_uuid)
-    except LookupError:
-        log.info("find_code_matched_items: no item found for UUID %s", normalized_uuid)
-        return []
-    except ValueError:
-        log.warning("find_code_matched_items: invalid UUID supplied %r", normalized_uuid)
-        return []
 
     def _split_values(raw_value: Any) -> List[str]:
         """Split semicolon-delimited strings into a list of trimmed tokens."""
 
-        if not raw_value:
+        if raw_value is None:
             return []
 
-        if not isinstance(raw_value, str):
-            raw_text = str(raw_value)
+        if isinstance(raw_value, str):
+            raw_texts = [raw_value]
+        elif isinstance(raw_value, Iterable) and not isinstance(raw_value, (bytes, bytearray)):
+            tokens: List[str] = []
+            for element in raw_value:
+                tokens.extend(_split_values(element))
+            return tokens
         else:
-            raw_text = raw_value
+            raw_texts = [str(raw_value)]
 
-        parts = [part.strip() for part in raw_text.split(";")]
-        filtered = [value for value in parts if value]
-        # Preserve order while removing duplicates so the earliest mention wins.
-        return list(dict.fromkeys(filtered))
+        parts: List[str] = []
+        for raw_text in raw_texts:
+            for piece in str(raw_text).split(';'):
+                candidate = piece.strip()
+                if candidate:
+                    parts.append(candidate)
+        # Preserve insertion order while removing duplicates.
+        return list(dict.fromkeys(parts))
 
-    product_codes = _split_values(target_item.get("product_code"))
-    urls = _split_values(target_item.get("url"))
+    def _append_unique(destination: List[str], values: Iterable[str]) -> None:
+        seen = set(destination)
+        for value in values:
+            if value not in seen:
+                destination.append(value)
+                seen.add(value)
 
-    if not product_codes and not urls:
+    candidate_codes: List[str] = []
+    candidate_urls: List[str] = []
+
+    if product_codes is not None:
+        _append_unique(candidate_codes, _split_values(product_codes))
+    if urls is not None:
+        _append_unique(candidate_urls, _split_values(urls))
+
+    normalized_uuid: Optional[str] = None
+    target_uuid_obj: Optional[uuid.UUID] = None
+
+    if target_uuid:
+        try:
+            normalized_uuid = normalize_pg_uuid(str(target_uuid))
+        except Exception:
+            log.warning("find_code_matched_items: unable to normalize UUID %r", target_uuid)
+            return []
+
+        try:
+            target_uuid_obj = uuid.UUID(normalized_uuid)
+        except (ValueError, AttributeError, TypeError):
+            log.warning("find_code_matched_items: invalid UUID %r after normalization", normalized_uuid)
+            return []
+
+        engine = get_engine()
+
+        try:
+            target_item = get_db_item_as_dict(engine, "items", normalized_uuid)
+        except LookupError:
+            log.info("find_code_matched_items: no item found for UUID %s", normalized_uuid)
+            return []
+        except ValueError:
+            log.warning("find_code_matched_items: invalid UUID supplied %r", normalized_uuid)
+            return []
+
+        _append_unique(candidate_codes, _split_values(target_item.get("product_code")))
+        _append_unique(candidate_urls, _split_values(target_item.get("url")))
+
+    if not candidate_codes and not candidate_urls:
         return []
 
     session = get_or_create_session()
@@ -238,30 +267,53 @@ def find_code_matched_items(target_uuid: Any) -> List[str]:
     matched_ids: List[str] = []
     seen_ids: set[str] = set()
 
-    product_sql = text(
-        """
+    if target_uuid_obj is not None:
+        product_sql = text(
+            """
         SELECT id
         FROM items
         WHERE NOT is_deleted
           AND id <> :target_id
           AND product_code ILIKE :needle
         """
-    )
-
-    url_sql = text(
-        """
+        )
+        url_sql = text(
+            """
         SELECT id
         FROM items
         WHERE NOT is_deleted
           AND id <> :target_id
           AND url ILIKE :needle
         """
-    )
+        )
+    else:
+        product_sql = text(
+            """
+        SELECT id
+        FROM items
+        WHERE NOT is_deleted
+          AND product_code ILIKE :needle
+        """
+        )
+        url_sql = text(
+            """
+        SELECT id
+        FROM items
+        WHERE NOT is_deleted
+          AND url ILIKE :needle
+        """
+        )
 
     def _record_matches(sql_statement: Any, needle: str) -> None:
         """Execute a query and merge unique identifiers into the accumulator."""
 
-        parameters = {"target_id": target_uuid_obj, "needle": f"%{needle}%"}
+        cleaned = (needle or "").strip()
+        if not cleaned:
+            return
+
+        parameters = {"needle": f"%{cleaned}%"}
+        if target_uuid_obj is not None:
+            parameters["target_id"] = target_uuid_obj
         rows = session.execute(sql_statement, parameters).scalars().all()
         for raw_id in rows:
             if raw_id is None:
@@ -272,10 +324,10 @@ def find_code_matched_items(target_uuid: Any) -> List[str]:
             seen_ids.add(identifier)
             matched_ids.append(identifier)
 
-    for code in product_codes:
+    for code in candidate_codes:
         _record_matches(product_sql, code)
 
-    for url_value in urls:
+    for url_value in candidate_urls:
         _record_matches(url_sql, url_value)
 
     return matched_ids
