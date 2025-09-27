@@ -167,17 +167,13 @@ class ShopHandler:
                 working,
                 key_order=[
                     "name",
-                    "sku",
-                    "mpn",
-                    "manufacturer",
-                    "quantity",
-                    "unit_price",
-                    "total_price",
-                    "currency",
-                    "url",
-                    "shop",
-                    "notes",
                     "description",
+                    "remarks",
+                    "quantity",
+                    "metatext",
+                    "product_code",
+                    "url",
+                    "source",
                 ],
             )
 
