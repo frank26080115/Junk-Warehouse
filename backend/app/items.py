@@ -712,7 +712,17 @@ def _autogen_items_task(context: Dict[str, Any]) -> Dict[str, Any]:
             if not text_block:
                 raise ValueError("Missing tagged text for auto-generated item.")
 
-            structured = parse_tagged_text_to_dict(text_block)
+            structured = parse_tagged_text_to_dict(text_block,
+                                                   acceptable_keys=[
+                    "name",
+                    "description",
+                    "remarks",
+                    "quantity",
+                    "metatext",
+                    "product_code",
+                    "url",
+                    "source",
+                ])
 
             name_text = structured.get("name", "").strip()
             if name_text:
