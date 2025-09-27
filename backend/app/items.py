@@ -729,8 +729,6 @@ def _autogen_items_task(context: Dict[str, Any]) -> Dict[str, Any]:
                 name_text = name_text.replace("\r\n", "\n").replace("\r", "\n")
                 if "\n" in name_text:
                     name_text = name_text.split("\n", 1)[0].strip()
-                if name_text.lower() == "(no name)":
-                    name_text = ""
             url_text = structured.get("url", "").strip()
             description_text = structured.get("description", "").strip()
             notes_text = structured.get("remarks", "").strip() or structured.get("notes", "").strip()
@@ -740,8 +738,11 @@ def _autogen_items_task(context: Dict[str, Any]) -> Dict[str, Any]:
 
             display_value = name_text or url_text or client_id or "(unnamed entry)"
 
+            # The upstream parser is responsible for guaranteeing that a name exists, so we store
+            # the provided value directly without inventing fallbacks here. This keeps the automatic
+            # summary predictable and easy to audit.
             row_payload: Dict[str, Any] = {
-                "name": name_text or url_text or "(auto summary item)",
+                "name": name_text,
                 "is_staging": True,
             }
 
@@ -750,22 +751,8 @@ def _autogen_items_task(context: Dict[str, Any]) -> Dict[str, Any]:
             if description_text:
                 row_payload["description"] = description_text
 
-            # Map tagged fields onto known item columns so the additional metadata lands in the database directly.
-            passthrough_mapping: Dict[str, str] = {
-                "sku": "sku",
-                "mpn": "mpn",
-                "manufacturer": "manufacturer",
-                "category": "category",
-                "location": "location",
-                "tags": "tags",
-                "shop": "shop",
-                "order_number": "order_number",
-                "quantity": "quantity",
-                "unit_price": "unit_price",
-                "total_price": "total_price",
-                "currency": "currency",
-            }
-
+            # Collect any unrecognized fields so the operator can decide how to handle them.
+            # By avoiding automatic passthrough we keep the generated payload intentionally small and predictable.
             extra_notes: List[str] = []
             if notes_text:
                 extra_notes.append(notes_text)
@@ -781,11 +768,7 @@ def _autogen_items_task(context: Dict[str, Any]) -> Dict[str, Any]:
                 clean_value = value_text.strip()
                 if not clean_value:
                     continue
-                target_column = passthrough_mapping.get(lowered)
-                if target_column:
-                    row_payload[target_column] = clean_value
-                else:
-                    extra_notes.append(f"{normalized_key}: {clean_value}")
+                extra_notes.append(f"{normalized_key}: {clean_value}")
 
             combined_remarks = "\n".join(extra_notes).strip()
 
