@@ -432,3 +432,67 @@ def fuzzy_word_list_match(words, user_input):
     best_match = matches[0]
     index = words.index(best_match)
     return best_match, index
+
+def parse_tagged_text_to_dict(text: str, required_key: str = "name", def_req_val: str = "(no name)", acceptable_keys: list[str] | None = None) -> dict[str, str]:
+    """
+    Parse a multiline string into a dict where sections start with lines beginning with '#'.
+      - A line starting with '#' defines a new key: everything after '#' (stripped) is the key.
+      - The value for that key is all subsequent lines up to (but not including) the next '#' line.
+      - Keys and values are stripped of leading/trailing whitespace (values preserve inner newlines).
+      - If acceptable_keys is provided, each parsed key is fuzzy-corrected to the closest entry
+        in that list using fuzzy_word_list_match; if no reasonable match is found, the original key is used.
+      - Case is preserved (case-sensitive behavior).
+
+    Example input:
+        # Title
+         My Document
+        # Body
+          hello world
+
+    Returns:
+        {"Title": "My Document", "Body": "hello world"}
+    """
+
+    result: dict[str, str] = {}
+    lines = text.splitlines()
+
+    current_key: str | None = None
+    current_buf: list[str] = []
+
+    def _commit():
+        nonlocal current_key, current_buf
+        if current_key is None:
+            current_buf = []
+            return
+        key = current_key.strip()
+        if acceptable_keys:
+            match, _ = fuzzy_word_list_match(acceptable_keys, key)
+            if match:
+                key = match  # fuzzy-correct the key if we got a reasonable match
+        value = "\n".join(current_buf).strip()
+        result[key] = value
+        current_key, current_buf = None, []
+
+    for raw in lines:
+        # preserve original line content for values; only use stripped to detect markers
+        stripped = raw.lstrip()  # we only care that the line *starts* with '#', ignoring leading spaces
+        if stripped.startswith("#"):
+            # New section starts: commit previous
+            _commit()
+            # Everything after the first '#' is the key (strip surrounding whitespace)
+            # Example: "#   Title   " -> "Title"
+            after = stripped[1:].strip()
+            current_key = after
+            current_buf = []
+        else:
+            # part of current value (even if it's empty or whitespace)
+            if current_key is not None:
+                current_buf.append(raw)
+
+    # commit any trailing section
+    _commit()
+
+    if required_key not in result:
+        result[required_key] = def_req_val
+
+    return result
