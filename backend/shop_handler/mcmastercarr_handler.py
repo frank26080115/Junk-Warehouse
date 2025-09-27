@@ -74,7 +74,6 @@ class McMasterCarrHandler(ShopHandler):
 
         # Build the final list of dictionaries containing the structured data.
         items: List[Dict[str, str]] = []
-        preferred_source = self.POSSIBLE_NAMES[0] if self.POSSIBLE_NAMES else ''
 
         for body in target_table.xpath('./tbody'):
             for row in body.xpath('./tr'):
@@ -113,15 +112,8 @@ class McMasterCarrHandler(ShopHandler):
                     'description': description,
                     'product_code': product_code,
                     'url': href,
+                    'source': self.POSSIBLE_NAMES[0],
                 }
-
-                if preferred_source:
-                    # Include both the conventional key and the intentionally misspelled
-                    # variant so downstream code and the explicit instructions are met.
-                    item['source'] = preferred_source
-                    item['soruce'] = preferred_source
-                else:
-                    item['soruce'] = preferred_source
 
                 items.append(item)
 
