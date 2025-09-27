@@ -19,7 +19,7 @@ from automation.gmail_proc import (
     list_message_ids,
 )
 from automation.order_num_extract import extract_order_number, extract_order_number_and_url
-from automation.html_dom_finder import analyze as analyze_dom_report
+from shop_handler import ShopHandler
 from automation.html_invoice_helpers import parse_mhtml_from_string, sniff_format
 from lxml import html as lxml_html
 from app.db import get_db_item_as_dict, get_engine, update_db_row_by_dict, unwrap_db_result
@@ -193,38 +193,6 @@ def _serialize_invoice_row(row: Dict[str, Any]) -> Dict[str, Any]:
                 pass
     return data
 
-def _condense_dom_report(report: Dict[str, Any]) -> str:
-    summary: List[Dict[str, str]] = []
-    candidates = report.get("top_candidates") if isinstance(report, dict) else None
-    if not isinstance(candidates, list):
-        candidates = []
-
-    for item in candidates:
-        if not isinstance(item, dict):
-            continue
-
-        url = (item.get("url") or "").strip()
-        preview_text = (item.get("preview_text") or "").strip()
-        anchor_text = (item.get("anchor_text") or "").strip()
-
-        chosen_text = ""
-        if url:
-            chosen_text = anchor_text if len(anchor_text) >= 12 else preview_text
-            if len(chosen_text) < 12:
-                chosen_text = ""
-        else:
-            if len(preview_text) >= 12:
-                chosen_text = preview_text
-
-        if chosen_text or url:
-            summary.append({
-                "text": chosen_text if chosen_text else "",
-                "url": url,
-            })
-
-    return json.dumps(summary, ensure_ascii=False)
-
-
 def _handle_gmail_message(msg: Dict[str, Any]) -> Dict[str, Any]:
     headers = {h.get("name", "").lower(): h.get("value", "") for h in msg.get("payload", {}).get("headers", [])}
     subject = headers.get("subject", "")
@@ -252,14 +220,21 @@ def _handle_gmail_message(msg: Dict[str, Any]) -> Dict[str, Any]:
     invoice_id: Optional[str] = None
     invoice_error: Optional[str] = None
 
+    handler: Optional[ShopHandler] = None
     auto_summary = "[]"
     if html_body:
         try:
-            report, _ = analyze_dom_report(html_body)
-            auto_summary = _condense_dom_report(report)
+            handler = ShopHandler.ingest_html(html_body)
+            auto_summary = handler.build_auto_summary()
         except Exception:
-            log.exception("Failed to generate DOM auto-summary for Gmail message")
+            log.exception("Failed to generate auto-summary using shop handler for Gmail message")
+            handler = None
             auto_summary = "[]"
+
+    if not order_number and handler is not None:
+        handler_order_number = handler.get_order_number()
+        if handler_order_number:
+            order_number = handler_order_number.strip()
 
     if order_number:
         gmail_url = f"https://mail.google.com/mail/u/0/#all/{message_id}"
@@ -270,7 +245,7 @@ def _handle_gmail_message(msg: Dict[str, Any]) -> Dict[str, Any]:
         invoice_payload: Dict[str, Any] = {
             "date": email_date,
             "order_number": order_number,
-            "shop_name": "",  # TODO: derive a shop/sender name from the message metadata.
+            "shop_name": handler.get_shop_name() if handler else "",
             "urls": urls_value,
             "subject": subject,
             "html": html_body or text_body,
@@ -400,28 +375,35 @@ def _ingest_invoice_file(file_storage: FileStorage) -> Dict[str, Any]:
     order_url: Optional[str]
     dom_report_available = False
     dom_report: Optional[Dict[str, Any]] = None
+    handler: Optional[ShopHandler] = None
 
     order_number, order_url = extract_order_number_and_url(html_body)
     if not order_number:
         order_number = extract_order_number(html_body)
         order_url = order_url or ""
 
-    if order_number:
-        order_number = order_number.strip()
-
     auto_summary = "[]"
     if html_body:
         try:
-            report, _ = analyze_dom_report(html_body)
-            dom_report = report
-            auto_summary = _condense_dom_report(report)
-            dom_report_available = True
+            handler = ShopHandler.ingest_html(html_body)
+            auto_summary = handler.build_auto_summary()
+            dom_report = handler.get_dom_report()
+            dom_report_available = dom_report is not None
         except Exception:
             log.exception(
-                "Failed to generate DOM auto-summary for uploaded invoice %s",
+                "Failed to generate auto-summary using shop handler for uploaded invoice %s",
                 filename,
             )
+            handler = None
             auto_summary = "[]"
+
+    if not order_number and handler is not None:
+        handler_order_number = handler.get_order_number()
+        if handler_order_number:
+            order_number = handler_order_number.strip()
+
+    if order_number:
+        order_number = order_number.strip()
 
     invoice_id: Optional[str] = None
     invoice_error: Optional[str] = None
@@ -433,7 +415,7 @@ def _ingest_invoice_file(file_storage: FileStorage) -> Dict[str, Any]:
         invoice_payload: Dict[str, Any] = {
             "date": now,
             "order_number": order_number,
-            "shop_name": "",
+            "shop_name": handler.get_shop_name() if handler else "",
             "urls": urls_value,
             "subject": "",
             "html": html_body,
@@ -727,8 +709,8 @@ def _analyze_invoice_html_task(context: Dict[str, Any]) -> Dict[str, Any]:
         raise RuntimeError("Provided HTML could not be parsed.") from exc
 
     try:
-        report, _ = analyze_dom_report(html_chunk)
-        condensed_summary = _condense_dom_report(report)
+        handler = ShopHandler.ingest_html(html_chunk)
+        condensed_summary = handler.build_auto_summary()
         new_summary_entries = json.loads(condensed_summary)
     except Exception as exc:
         log.exception("Failed to analyze HTML fragment for invoice %s", invoice_uuid)
