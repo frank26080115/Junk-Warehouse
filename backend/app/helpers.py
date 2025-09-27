@@ -496,3 +496,29 @@ def parse_tagged_text_to_dict(text: str, required_key: str = "name", def_req_val
         result[required_key] = def_req_val
 
     return result
+
+def dict_to_tagged_text(d: dict[str, str]) -> str:
+    """
+    Convert a dict back into the tagged text format that parse_tagged_text_to_dict parses.
+
+    Each key becomes a line starting with '#', followed by its value lines.
+    Values are written exactly as they are (multiline preserved).
+    Leading/trailing whitespace is stripped for keys but values are preserved.
+    Keys are emitted in dict iteration order.
+
+    Example:
+        {"Title": "My Document", "Body": "hello\nworld"}
+
+    → 
+        # Title
+        My Document
+        # Body
+        hello
+        world
+    """
+    parts: list[str] = []
+    for key, value in d.items():
+        parts.append(f"# {key.strip()}")
+        if value is not None and value != "":
+            parts.append(value)
+    return "\n".join(parts)
