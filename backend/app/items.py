@@ -153,7 +153,7 @@ def _build_thumbnail_public_url(dir_value: Any, file_name: Any) -> Optional[str]
 
     def _split_segments(value: str) -> List[str]:
         """Normalize a path-like string into safe URL segments."""
-        sanitized = value.replace("\", "/")
+        sanitized = value.replace("\\", "/")
         return [segment for segment in sanitized.split("/") if segment]
 
     dir_segments = _split_segments(safe_dir)
