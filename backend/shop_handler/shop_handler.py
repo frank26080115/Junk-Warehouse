@@ -1,14 +1,26 @@
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import re
+import sys
+from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional, Sequence, Tuple, Type
 
 from lxml import etree
 from lxml import html as lxml_html
 
+if __name__ == "__main__" and __package__ is None:
+    # Allow the module to be executed directly from the command line by ensuring that
+    # the backend directory (which contains the "automation" package) is importable.
+    current_file = Path(__file__).resolve()
+    backend_root = current_file.parent.parent
+    if str(backend_root) not in sys.path:
+        sys.path.insert(0, str(backend_root))
+
 from automation.html_dom_finder import analyze as analyze_dom_report, sanitize_dom
+from automation.html_invoice_helpers import parse_unknown_html_or_mhtml
 from automation.order_num_extract import extract_order_number
 
 from app.helpers import dict_to_tagged_text
@@ -287,3 +299,88 @@ class GenericShopHandler(ShopHandler):
             summary.append(entry)
 
         return summary
+
+
+def _load_invoice_html(file_path: Path) -> str:
+    """Return HTML text from the provided path, converting MIME formats when needed."""
+
+    # Read using UTF-8 with replacement so that the test helper does not crash on
+    # odd encodings. This is only meant for manual testing, not production use.
+    try:
+        raw_text = file_path.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        raise RuntimeError(f"Unable to read file '{file_path}'.") from exc
+
+    extension = file_path.suffix.lower()
+    mime_like_extensions = {".eml", ".mhtml", ".mht"}
+    if extension in mime_like_extensions:
+        # These files usually include MIME headers before the HTML. Reuse the helper so
+        # that the parsing logic stays in one place.
+        parsed_root, detected_format = parse_unknown_html_or_mhtml(raw_text)
+        logging.getLogger(__name__).debug(
+            "Converted MIME-flavoured input using detected format '%s'.", detected_format
+        )
+        return lxml_html.tostring(parsed_root, encoding="unicode")
+
+    # Plain HTML (or unknown) is returned verbatim for ingestion by the handler.
+    return raw_text
+
+
+def main() -> None:
+    """Simple command-line helper for manually exercising the shop handler."""
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Inspect an invoice-like document and print detection details."
+        )
+    )
+    parser.add_argument(
+        "input_path",
+        help=(
+            "Path to an HTML, EML, or MHTML file. MIME-based files will be converted "
+            "to HTML automatically."
+        ),
+    )
+    parser.add_argument(
+        "--show-html",
+        action="store_true",
+        help="Display the normalized HTML text (useful for troubleshooting).",
+    )
+
+    args = parser.parse_args()
+
+    file_path = Path(args.input_path).expanduser().resolve()
+    if not file_path.is_file():
+        parser.error(f"File not found: {file_path}")
+
+    raw_html = _load_invoice_html(file_path)
+
+    handler = ShopHandler.ingest_html(raw_html)
+    specific_handler = handler.as_specific_handler()
+
+    print(f"Detected handler: {specific_handler.__class__.__name__}")
+
+    order_number = specific_handler.get_order_number()
+    if order_number:
+        print(f"Order number: {order_number}")
+    else:
+        print("Order number: <not found>")
+
+    try:
+        auto_summary = specific_handler.build_auto_summary()
+    except Exception as exc:
+        auto_summary = "<summary generation failed>"
+        logging.getLogger(__name__).exception("Auto summary generation failed during manual test.")
+        print(f"Auto summary error: {exc}")
+
+    print("Auto summary JSON:")
+    print(auto_summary)
+
+    if args.show_html:
+        print("\nNormalized HTML snippet:")
+        snippet = raw_html[:2000]
+        print(snippet)
+
+
+if __name__ == "__main__":
+    main()
