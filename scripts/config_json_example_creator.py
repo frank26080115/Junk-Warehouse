@@ -64,6 +64,7 @@ def merge_example_content(existing: Any, updated: Any) -> Any:
                 updated_all_strings = all(isinstance(item, str) for item in updated)
                 if existing_all_strings and updated_all_strings:
                     # When both lists contain string data with matching lengths, keep the existing obfuscation.
+                    # TODO, go through each string in the list and see if the corresponding one matches in length
                     return existing
                 existing_all_dicts = all(isinstance(item, dict) for item in existing)
                 updated_all_dicts = all(isinstance(item, dict) for item in updated)
