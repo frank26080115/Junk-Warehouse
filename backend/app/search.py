@@ -11,10 +11,10 @@ import uuid
 from flask import Blueprint, jsonify, request, current_app
 
 from .user_login import login_required
-from .db import deduplicate_rows, get_or_create_session
+from .db import deduplicate_rows, get_db_item_as_dict, get_engine, get_or_create_session
 from .search_expression import SearchQuery, get_sql_order_and_limit
 from .embeddings import search_items_by_embeddings
-from .helpers import fuzzy_levenshtein_at_most
+from .helpers import fuzzy_levenshtein_at_most, normalize_pg_uuid
 from .items import augment_item_dict, get_item_thumbnails
 from .slugify import slugify
 
@@ -179,6 +179,106 @@ def _pick_best_short_id_row(
         return (dist, name_norm)
 
     return min(rows, key=_distance)
+
+
+def find_code_matched_items(target_uuid: Any) -> List[str]:
+    """Return identifiers of items with matching product codes or URLs."""
+
+    if not target_uuid:
+        # Nothing to look up, so return early with an empty collection.
+        return []
+
+    try:
+        normalized_uuid = normalize_pg_uuid(str(target_uuid))
+    except Exception:
+        log.warning("find_code_matched_items: unable to normalize UUID %r", target_uuid)
+        return []
+
+    try:
+        target_uuid_obj = uuid.UUID(normalized_uuid)
+    except (ValueError, AttributeError, TypeError):
+        log.warning("find_code_matched_items: invalid UUID %r after normalization", normalized_uuid)
+        return []
+
+    engine = get_engine()
+
+    try:
+        target_item = get_db_item_as_dict(engine, "items", normalized_uuid)
+    except LookupError:
+        log.info("find_code_matched_items: no item found for UUID %s", normalized_uuid)
+        return []
+    except ValueError:
+        log.warning("find_code_matched_items: invalid UUID supplied %r", normalized_uuid)
+        return []
+
+    def _split_values(raw_value: Any) -> List[str]:
+        """Split semicolon-delimited strings into a list of trimmed tokens."""
+
+        if not raw_value:
+            return []
+
+        if not isinstance(raw_value, str):
+            raw_text = str(raw_value)
+        else:
+            raw_text = raw_value
+
+        parts = [part.strip() for part in raw_text.split(";")]
+        filtered = [value for value in parts if value]
+        # Preserve order while removing duplicates so the earliest mention wins.
+        return list(dict.fromkeys(filtered))
+
+    product_codes = _split_values(target_item.get("product_code"))
+    urls = _split_values(target_item.get("url"))
+
+    if not product_codes and not urls:
+        return []
+
+    session = get_or_create_session()
+
+    matched_ids: List[str] = []
+    seen_ids: set[str] = set()
+
+    product_sql = text(
+        """
+        SELECT id
+        FROM items
+        WHERE NOT is_deleted
+          AND id <> :target_id
+          AND product_code ILIKE :needle
+        """
+    )
+
+    url_sql = text(
+        """
+        SELECT id
+        FROM items
+        WHERE NOT is_deleted
+          AND id <> :target_id
+          AND url ILIKE :needle
+        """
+    )
+
+    def _record_matches(sql_statement: Any, needle: str) -> None:
+        """Execute a query and merge unique identifiers into the accumulator."""
+
+        parameters = {"target_id": target_uuid_obj, "needle": f"%{needle}%"}
+        rows = session.execute(sql_statement, parameters).scalars().all()
+        for raw_id in rows:
+            if raw_id is None:
+                continue
+            identifier = str(raw_id)
+            if identifier in seen_ids:
+                continue
+            seen_ids.add(identifier)
+            matched_ids.append(identifier)
+
+    for code in product_codes:
+        _record_matches(product_sql, code)
+
+    for url_value in urls:
+        _record_matches(url_sql, url_value)
+
+    return matched_ids
 
 
 def _execute_text_search_query(
@@ -471,6 +571,41 @@ def search_items(
         row_dict = dict(row)
         if sq.evaluate(row_dict):
             results.append(augment_item_dict(row_dict))
+
+    if target_uuid and sq.has_directive("codematched"):
+        matched_ids = find_code_matched_items(target_uuid)
+        if matched_ids:
+            engine = get_engine()
+            existing_ids: set[str] = set()
+            for item in results:
+                pk_value = item.get("pk") or item.get("id")
+                if pk_value is None:
+                    continue
+                existing_ids.add(str(pk_value))
+
+            codematched_items: List[Dict[str, Any]] = []
+            # Track IDs we have already appended so we do not request them twice.
+            seen_ids = set(existing_ids)
+
+            for match_id in matched_ids:
+                if match_id in seen_ids:
+                    continue
+                try:
+                    raw_item = get_db_item_as_dict(engine, "items", match_id)
+                except LookupError:
+                    # The row disappeared between discovery and hydration; skip it quietly.
+                    continue
+                except ValueError:
+                    # Should not happen because the UUIDs came from the database, but guard anyway.
+                    continue
+
+                codematched_items.append(augment_item_dict(raw_item))
+                seen_ids.add(match_id)
+
+            if codematched_items:
+                # Insert these matches at the top so they appear before ordinary results while
+                # still allowing pinned rows to prepend themselves afterwards.
+                results[:0] = codematched_items
 
     if sq.has_directive("pinned"):
         append_pinned_items(
