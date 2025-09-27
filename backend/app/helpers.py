@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import html as _html
 import re
+import unicodedata
+from typing import Any, Union
 
 def normalize_pg_uuid(s: str) -> str:
     """
@@ -35,10 +38,19 @@ def normalize_pg_uuid(s: str) -> str:
     cleaned = cleaned.lower()
     return f"{cleaned[0:8]}-{cleaned[8:12]}-{cleaned[12:16]}-{cleaned[16:20]}-{cleaned[20:32]}"
 
-import re
-import html as _html
-import unicodedata
-from typing import Union, Any
+def _to_bool(value: Any) -> bool:
+    """Convert loose truthy and falsey values into a strict bool."""
+    # Strings get special handling so user-supplied query parameters behave predictably.
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if not normalized:
+            return False
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    # Fallback to Python's general truthiness rules for everything else.
+    return bool(value)
 
 def sanitize_html_for_pg(
     value: Union[str, bytes, Any],

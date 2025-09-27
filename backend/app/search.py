@@ -14,7 +14,7 @@ from .user_login import login_required
 from .db import deduplicate_rows, get_db_item_as_dict, get_engine, get_or_create_session
 from .search_expression import SearchQuery, get_sql_order_and_limit
 from .embeddings import search_items_by_embeddings
-from .helpers import fuzzy_levenshtein_at_most, normalize_pg_uuid
+from .helpers import fuzzy_levenshtein_at_most, normalize_pg_uuid, _to_bool
 from .items import augment_item_dict, get_item_thumbnails
 from .slugify import slugify
 
@@ -544,18 +544,7 @@ def _finalize_invoice_rows(rows: Iterable[Mapping[str, Any]]) -> List[Dict[str, 
     return deduplicate_rows(normalized, key="pk")
 
 
-def _to_bool(value: Any) -> bool:
-    """Convert loose truthy/falsey values to :class:`bool`."""
 
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if not normalized:
-            return False
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off"}:
-            return False
-    return bool(value)
 
 
 def search_items(
