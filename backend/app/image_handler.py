@@ -156,7 +156,10 @@ def _download_to_tmp(url: str, tmp_dir: Path) -> Path:
         "Connection": "keep-alive",
     }
     if parsed_url.scheme and parsed_url.netloc:
-        polite_headers["Referer"] = f"{parsed_url.scheme}://{parsed_url.netloc}"
+        # Set the Referer header to the root of the source site so that our request
+        # appears to originate from normal site navigation rather than a blank tab.
+        referer_root = f"{parsed_url.scheme}://{parsed_url.netloc}/"
+        polite_headers["Referer"] = referer_root
 
     try:
         resp = requests.get(
