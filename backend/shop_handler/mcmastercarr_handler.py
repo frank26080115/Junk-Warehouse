@@ -70,7 +70,8 @@ class McMasterCarrHandler(ShopHandler):
                 break
 
         if target_table is None:
-            return []
+            # The table format did not materialize, so fall back to a div-based parser.
+            return self._guess_items_2()
 
         # Build the final list of dictionaries containing the structured data.
         items: List[Dict[str, str]] = []
@@ -116,5 +117,65 @@ class McMasterCarrHandler(ShopHandler):
                 }
 
                 items.append(item)
+
+        return items
+
+    def _guess_items_2(self) -> List[Dict[str, str]]:
+        """Fallback strategy that inspects div-based product listings."""
+        # Collect every div that matches the expected class used for product rows.
+        fallback_rows = self.sanitized_root.xpath(".//div[contains(concat(' ', normalize-space(@class), ' '), ' dtl-row-info ')]")
+
+        items: List[Dict[str, str]] = []
+
+        for row in fallback_rows:
+            # Find the first hyperlink that looks like a product link so we can harvest details.
+            hyperlink = None
+            for candidate_anchor in row.xpath('.//a'):
+                href = (candidate_anchor.get('href') or '').strip()
+                if href:
+                    hyperlink = candidate_anchor
+                    break
+
+            if hyperlink is None:
+                continue
+
+            href = (hyperlink.get('href') or '').strip()
+            if not href:
+                continue
+
+            product_code = ''
+            product_code_nodes = hyperlink.xpath('./p')
+            if product_code_nodes:
+                product_code = product_code_nodes[0].text_content().strip()
+
+            if not product_code or product_code not in href:
+                continue
+
+            # Flatten the descriptive hyperlink text into a human-readable sentence.
+            anchor_text_raw = hyperlink.text_content()
+            anchor_text_clean = re.sub(r"\s+", " ", anchor_text_raw).strip()
+            if product_code:
+                anchor_text_clean = anchor_text_clean.replace(product_code, '').strip()
+            anchor_text_clean = re.sub(r"\s+", " ", anchor_text_clean).strip()
+
+            if not anchor_text_clean:
+                continue
+
+            name = anchor_text_clean
+            description = ''
+            if ',' in anchor_text_clean:
+                first_part, remaining = anchor_text_clean.split(',', 1)
+                name = first_part.strip()
+                description = remaining.strip()
+
+            item: Dict[str, str] = {
+                'name': name,
+                'description': description,
+                'product_code': product_code,
+                'url': href,
+                'source': self.POSSIBLE_NAMES[0],
+            }
+
+            items.append(item)
 
         return items
