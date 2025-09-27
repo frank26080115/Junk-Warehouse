@@ -11,6 +11,8 @@ from lxml import html as lxml_html
 from automation.html_dom_finder import analyze as analyze_dom_report, sanitize_dom
 from automation.order_num_extract import extract_order_number
 
+from app.helpers import dict_to_tagged_text
+
 log = logging.getLogger(__name__)
 
 
@@ -104,19 +106,87 @@ class ShopHandler:
 
     def build_auto_summary(self) -> str:
         entries: List[Dict[str, str]] = []
-        shop_name = self.get_shop_name()
+        shop_name = self.get_shop_name().strip()
         items = self.guess_items()
-        for item in items:
+
+        for index, item in enumerate(items, start=1):
             if not isinstance(item, dict):
                 continue
-            text_value = str(item.get("text", ""))
-            url_value = str(item.get("url", ""))
-            entry: Dict[str, str] = {
-                "text": text_value,
-                "url": url_value,
-                "shop": shop_name,
-            }
+
+            working: Dict[str, str] = {}
+            image_token: Optional[str] = None
+
+            for raw_key, raw_value in item.items():
+                key_text = str(raw_key or "").strip()
+                if not key_text:
+                    continue
+                value_text = "" if raw_value is None else str(raw_value)
+                normalized_value = value_text.replace("\r\n", "\n").replace("\r", "\n").strip()
+                if key_text.lower() == "image":
+                    if normalized_value:
+                        image_token = normalized_value
+                    continue
+                if not normalized_value:
+                    continue
+                if key_text.lower() == "text" and "notes" not in working:
+                    working["notes"] = normalized_value
+                    continue
+                working[key_text] = normalized_value
+
+            if shop_name:
+                working.setdefault("shop", shop_name)
+
+            name_candidates = [
+                working.get("name"),
+                working.get("title"),
+                working.get("notes"),
+                working.get("description"),
+                working.get("url"),
+            ]
+            chosen_name = ""
+            for candidate in name_candidates:
+                if isinstance(candidate, str) and candidate.strip():
+                    chosen_name = candidate.strip()
+                    break
+
+            normalized_name = chosen_name.replace("\r\n", "\n").replace("\r", "\n") if chosen_name else ""
+            if "\n" in normalized_name:
+                normalized_name = normalized_name.split("\n", 1)[0].strip()
+            normalized_name = normalized_name.strip()
+            if normalized_name.lower() == "(no name)" or not normalized_name:
+                fallback_seed = working.get("url") or f"{shop_name or 'Item'} {index}"
+                normalized_fallback = str(fallback_seed).replace("\r\n", "\n").replace("\r", "\n")
+                normalized_name = normalized_fallback.split("\n", 1)[0].strip() or f"Item {index}"
+
+            working["name"] = normalized_name
+
+            if "title" in working and working["title"] == working["name"]:
+                working.pop("title", None)
+
+            tagged_text = dict_to_tagged_text(
+                working,
+                key_order=[
+                    "name",
+                    "sku",
+                    "mpn",
+                    "manufacturer",
+                    "quantity",
+                    "unit_price",
+                    "total_price",
+                    "currency",
+                    "url",
+                    "shop",
+                    "notes",
+                    "description",
+                ],
+            )
+
+            entry: Dict[str, str] = {"text": tagged_text}
+            if image_token:
+                entry["image"] = image_token
+
             entries.append(entry)
+
         return json.dumps(entries, ensure_ascii=False)
 
     def _get_sanitized_text(self) -> str:
@@ -169,10 +239,22 @@ class GenericShopHandler(ShopHandler):
                 if len(preview_text) >= 12:
                     chosen_text = preview_text
 
-            if chosen_text or url:
-                summary.append({
-                    "text": chosen_text if chosen_text else "",
-                    "url": url,
-                })
+            if not chosen_text and not url:
+                continue
+
+            name_source = chosen_text or url
+            sanitized_name = name_source.replace("\r\n", "\n").replace("\r", "\n").split("\n", 1)[0].strip()
+            if sanitized_name.lower() == "(no name)" or not sanitized_name:
+                sanitized_name = url.split("\n", 1)[0].strip() if url else ""
+            if not sanitized_name:
+                sanitized_name = "Auto summary item"
+
+            entry: Dict[str, str] = {"name": sanitized_name}
+            if url:
+                entry["url"] = url
+            if chosen_text:
+                entry["notes"] = chosen_text
+
+            summary.append(entry)
 
         return summary

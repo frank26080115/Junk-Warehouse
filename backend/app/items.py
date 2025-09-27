@@ -16,7 +16,7 @@ from .user_login import login_required
 from .db import get_engine, get_db_item_as_dict, update_db_row_by_dict, unwrap_db_result, get_or_create_session
 from .embeddings import update_embeddings_for_item
 from .slugify import slugify
-from .helpers import normalize_pg_uuid
+from .helpers import normalize_pg_uuid, parse_tagged_text_to_dict
 from .static_server import get_public_html_path
 from .assoc_helper import CONTAINMENT_BIT  # Shared containment association flag defined centrally.
 from .image_handler import (
@@ -688,9 +688,10 @@ def _autogen_items_task(context: Dict[str, Any]) -> Dict[str, Any]:
 
     for entry in raw_items:
         client_id = ""
+        display_value = ""
+        image_text = ""
         name_text = ""
         url_text = ""
-        display_value = ""
         try:
             if not isinstance(entry, Mapping):
                 raise TypeError("Each entry must be an object.")
@@ -700,26 +701,88 @@ def _autogen_items_task(context: Dict[str, Any]) -> Dict[str, Any]:
             elif raw_client_id is not None:
                 client_id = str(raw_client_id)
 
-            raw_name = entry.get("name")
-            raw_url = entry.get("url")
-            raw_image = entry.get("image")
-            if isinstance(raw_name, str):
-                name_text = raw_name.strip()
-            if isinstance(raw_url, str):
-                url_text = raw_url.strip()
-            image_text = raw_image.strip() if isinstance(raw_image, str) else ""
+            raw_text_value = entry.get("text")
+            if isinstance(raw_text_value, str):
+                text_block = raw_text_value.strip()
+            elif raw_text_value is not None:
+                text_block = str(raw_text_value).strip()
+            else:
+                text_block = ""
+
+            if not text_block:
+                raise ValueError("Missing tagged text for auto-generated item.")
+
+            structured = parse_tagged_text_to_dict(text_block)
+
+            name_text = structured.get("name", "").strip()
+            if name_text:
+                name_text = name_text.replace("\r\n", "\n").replace("\r", "\n")
+                if "\n" in name_text:
+                    name_text = name_text.split("\n", 1)[0].strip()
+                if name_text.lower() == "(no name)":
+                    name_text = ""
+            url_text = structured.get("url", "").strip()
+            description_text = structured.get("description", "").strip()
+            notes_text = structured.get("remarks", "").strip() or structured.get("notes", "").strip()
+
+            image_value = entry.get("image")
+            image_text = image_value.strip() if isinstance(image_value, str) else ""
 
             display_value = name_text or url_text or client_id or "(unnamed entry)"
 
-            if not name_text and not url_text:
-                raise ValueError("Missing name and URL for auto-generated item.")
-
             row_payload: Dict[str, Any] = {
                 "name": name_text or url_text or "(auto summary item)",
-                "url": url_text,
-                "remarks": "automatically generated from invoice",
                 "is_staging": True,
             }
+
+            if url_text:
+                row_payload["url"] = url_text
+            if description_text:
+                row_payload["description"] = description_text
+
+            # Map tagged fields onto known item columns so the additional metadata lands in the database directly.
+            passthrough_mapping: Dict[str, str] = {
+                "sku": "sku",
+                "mpn": "mpn",
+                "manufacturer": "manufacturer",
+                "category": "category",
+                "location": "location",
+                "tags": "tags",
+                "shop": "shop",
+                "order_number": "order_number",
+                "quantity": "quantity",
+                "unit_price": "unit_price",
+                "total_price": "total_price",
+                "currency": "currency",
+            }
+
+            extra_notes: List[str] = []
+            if notes_text:
+                extra_notes.append(notes_text)
+
+            for key, value in structured.items():
+                normalized_key = str(key or "").strip()
+                if not normalized_key:
+                    continue
+                lowered = normalized_key.lower()
+                if lowered in {"name", "url", "notes", "remarks", "description"}:
+                    continue
+                value_text = "" if value is None else str(value)
+                clean_value = value_text.strip()
+                if not clean_value:
+                    continue
+                target_column = passthrough_mapping.get(lowered)
+                if target_column:
+                    row_payload[target_column] = clean_value
+                else:
+                    extra_notes.append(f"{normalized_key}: {clean_value}")
+
+            combined_remarks = "\n".join(extra_notes).strip()
+
+            if combined_remarks:
+                row_payload["remarks"] = combined_remarks
+            else:
+                row_payload["remarks"] = "automatically generated from invoice"
 
             inserted_item = insert_item(
                 row_payload,

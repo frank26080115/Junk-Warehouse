@@ -5,7 +5,6 @@ type JobStatus = "queued" | "busy" | "done" | "error";
 interface AutoSummaryEntry {
   id: string;
   text: string;
-  url: string;
   image: string;
   selected: boolean;
 }
@@ -36,12 +35,11 @@ const MIN_FREEFORM_ROWS = 3;
 const MAX_DATA_URL_LENGTH = 1_500_000; // ~1.5 MB worth of base64 text
 
 const isEntryBlank = (entry: AutoSummaryEntry): boolean =>
-  entry.text.trim() === "" && entry.url.trim() === "" && entry.image.trim() === "";
+  entry.text.trim() === "" && entry.image.trim() === "";
 
 const createBlankEntry = (seed: number): AutoSummaryEntry => ({
   id: generateClientId(seed),
   text: "",
-  url: "",
   image: "",
   selected: false,
 });
@@ -143,14 +141,12 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
         const base: Record<string, unknown> =
           typeof item === "object" && item !== null ? (item as Record<string, unknown>) : {};
         const textValue = typeof base.text === "string" ? base.text : "";
-        const urlValue = typeof base.url === "string" ? base.url : "";
         const rawId = base.client_id;
         const clientId = typeof rawId === "string" && rawId.trim() !== "" ? rawId : generateClientId(index);
         const imageValue = typeof base.image === "string" ? base.image : "";
         return {
           id: clientId,
           text: textValue,
-          url: urlValue,
           image: imageValue,
           selected: false,
         };
@@ -180,7 +176,7 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
     );
   };
 
-  const handleEntryChange = (id: string, key: "text" | "url" | "image", value: string) => {
+  const handleEntryChange = (id: string, key: "text" | "image", value: string) => {
     if (key === "image" && value.startsWith("data:") && value.length > MAX_DATA_URL_LENGTH) {
       setModalError(
         "The pasted image is too large to store as a data URL. Please choose a smaller image or host it externally."
@@ -290,17 +286,20 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
 
     try {
       const payloadItems = entriesToInsert.map((entry) => {
-        const nameCandidate = entry.text.trim();
-        const urlCandidate = entry.url.trim();
+        const normalizedText = entry.text.replace(/\r\n?/g, "\n").trim();
         const imageCandidate = entry.image.trim();
-        const fallbackName = urlCandidate || "(auto summary item)";
         return {
           client_id: entry.id,
-          name: nameCandidate || fallbackName,
-          url: urlCandidate,
+          text: normalizedText,
           image: imageCandidate,
         };
       });
+
+      const missingTextEntry = payloadItems.find((item) => item.text === "");
+      if (missingTextEntry) {
+        setModalError("Each selected entry must include tagged text before inserting.");
+        return;
+      }
 
       const response = await fetch("/api/autogenitems", {
         method: "POST",
@@ -467,25 +466,16 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
                           <label className="form-check-label" htmlFor={checkboxId}>Use this entry</label>
                         </div>
                       </div>
+                      {/* Multiline area keeps tagged text readable while giving the user room to expand. */}
                       <div className="input-group input-group-sm mb-2">
                         <span className="input-group-text" aria-hidden="true">🪪</span>
-                        <input
-                          type="text"
+                        <textarea
                           className="form-control"
                           value={entry.text}
-                          placeholder="no text"
+                          placeholder="use # Name, # URL, # Notes, …"
+                          rows={3}
+                          style={{ resize: "vertical" }}
                           onChange={(event) => handleEntryChange(entry.id, "text", event.target.value)}
-                          disabled={isBusy}
-                        />
-                      </div>
-                      <div className="input-group input-group-sm mb-2">
-                        <span className="input-group-text" aria-hidden="true">🔗</span>
-                        <input
-                          type="text"
-                          className="form-control"
-                          value={entry.url}
-                          placeholder="no URL"
-                          onChange={(event) => handleEntryChange(entry.id, "url", event.target.value)}
                           disabled={isBusy}
                         />
                       </div>
