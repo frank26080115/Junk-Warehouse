@@ -13,7 +13,7 @@ class McMasterCarrHandler(ShopHandler):
         "McMaster-Carr",
         "McMaster",
     )
-    ORDER_NUMBER_REGEX = re.compile(r"(?i)order\s*[#:]*\s*(\d{4}[A-Z]{5})")
+    ORDER_NUMBER_REGEX = re.compile(r"(?i)order\s*[#:]*\s*(\d{4,6}[A-Z]{3,20})")
 
     def guess_items(self) -> List[Dict[str, str]]:
         # TODO: Implement McMaster-Carr specific extraction logic when the DOM structure is understood.
