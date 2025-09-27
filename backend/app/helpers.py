@@ -502,7 +502,17 @@ def parse_tagged_text_to_dict(text: str, required_key: str = "name", def_req_val
     _commit()
 
     if required_key not in result:
-        result[required_key] = def_req_val
+        # Determine the fallback value for the required key in a very explicit manner so the
+        # calling code can remain predictable. When the default required value references another
+        # key using angle brackets (for example '<url>'), the referenced key is copied instead of
+        # the literal text. This allows invoice-specific templates to reuse data points without
+        # inventing brand new keys.
+        fallback_value = def_req_val
+        if isinstance(def_req_val, str) and len(def_req_val) >= 3 and def_req_val.startswith('<') and def_req_val.endswith('>'):
+            referenced_key = def_req_val[1:-1].strip()
+            if referenced_key and referenced_key in result:
+                fallback_value = result[referenced_key]
+        result[required_key] = fallback_value
 
     return result
 
