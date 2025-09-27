@@ -79,8 +79,7 @@ def process_file(json_path: Path) -> None:
     merged = merge_example_content(existing_example, transformed)
     with example_path.open("w", encoding="utf-8") as target:
         json.dump(merged, target, ensure_ascii=False, indent=2)
-        target.write("
-")
+        target.write("\n")
 
 
 def main() -> None:
