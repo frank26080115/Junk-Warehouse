@@ -11,9 +11,13 @@ from zoneinfo import ZoneInfo  # Python 3.9+
 
 log = logging.getLogger(__name__)
 
-CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+CONFIG_DIR = REPO_ROOT / "config"
 CONFIG_PATH = CONFIG_DIR / "appconfig.json"
 _SECRETS_PATH = CONFIG_DIR / "secrets.json"
+
+_REPO_ROOT_PREFIX = "<REPO_ROOT>/"
+# The prefix above allows configuration values to reference the repository root clearly.
 
 _PIN_OPEN_EXPIRY_CONFIG_KEY = "pin_open_expiry_hours"
 _PIN_OPEN_EXPIRY_DEFAULT_HOURS = 36
@@ -74,6 +78,42 @@ def load_user_password_salt() -> Optional[str]:
         return value
     return None
 
+def _resolve_config_path(raw_value: Any, setting_name: str) -> Optional[Path]:
+    """Convert configuration entries into absolute filesystem paths when possible."""
+    if raw_value is None:
+        return None
+    try:
+        text_value = str(raw_value)
+    except Exception:
+        log.warning(
+            "%s in %s could not be coerced to text; ignoring it.",
+            setting_name,
+            CONFIG_PATH,
+            exc_info=True,
+        )
+        return None
+    text_value = text_value.strip()
+    if not text_value:
+        return None
+    if text_value.startswith(_REPO_ROOT_PREFIX):
+        relative_text = text_value[len(_REPO_ROOT_PREFIX):]
+        # Using REPO_ROOT keeps repo-relative hints consistent across services.
+        repo_based_path = (REPO_ROOT / relative_text).resolve()
+        return repo_based_path
+    try:
+        candidate = Path(text_value).expanduser()
+    except Exception:
+        log.warning(
+            "%s in %s could not be interpreted as a filesystem path; ignoring it.",
+            setting_name,
+            CONFIG_PATH,
+            exc_info=True,
+        )
+        return None
+    if not candidate.is_absolute():
+        candidate = (CONFIG_DIR / candidate).resolve()
+    return candidate
+
 def get_private_dir_path(cfg: Optional[Mapping[str, Any]] = None) -> Optional[Path]:
     """Resolve where sensitive runtime files should live."""
     if cfg is None:
@@ -82,19 +122,7 @@ def get_private_dir_path(cfg: Optional[Mapping[str, Any]] = None) -> Optional[Pa
         log.debug("App configuration did not load as a mapping; ignoring private_dir hint.")
         return None
     raw_value = cfg.get("private_dir")
-    if not raw_value:
-        return None
-    try:
-        candidate = Path(str(raw_value)).expanduser()
-    except Exception:
-        log.warning(
-            "private_dir in %s could not be interpreted as a filesystem path; ignoring it.",
-            CONFIG_PATH,
-            exc_info=True,
-        )
-        return None
-    if not candidate.is_absolute():
-        candidate = (CONFIG_DIR / candidate).resolve()
+    candidate = _resolve_config_path(raw_value, "private_dir")
     return candidate
 
 def initialize_app_config(app: Any) -> None:
