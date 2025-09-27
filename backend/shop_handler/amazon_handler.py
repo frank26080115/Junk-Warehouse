@@ -19,6 +19,10 @@ class AmazonHandler(ShopHandler):
     TOTAL_ROW_REGEX = re.compile(r"(?i)\btotal\b")
     PRICE_REGEX = re.compile(r"\$\s*[0-9][0-9,]*\.?[0-9]{0,2}")
     QUANTITY_REGEX = re.compile(r"(?i)quantity\s*:\s*([0-9][0-9,]*)")
+    ASIN_IN_URL_REGEX = re.compile(
+        r"/dp/([A-Z0-9]{10})(?:[/?]|$)",
+        re.IGNORECASE,
+    )  # Amazon Standard Identification Numbers (ASINs) are 10 characters.
     REQUEST_HEADERS = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -136,7 +140,7 @@ class AmazonHandler(ShopHandler):
             if not href or not text:
                 continue
 
-            dp_match = re.search(r"/dp/([^/?]+)(?:\?|$)", href)
+            dp_match = self.ASIN_IN_URL_REGEX.search(href)
             if dp_match is None:
                 continue
 
@@ -148,7 +152,7 @@ class AmazonHandler(ShopHandler):
                 else:
                     href = "https://amazon.com/"
 
-            product_code = dp_match.group(1)
+            product_code = dp_match.group(1).upper()  # Normalize ASIN to uppercase for consistency.
 
             if href in seen_urls:
                 continue
@@ -265,9 +269,9 @@ class AmazonHandler(ShopHandler):
             else:
                 final_url = 'https://amazon.com/'
 
-        dp_match = re.search(r"/dp/([^/?]+)", final_url)
+        dp_match = self.ASIN_IN_URL_REGEX.search(final_url)
         if dp_match:
-            product_code = dp_match.group(1)
+            product_code = dp_match.group(1).upper()  # Normalize ASIN to uppercase for consistency.
 
         return final_url, final_name, description, product_code
 
