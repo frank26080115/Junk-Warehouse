@@ -84,7 +84,101 @@ class DigiKeyHandler(ShopHandler):
             items.append(item)
             seen_codes.add(product_identifier)
 
-        return items
+        if items:
+            return items
+
+        return self._guess_items_2(session)
+
+    def _guess_items_2(self, session: Optional[requests.Session] = None) -> List[Dict[str, str]]:
+        """Fallback parser that scans Digi-Key's product detail cells."""
+        if session is None:
+            session = requests.Session()
+
+        # Collect candidate cells that hold structured product details in MudBlazor tables.
+        detail_cells = self.sanitized_root.xpath(
+            ".//td[@data-label='Product Details' and contains(concat(' ', normalize-space(@class), ' '), ' product-details-cell ')]"
+        )
+
+        preliminary_items: List[Dict[str, str]] = []
+        seen_codes: set[str] = set()
+
+        for cell in detail_cells:
+            # Each cell contains a dedicated container with multiple <p> blocks of metadata.
+            containers = cell.xpath(
+                ".//div[contains(concat(' ', normalize-space(@class), ' '), ' products-details ')]"
+            )
+            if not containers:
+                continue
+
+            container = containers[0]
+            paragraphs = container.xpath('./p')
+            if not paragraphs:
+                continue
+
+            anchor_index: Optional[int] = None
+            anchor_element: Optional[lxml_html.HtmlElement] = None
+
+            for index, paragraph in enumerate(paragraphs):
+                anchors = paragraph.xpath('.//a')
+                if not anchors:
+                    continue
+
+                hyperlink = anchors[0]
+                hyperlink_text = self._normalize_whitespace(hyperlink.text_content())
+                href = (hyperlink.get('href') or '').strip()
+                if not hyperlink_text or not href:
+                    continue
+
+                anchor_index = index
+                anchor_element = hyperlink
+                break
+
+            if anchor_index is None or anchor_element is None:
+                continue
+
+            if anchor_index + 2 >= len(paragraphs):
+                continue
+
+            digikey_code = self._clean_code(anchor_element.text_content())
+            manufacturer_code = self._clean_code(paragraphs[anchor_index + 1].text_content())
+            product_name = self._normalize_whitespace(paragraphs[anchor_index + 2].text_content())
+            href = (anchor_element.get('href') or '').strip()
+
+            if not digikey_code or not manufacturer_code or not product_name or not href:
+                continue
+
+            product_identifier = f"{digikey_code};{manufacturer_code}"
+            if product_identifier in seen_codes:
+                continue
+
+            preliminary_items.append(
+                {
+                    'name': product_name,
+                    'url': href,
+                    'product_code': product_identifier,
+                }
+            )
+            seen_codes.add(product_identifier)
+
+        final_items: List[Dict[str, str]] = []
+
+        for entry in preliminary_items:
+            # Reuse the remote scraping routine so the behaviour matches the primary path.
+            final_url, description = self._retrieve_remote_details(session, entry['url'])
+
+            item: Dict[str, str] = {
+                'name': entry['name'],
+                'url': final_url or entry['url'],
+                'product_code': entry['product_code'],
+                'source': self.POSSIBLE_NAMES[0],
+            }
+
+            if description:
+                item['description'] = description
+
+            final_items.append(item)
+
+        return final_items
 
     def _locate_anchor(self, cell: lxml_html.HtmlElement) -> Optional[lxml_html.HtmlElement]:
         """Find the first meaningful hyperlink inside the provided cell."""
