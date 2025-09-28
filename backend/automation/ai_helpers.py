@@ -1,10 +1,19 @@
 from __future__ import annotations
 
-import os, sys, pathlib
+import os
+import sys
+from pathlib import Path
 import json
 import requests
 
 from typing import List, Union
+
+# Guarantee that the repository root is discoverable on sys.path when this
+# module is invoked directly. This keeps imports such as app.config_loader
+# working during local scripting without requiring a package-style launch.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from openai import OpenAI
 from app.config_loader import CONFIG_DIR, CONFIG_PATH, load_app_config
