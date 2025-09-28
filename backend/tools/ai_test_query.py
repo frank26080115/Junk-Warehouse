@@ -1,8 +1,18 @@
 """Utility script to send a test query to an AI model defined by AiInstance."""
 import argparse
+import sys
 import time
+from pathlib import Path
+
+# Ensure the repository root is discoverable when the script is run directly with
+# ``python backend/tools/ai_test_query.py``. This keeps imports of our internal
+# packages reliable without requiring ``python -m`` invocation.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from backend.automation.ai_helpers import AiInstance
+
 
 def main() -> None:
     """Parse arguments, run the AI query, and report the timing."""
