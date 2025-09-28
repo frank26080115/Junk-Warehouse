@@ -16,7 +16,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from openai import OpenAI
-from app.config_loader import CONFIG_DIR, CONFIG_PATH, load_app_config
+try:
+    from ..app.config_loader import CONFIG_DIR, CONFIG_PATH, load_app_config
+except:
+    CONFIG_DIR = REPO_ROOT / "config"
+    CONFIG_PATH = CONFIG_DIR / "appconfig.json"
+    def load_app_config():
+        return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 
 OLLAMA_HOST_URL = "http://127.0.0.1:11434"
 
