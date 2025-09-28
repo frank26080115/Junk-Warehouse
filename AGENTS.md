@@ -14,6 +14,7 @@ These instructions apply to the entire repository.
 
 - Write code in a verbose, intent-revealing style rather than abbreviated or "hax0r" syntax.
 
+- Never update database schema, only provide suggestions on database change when absolutely necessary.
 
 
 ## File Formatting
@@ -35,6 +36,3 @@ These instructions apply to the entire repository.
 - The frontend uses Node.js, React, and Bootstrap.
 
 - The backend uses Python, Flask, PostgreSQL, and SQLAlchemy.
-
-- When updating SQL or schema files, provide clear explanations for relational decisions to aid future maintenance.
-
