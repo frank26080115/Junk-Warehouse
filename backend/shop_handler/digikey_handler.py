@@ -4,10 +4,10 @@ import re
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
-import requests
 from lxml import html as lxml_html
 
 from shop_handler import ShopHandler
+from automation.web_get import fetch_with_requests
 
 
 class DigiKeyHandler(ShopHandler):
@@ -22,27 +22,12 @@ class DigiKeyHandler(ShopHandler):
     PRODUCT_CODES_REGEX = re.compile(
         r"(?is)digikey\s*part\s*number\W*([A-Za-z0-9][A-Za-z0-9\-._/ ]{0,80})\W*manufacturer\s*part\s*number\W*([A-Za-z0-9][A-Za-z0-9\-._/ ]{0,80})"
     )
-    REQUEST_HEADERS = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-        ),
-        "Accept": (
-            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,"
-            "image/webp,image/apng,*/*;q=0.8"
-        ),
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-    }
     REQUEST_TIMEOUT = 15
 
     def guess_items(self) -> List[Dict[str, str]]:
         """Attempt to extract item information from Digi-Key invoices."""
         items: List[Dict[str, str]] = []
         seen_codes: set[str] = set()
-        session = requests.Session()
 
         # Iterate over every table cell so we can inspect deeply nested structures.
         for cell in self.sanitized_root.xpath('.//td'):
@@ -69,7 +54,7 @@ class DigiKeyHandler(ShopHandler):
             if not product_name or not href:
                 continue
 
-            final_url, description = self._retrieve_remote_details(session, href)
+            final_url, description = self._retrieve_remote_details(href)
 
             item: Dict[str, str] = {
                 'name': product_name,
@@ -87,12 +72,10 @@ class DigiKeyHandler(ShopHandler):
         if items:
             return items
 
-        return self._guess_items_2(session)
+        return self._guess_items_2()
 
-    def _guess_items_2(self, session: Optional[requests.Session] = None) -> List[Dict[str, str]]:
+    def _guess_items_2(self) -> List[Dict[str, str]]:
         """Fallback parser that scans Digi-Key's product detail cells."""
-        if session is None:
-            session = requests.Session()
 
         # Collect candidate cells that hold structured product details in MudBlazor tables.
         detail_cells = self.sanitized_root.xpath(
@@ -164,7 +147,7 @@ class DigiKeyHandler(ShopHandler):
 
         for entry in preliminary_items:
             # Reuse the remote scraping routine so the behaviour matches the primary path.
-            final_url, description = self._retrieve_remote_details(session, entry['url'])
+            final_url, description = self._retrieve_remote_details(entry['url'])
 
             item: Dict[str, str] = {
                 'name': entry['name'],
@@ -201,26 +184,19 @@ class DigiKeyHandler(ShopHandler):
             return ''
         return re.sub(r'\s+', ' ', value).strip()
 
-    def _retrieve_remote_details(self, session: requests.Session, url: str) -> Tuple[str, str]:
+    def _retrieve_remote_details(self, url: str) -> Tuple[str, str]:
         """Follow redirects to the real product page and harvest its description."""
         if not url:
             return url, ''
 
         try:
-            response = session.get(
-                url,
-                headers=self.REQUEST_HEADERS,
-                allow_redirects=True,
-                timeout=self.REQUEST_TIMEOUT,
-            )
+            # Leverage the automation helper to obtain consistent HTTP handling and content parsing.
+            html_content, _text_content, resolved_url = fetch_with_requests(url, timeout=self.REQUEST_TIMEOUT)
         except Exception:
             return url, ''
 
-        if not response.ok:
-            return self._strip_query(response.url or url), ''
-
-        final_url = self._strip_query(response.url or url)
-        description = self._extract_description_from_page(response.text)
+        final_url = self._strip_query(resolved_url or url)
+        description = self._extract_description_from_page(html_content)
         return final_url, description
 
     def _strip_query(self, target_url: str) -> str:

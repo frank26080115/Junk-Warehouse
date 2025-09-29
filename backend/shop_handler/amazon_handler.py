@@ -3,10 +3,10 @@ from __future__ import annotations
 import re
 from typing import Dict, List, Optional
 
-import requests
 from lxml import html as lxml_html
 
 from shop_handler import ShopHandler
+from automation.web_get import fetch_with_requests
 
 
 class AmazonHandler(ShopHandler):
@@ -19,27 +19,11 @@ class AmazonHandler(ShopHandler):
     TOTAL_ROW_REGEX = re.compile(r"(?i)\btotal\b")
     PRICE_REGEX = re.compile(r"\$\s*[0-9][0-9,]*\.?[0-9]{0,2}")
     QUANTITY_REGEX = re.compile(r"(?i)quantity\s*:\s*([0-9][0-9,]*)")
-    REQUEST_HEADERS = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-        ),
-        "Accept": (
-            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,"
-            "image/webp,image/apng,*/*;q=0.8"
-        ),
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-    }
     REQUEST_TIMEOUT = 15
 
     def guess_items(self) -> List[Dict[str, str]]:
         items: List[Dict[str, str]] = []
         seen_urls: set[str] = set()
-        session = requests.Session()
-
         reached_total_row = False
 
         # Walk every table row in order so that we can stop once the "Total" row is
@@ -57,7 +41,7 @@ class AmazonHandler(ShopHandler):
             # Examine every table cell because the invoice mixes product details and
             # promotional content within the same table structure.
             for cell in row.xpath('.//td'):
-                item = self._extract_item_from_cell(session, cell)
+                item = self._extract_item_from_cell(cell)
                 if item is None:
                     continue
 
@@ -72,7 +56,6 @@ class AmazonHandler(ShopHandler):
 
     def _extract_item_from_cell(
         self,
-        session: requests.Session,
         cell: lxml_html.HtmlElement,
     ) -> Optional[Dict[str, str]]:
         anchor = self._find_amazon_anchor(cell)
@@ -96,7 +79,7 @@ class AmazonHandler(ShopHandler):
             return None
 
         # Capture extra metadata from the remote details call, including any detected product code.
-        final_url, final_name, description, product_code = self._fetch_remote_details(session, base_url, base_name)
+        final_url, final_name, description, product_code = self._fetch_remote_details(base_url, base_name)
 
         item: Dict[str, str] = {
             'name': final_name,
@@ -130,7 +113,6 @@ class AmazonHandler(ShopHandler):
 
     def _fetch_remote_details(
         self,
-        session: requests.Session,
         url: str,
         fallback_name: str,
     ) -> tuple[str, str, str, Optional[str]]:
@@ -140,23 +122,19 @@ class AmazonHandler(ShopHandler):
         # Default product code to None until we discover a valid value.
         product_code: Optional[str] = None
 
+        if not url:
+            return final_url, final_name, description, product_code
+
         try:
-            response = session.get(
-                url,
-                headers=self.REQUEST_HEADERS,
-                allow_redirects=True,
-                timeout=self.REQUEST_TIMEOUT,
-            )
+            # Use the shared automation helper so that HTTP behaviour stays consistent across handlers.
+            html_content, _text_content, resolved_url = fetch_with_requests(url, timeout=self.REQUEST_TIMEOUT)
         except Exception:
             return final_url, final_name, description, product_code
 
-        if not response.ok:
-            return response.url or final_url, final_name, description, product_code
-
-        final_url = response.url or final_url
+        final_url = resolved_url or final_url
 
         try:
-            remote_root = lxml_html.fromstring(response.text)
+            remote_root = lxml_html.fromstring(html_content)
         except Exception:
             return final_url, final_name, description, product_code
 
