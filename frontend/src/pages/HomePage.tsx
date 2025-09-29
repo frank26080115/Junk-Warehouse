@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import HomeStatsPanel from "../app/components/HomeStatsPanel";
+import InvoiceUploaderPanel from "../app/components/InvoiceUploaderPanel";
 import SearchPanel from "../app/components/SearchPanel";
 
 type WhoAmIResponse =
@@ -86,6 +87,7 @@ const HomePage: React.FC = () => {
           refreshToken={searchRefreshToken}
         />
       </div>
+      <InvoiceUploaderPanel />
     </div>
   );
 };
