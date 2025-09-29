@@ -1,8 +1,8 @@
 {
   "private_dir": "C:/private",
   "public_html_path": "C:/public_html",
-  "timezone": "Asaskba/Lxp_Cvbeyah",
-  "ai_model_online": "tpo-1-cctb",
-  "ai_model_offline": "viw-egq:48c",
+  "timezone": "America/Los_Angeles",
+  "ai_model_online": "gpt-5-nano",
+  "ai_model_offline": "gpt-oss:20b",
   "pin_open_expiry_hours": 36
 }
