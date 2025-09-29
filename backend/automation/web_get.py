@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from html.parser import HTMLParser
 from typing import Tuple
 from urllib.parse import urlsplit
@@ -93,3 +94,58 @@ def fetch_with_requests(url: str, *, timeout: int = 30) -> Tuple[str, str, str]:
     text_content = parser.get_text()
     current_url = response.url
     return html_content, text_content, current_url
+
+
+def _inject_redirect_url(html_content: str, redirected_url: str) -> str:
+    """Insert the resolved URL immediately after the first ``>`` character in the HTML source."""
+    # When the HTML is empty or the resolved URL is unavailable, return the original content unchanged.
+    if not html_content or not redirected_url:
+        return html_content
+
+    first_delimiter_index = html_content.find(">")
+    # If a ``>`` symbol does not exist, append the URL at the end so that the caller still sees it.
+    if first_delimiter_index == -1:
+        return f"{html_content}\n<!-- Redirected URL: {redirected_url} -->"
+
+    insertion = f"\n<!-- Redirected URL: {redirected_url} -->"
+    return f"{html_content[: first_delimiter_index + 1]}{insertion}{html_content[first_delimiter_index + 1:]}"
+
+
+def main() -> None:
+    """Command line entry point that exercises the retrieval helpers using argparse."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Fetch a URL using either the requests library or Playwright and display the HTML "
+            "with the resolved URL noted."
+        )
+    )
+    parser.add_argument(
+        "url",
+        help=(
+            "The HTTP or HTTPS URL that should be retrieved. Redirects are followed automatically and "
+            "the final resolved URL is embedded in the displayed HTML."
+        ),
+    )
+    parser.add_argument(
+        "--method",
+        choices=("requests", "playwright"),
+        default="requests",
+        help=(
+            "Select which retrieval strategy to use. The default leverages the requests library; "
+            "choose 'playwright' when a headless browser is required."
+        ),
+    )
+    args = parser.parse_args()
+
+    if args.method == "requests":
+        html_content, _, final_url = fetch_with_requests(args.url)
+    else:
+        html_content, _, final_url = fetch_with_playwright(args.url)
+
+    # Present the HTML content with a clear annotation that records the resolved URL.
+    annotated_html = _inject_redirect_url(html_content, final_url)
+    print(annotated_html)
+
+
+if __name__ == "__main__":
+    main()
