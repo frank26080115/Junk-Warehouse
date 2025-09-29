@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import sys
+import unicodedata
 from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional, Sequence, Tuple, Type
 
@@ -36,6 +37,32 @@ from app.search import find_code_matched_items
 
 log = logging.getLogger(__name__)
 
+
+# Collapse any run of whitespace into a single regular space so repeated spacing never leaks through.
+WHITESPACE_NORMALIZATION_PATTERN = re.compile(r"\s+")
+# Explicit list of non-breaking space characters that routinely appear in invoices and should be treated like standard spaces.
+_NON_BREAKING_SPACE_CHARACTERS = (" ", " ")
+
+
+def _normalize_text_fragment(fragment: str) -> str:
+    """Sanitize raw text nodes to remove invisible characters and normalize spacing."""
+
+    cleaned_characters: List[str] = []
+    for character in fragment:
+        unicode_category = unicodedata.category(character)
+        if unicode_category == "Cf":
+            # Drop Unicode format characters (such as left-to-right marks) because they
+            # tend to sneak into invoices and break downstream parsing logic.
+            continue
+        if unicode_category.startswith("Z") or character in _NON_BREAKING_SPACE_CHARACTERS:
+            # Treat all Unicode space separator characters (including non-breaking variants)
+            # as ordinary spaces so words remain separated and formatting is consistent.
+            cleaned_characters.append(" ")
+            continue
+        cleaned_characters.append(character)
+
+    cleaned_fragment = "".join(cleaned_characters)
+    return cleaned_fragment
 
 class ShopHandler:
     """Base class for extracting store specific information from invoices."""
@@ -265,9 +292,27 @@ class ShopHandler:
 
     def _get_sanitized_text(self) -> str:
         if self._sanitized_text_cache is None:
-            self._sanitized_text_cache = lxml_html.tostring(
-                self.sanitized_root, encoding="unicode", method="text"
-            )
+            text_segments: List[str] = []
+            # Gather visible text from every node so downstream searches see the same
+            # spacing that a human would perceive between words separated by tags.
+            for fragment in self.sanitized_root.itertext():
+                if not fragment:
+                    continue
+
+                # Remove invisible formatting characters and normalize internal spacing
+                # within the fragment before we consider adding it to the aggregate list.
+                cleaned_fragment = _normalize_text_fragment(fragment)
+                cleaned_fragment = WHITESPACE_NORMALIZATION_PATTERN.sub(" ", cleaned_fragment)
+                cleaned_fragment = cleaned_fragment.strip()
+
+                if cleaned_fragment:
+                    text_segments.append(cleaned_fragment)
+
+            # Join the fragments with single spaces so words that came from different
+            # elements or lines remain separated, then collapse any accidental doubles.
+            joined_text = " ".join(text_segments)
+            normalized_text = WHITESPACE_NORMALIZATION_PATTERN.sub(" ", joined_text).strip()
+            self._sanitized_text_cache = normalized_text
         return self._sanitized_text_cache
 
     def get_dom_report(self) -> Optional[Dict[str, Any]]:
