@@ -28,6 +28,8 @@ const LedgerSearchPage: React.FC = () => {
           // Provide the parent search panel with the recommended query so users immediately see fresh results.
           setSearchPrefill(query);
         }}
+        // Email polling is now automated, so hide the manual checker panel.
+        showCheckEmailPanel={false}
       />
     </div>
   );

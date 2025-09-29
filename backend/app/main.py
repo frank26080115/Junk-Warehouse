@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 from flask import Flask, jsonify
 from flask_cors import CORS
 from sqlalchemy import text
+from datetime import timedelta
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -11,11 +14,11 @@ from .errors import register_error_handlers
 from .static_server import bp_overlay, get_public_html_path
 from .image_handler import bp_image
 from .user_login import bp as bp_auth
-from .invoice_handlers import bp as bp_invoice
+from .invoice_handlers import bp as bp_invoice, check_email_task
 from .items import bp as bp_items
 from .maint import bp as bp_maint
 from .search import bp as bp_search
-from .job_manager import JobManager, bp as bp_jobs
+from .job_manager import JobManager, RepeatableJob, bp as bp_jobs
 import app.helpers as helpers
 import app.db as db
 from app.config_loader import CONFIG_PATH, initialize_app_config
@@ -37,6 +40,14 @@ def create_app():
     job_manager = JobManager()
     job_manager.attach_app(app)
     app.extensions["job_manager"] = job_manager
+
+    # Schedule a repeatable job so the mailbox is checked automatically every hour.
+    hourly_email_job = RepeatableJob(
+        name="check-email",
+        function=lambda: check_email_task({}),
+        frequency=timedelta(hours=1),
+    )
+    job_manager.install_repeatable_job(hourly_email_job)
 
     log.info("Flask ENV: " + os.getenv("FLASK_ENV"))
     if os.getenv("FLASK_ENV") == "development":

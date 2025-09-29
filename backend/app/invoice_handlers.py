@@ -555,7 +555,7 @@ def set_invoice_api() -> Any:
     return jsonify(_serialize_invoice_row(final_row)), status_code
 
 
-def _check_email_task(_context: Dict[str, Any]) -> Dict[str, Any]:
+def check_email_task(_context: Dict[str, Any]) -> Dict[str, Any]:
     log.info("Mailbox check requested")
     try:
         service = _build_gmail_service()
@@ -819,7 +819,7 @@ def _analyze_invoice_html_task(context: Dict[str, Any]) -> Dict[str, Any]:
 def check_email() -> Any:
     try:
         manager = get_job_manager(current_app)
-        job_id = manager.start_job(_check_email_task, {})
+        job_id = manager.start_job(check_email_task, {})
     except Exception as exc:
         log.exception("Failed to enqueue mailbox check job")
         return jsonify({"ok": False, "error": str(exc)}), 503
