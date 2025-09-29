@@ -1,23 +1,32 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import logging
 import re
 import sys
+import unicodedata
 from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional, Sequence, Tuple, Type
 
 from lxml import etree
 from lxml import html as lxml_html
 
-if __name__ == "__main__" and __package__ is None:
-    # Allow the module to be executed directly from the command line by ensuring that
-    # the backend directory (which contains the "automation" package) is importable.
-    current_file = Path(__file__).resolve()
-    backend_root = current_file.parent.parent
-    if str(backend_root) not in sys.path:
-        sys.path.insert(0, str(backend_root))
+# Compute canonical project paths so the automation helpers can always be located,
+# even when an IDE launches this module with a different working directory.
+current_file = Path(__file__).resolve()
+backend_root = current_file.parent.parent
+project_root = backend_root.parent
+
+def _ensure_module_search_paths() -> None:
+    """Ensure automation helpers remain importable in IDE and CLI contexts."""
+    for candidate in (backend_root, project_root):
+        candidate_str = str(candidate)
+        if candidate_str not in sys.path:
+            sys.path.insert(0, candidate_str)
+
+_ensure_module_search_paths()
 
 from automation.html_dom_finder import analyze as analyze_dom_report, sanitize_dom
 from automation.html_invoice_helpers import parse_unknown_html_or_mhtml
@@ -28,6 +37,32 @@ from app.search import find_code_matched_items
 
 log = logging.getLogger(__name__)
 
+
+# Collapse any run of whitespace into a single regular space so repeated spacing never leaks through.
+WHITESPACE_NORMALIZATION_PATTERN = re.compile(r"\s+")
+# Explicit list of non-breaking space characters that routinely appear in invoices and should be treated like standard spaces.
+_NON_BREAKING_SPACE_CHARACTERS = (" ", " ")
+
+
+def _normalize_text_fragment(fragment: str) -> str:
+    """Sanitize raw text nodes to remove invisible characters and normalize spacing."""
+
+    cleaned_characters: List[str] = []
+    for character in fragment:
+        unicode_category = unicodedata.category(character)
+        if unicode_category == "Cf":
+            # Drop Unicode format characters (such as left-to-right marks) because they
+            # tend to sneak into invoices and break downstream parsing logic.
+            continue
+        if unicode_category.startswith("Z") or character in _NON_BREAKING_SPACE_CHARACTERS:
+            # Treat all Unicode space separator characters (including non-breaking variants)
+            # as ordinary spaces so words remain separated and formatting is consistent.
+            cleaned_characters.append(" ")
+            continue
+        cleaned_characters.append(character)
+
+    cleaned_fragment = "".join(cleaned_characters)
+    return cleaned_fragment
 
 class ShopHandler:
     """Base class for extracting store specific information from invoices."""
@@ -80,7 +115,35 @@ class ShopHandler:
         from digikey_handler import DigiKeyHandler
         from mcmastercarr_handler import McMasterCarrHandler
 
-        return (AmazonHandler, DigiKeyHandler, McMasterCarrHandler)
+        handler_specs: Sequence[Tuple[str, str]] = (
+            ("amazon_handler", "AmazonHandler"),
+            ("digikey_handler", "DigiKeyHandler"),
+            ("mcmastercarr_handler", "McMasterCarrHandler"),
+        )
+
+        handler_package = cls._determine_handler_package()
+        resolved_handlers: List[Type[ShopHandler]] = []
+
+        for module_name, class_name in handler_specs:
+            module_path = f"{handler_package}.{module_name}"
+            module = importlib.import_module(module_path)
+            handler_type = getattr(module, class_name)
+            resolved_handlers.append(handler_type)
+
+        return tuple(resolved_handlers)
+
+    @staticmethod
+    def _determine_handler_package() -> str:
+        """Determine the package path used when loading store specific handlers."""
+
+        # When the module is imported as part of the backend package, __package__ is set
+        # accordingly (for example, "backend.shop_handler"). When the module is executed
+        # directly for offline testing, __package__ will be empty, so we fall back to the
+        # explicit package name. This dual-path approach keeps imports working in both
+        # deployment and standalone execution contexts.
+        if __package__:
+            return __package__
+        return "backend.shop_handler"
 
     @classmethod
     def _count_name_hits(cls, haystack: str) -> int:
@@ -233,9 +296,27 @@ class ShopHandler:
 
     def _get_sanitized_text(self) -> str:
         if self._sanitized_text_cache is None:
-            self._sanitized_text_cache = lxml_html.tostring(
-                self.sanitized_root, encoding="unicode", method="text"
-            )
+            text_segments: List[str] = []
+            # Gather visible text from every node so downstream searches see the same
+            # spacing that a human would perceive between words separated by tags.
+            for fragment in self.sanitized_root.itertext():
+                if not fragment:
+                    continue
+
+                # Remove invisible formatting characters and normalize internal spacing
+                # within the fragment before we consider adding it to the aggregate list.
+                cleaned_fragment = _normalize_text_fragment(fragment)
+                cleaned_fragment = WHITESPACE_NORMALIZATION_PATTERN.sub(" ", cleaned_fragment)
+                cleaned_fragment = cleaned_fragment.strip()
+
+                if cleaned_fragment:
+                    text_segments.append(cleaned_fragment)
+
+            # Join the fragments with single spaces so words that came from different
+            # elements or lines remain separated, then collapse any accidental doubles.
+            joined_text = " ".join(text_segments)
+            normalized_text = WHITESPACE_NORMALIZATION_PATTERN.sub(" ", joined_text).strip()
+            self._sanitized_text_cache = normalized_text
         return self._sanitized_text_cache
 
     def get_dom_report(self) -> Optional[Dict[str, Any]]:
