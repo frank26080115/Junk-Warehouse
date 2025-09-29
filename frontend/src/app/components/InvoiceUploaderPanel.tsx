@@ -6,10 +6,13 @@ type JobStatus = "queued" | "busy" | "done" | "error";
 interface InvoiceUploaderPanelProps {
   // Allow a parent page to react when the component suggests a helpful follow-up search query.
   onSearchPrefillSuggested?: (query: string) => void;
+  // Let the parent hide the email checker when an automated background job takes over.
+  showCheckEmailPanel?: boolean;
 }
 
 const InvoiceUploaderPanel: React.FC<InvoiceUploaderPanelProps> = ({
   onSearchPrefillSuggested,
+  showCheckEmailPanel = true,
 }) => {
   // Track busy states, job identifiers, and status details for both the email check and direct upload flows.
   const [checkEmailBusy, setCheckEmailBusy] = useState(false);
@@ -237,26 +240,30 @@ const InvoiceUploaderPanel: React.FC<InvoiceUploaderPanelProps> = ({
 
   return (
     <div className="mt-5">
-      <h2 className="h5">Check email for invoices</h2>
-      <p className="text-muted">
-        Trigger the email processor to pull the latest invoices from the mailbox.
-      </p>
-      <button
-        type="button"
-        className="btn btn-primary"
-        onClick={handleCheckEmail}
-        disabled={checkEmailBusy}
-      >
-        {checkEmailBusy ? "Checking…" : "Check email"}
-      </button>
-      {checkEmailBusy &&
-        renderBusyIndicator(
-          checkEmailStatus === "queued"
-            ? `Job queued${checkEmailJobId ? ` (${checkEmailJobId})` : ""}…`
-            : `Checking mailbox for invoices${checkEmailJobId ? ` (${checkEmailJobId})` : ""}…`
-        )}
+      {showCheckEmailPanel && (
+        <>
+          <h2 className="h5">Check email for invoices</h2>
+          <p className="text-muted">
+            Trigger the email processor to pull the latest invoices from the mailbox.
+          </p>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={handleCheckEmail}
+            disabled={checkEmailBusy}
+          >
+            {checkEmailBusy ? "Checking…" : "Check email"}
+          </button>
+          {checkEmailBusy &&
+            renderBusyIndicator(
+              checkEmailStatus === "queued"
+                ? `Job queued${checkEmailJobId ? ` (${checkEmailJobId})` : ""}…`
+                : `Checking mailbox for invoices${checkEmailJobId ? ` (${checkEmailJobId})` : ""}…`
+            )}
+        </>
+      )}
 
-      <div className="mt-4">
+      <div className={showCheckEmailPanel ? "mt-4" : ""}>
         <h2 className="h5">Upload invoice files</h2>
         <p className="text-muted">
           Upload archived email files (.mht, .mhtml, .htm, .html) to import invoices directly.
