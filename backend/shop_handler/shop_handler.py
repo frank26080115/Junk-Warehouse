@@ -12,17 +12,20 @@ from typing import Any, ClassVar, Dict, List, Optional, Sequence, Tuple, Type
 from lxml import etree
 from lxml import html as lxml_html
 
-if __name__ == "__main__" and __package__ is None:
-    # Allow the module to be executed directly from the command line by ensuring that
-    # both the backend directory (which contains helper modules such as "automation")
-    # and the project root (which exposes the "backend" package) are importable.
-    current_file = Path(__file__).resolve()
-    backend_root = current_file.parent.parent
-    project_root = backend_root.parent
-    if str(backend_root) not in sys.path:
-        sys.path.insert(0, str(backend_root))
-    if str(project_root) not in sys.path:
-        sys.path.insert(0, str(project_root))
+# Compute canonical project paths so the automation helpers can always be located,
+# even when an IDE launches this module with a different working directory.
+current_file = Path(__file__).resolve()
+backend_root = current_file.parent.parent
+project_root = backend_root.parent
+
+def _ensure_module_search_paths() -> None:
+    """Ensure automation helpers remain importable in IDE and CLI contexts."""
+    for candidate in (backend_root, project_root):
+        candidate_str = str(candidate)
+        if candidate_str not in sys.path:
+            sys.path.insert(0, candidate_str)
+
+_ensure_module_search_paths()
 
 from automation.html_dom_finder import analyze as analyze_dom_report, sanitize_dom
 from automation.html_invoice_helpers import parse_unknown_html_or_mhtml
