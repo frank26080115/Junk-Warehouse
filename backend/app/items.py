@@ -112,6 +112,180 @@ def _ensure_containment_relationship(conn: Any, source_id: str, target_id: str) 
     )
 
 
+def get_item_relationship(first_identifier: Any, second_identifier: Any) -> Optional[Dict[str, Any]]:
+    """Retrieve or consolidate a relationship record between two items."""
+
+    # Normalize the incoming identifiers early so we can safely query the database.
+    try:
+        normalized_first = normalize_pg_uuid(str(first_identifier))
+        normalized_second = normalize_pg_uuid(str(second_identifier))
+    except Exception as exc:  # Broad on purpose: normalization is strict and raises TypeError/ValueError.
+        log.debug(
+            "Unable to normalize relationship identifiers %r and %r: %s",
+            first_identifier,
+            second_identifier,
+            exc,
+        )
+        return None
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        selection = conn.execute(
+            text(
+                """
+                SELECT id, item_id, assoc_id, assoc_type
+                FROM relationships
+                WHERE (item_id = :first_id AND assoc_id = :second_id)
+                   OR (item_id = :second_id AND assoc_id = :first_id)
+                ORDER BY id
+                """
+            ),
+            {"first_id": normalized_first, "second_id": normalized_second},
+        ).mappings().all()
+
+        if not selection:
+            return None
+
+        if len(selection) == 1:
+            # Single hit means we can simply return the mapping as a regular dictionary.
+            return dict(selection[0])
+
+        # Multiple rows indicate duplicated relationship data. Consolidate them into one row.
+        combined_bits = 0
+        for row in selection:
+            try:
+                combined_bits |= int(row.get("assoc_type") or 0)
+            except (TypeError, ValueError):
+                # assoc_type is expected to behave like an integer. If it does not, treat as zero.
+                combined_bits |= 0
+
+        desired_item_id = normalized_first
+        desired_assoc_id = normalized_second
+        target_row = None
+        for row in selection:
+            if str(row.get("item_id")) == desired_item_id and str(row.get("assoc_id")) == desired_assoc_id:
+                target_row = dict(row)
+                break
+
+        if target_row is None:
+            # Reorient the first row we saw so the caller's specified order becomes canonical.
+            first_row = dict(selection[0])
+            conn.execute(
+                text(
+                    """
+                    UPDATE relationships
+                    SET item_id = :item_id, assoc_id = :assoc_id
+                    WHERE id = :relationship_id
+                    """
+                ),
+                {
+                    "item_id": desired_item_id,
+                    "assoc_id": desired_assoc_id,
+                    "relationship_id": first_row.get("id"),
+                },
+            )
+            target_row = first_row
+
+        # Ensure the canonical row contains the combined relationship flags.
+        conn.execute(
+            text(
+                """
+                UPDATE relationships
+                SET assoc_type = :assoc_type
+                WHERE id = :relationship_id
+                """
+            ),
+            {
+                "assoc_type": combined_bits,
+                "relationship_id": target_row.get("id"),
+            },
+        )
+
+        # Remove every other duplicate so a single authoritative record remains.
+        for row in selection:
+            if row.get("id") == target_row.get("id"):
+                continue
+            conn.execute(
+                text(
+                    """
+                    DELETE FROM relationships
+                    WHERE id = :relationship_id
+                    """
+                ),
+                {"relationship_id": row.get("id")},
+            )
+
+        final_row = conn.execute(
+            text(
+                """
+                SELECT id, item_id, assoc_id, assoc_type
+                FROM relationships
+                WHERE id = :relationship_id
+                """
+            ),
+            {"relationship_id": target_row.get("id")},
+        ).mappings().first()
+
+        return dict(final_row) if final_row else None
+
+
+def set_item_relationship(first_identifier: Any, second_identifier: Any, assoc_type: int) -> Optional[Dict[str, Any]]:
+    """Create or update a relationship while respecting existing directionality."""
+
+    existing = get_item_relationship(first_identifier, second_identifier)
+    if existing is None:
+        # Nothing persisted yet, so create a brand-new row using the caller's order.
+        try:
+            normalized_first = normalize_pg_uuid(str(first_identifier))
+            normalized_second = normalize_pg_uuid(str(second_identifier))
+        except Exception as exc:
+            log.debug(
+                "Unable to normalize relationship identifiers %r and %r for insert: %s",
+                first_identifier,
+                second_identifier,
+                exc,
+            )
+            return None
+
+        engine = get_engine()
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO relationships (item_id, assoc_id, assoc_type)
+                    VALUES (:item_id, :assoc_id, :assoc_type)
+                    """
+                ),
+                {
+                    "item_id": normalized_first,
+                    "assoc_id": normalized_second,
+                    "assoc_type": int(assoc_type),
+                },
+            )
+
+        return get_item_relationship(first_identifier, second_identifier)
+
+    # An existing row already captures the relationship. Update the stored association bits
+    # without disturbing the persisted direction, regardless of the caller's ordering.
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE relationships
+                SET assoc_type = :assoc_type
+                WHERE id = :relationship_id
+                """
+            ),
+            {
+                "assoc_type": int(assoc_type),
+                "relationship_id": existing.get("id"),
+            },
+        )
+
+    # Refresh from the database to return the most current representation.
+    return get_item_relationship(existing.get("item_id"), existing.get("assoc_id"))
+
 def _synchronize_pinned_relationships(
     engine: Engine,
     *,
