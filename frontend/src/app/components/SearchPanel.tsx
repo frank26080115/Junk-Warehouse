@@ -649,6 +649,19 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
       const isLost = Boolean((row as any).is_lost);
       const isStaging = Boolean((row as any).is_staging);
       const isConsumable = Boolean((row as any).is_consumable);
+      const reminderSource = (row as any).date_reminder;
+      const reminderDate = coerceToDate(reminderSource);
+      let isReminderOverdue = false;
+      if (reminderDate) {
+        // Treat the reminder as overdue whenever the current time is equal to or later than the stored reminder moment.
+        const reminderTime = reminderDate.getTime();
+        if (Number.isFinite(reminderTime)) {
+          const nowTime = Date.now();
+          if (nowTime >= reminderTime) {
+            isReminderOverdue = true;
+          }
+        }
+      }
 
       if (isCollection) {
         emojiParts.push("🗃️");
@@ -663,6 +676,10 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
       }
       if (isStaging) {
         emojiParts.push("⏳");
+      }
+      if (isReminderOverdue) {
+        // The reminder clock helps draw attention to entries whose reminder date has already passed.
+        emojiParts.push("⏰");
       }
       // === Consumable emoji logic START ===
       if (isConsumable) {
