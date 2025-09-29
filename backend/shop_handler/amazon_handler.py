@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import Dict, List, Optional
 
+
 from lxml import html as lxml_html
 
 from shop_handler import ShopHandler
@@ -16,9 +17,9 @@ class AmazonHandler(ShopHandler):
         "Amazon",
     )
     ORDER_NUMBER_REGEX = re.compile(r"(?i)order\s*[#:]*\s*(\d{3}-\d{7}-\d{7})")
-    TOTAL_ROW_REGEX = re.compile(r"(?i)\btotal\b")
     PRICE_REGEX = re.compile(r"\$\s*[0-9][0-9,]*\.?[0-9]{0,2}")
     QUANTITY_REGEX = re.compile(r"(?i)quantity\s*:\s*([0-9][0-9,]*)")
+    TOTAL_ROW_REGEX = re.compile(r"(?i)^total\s+\$\s?[0-9][0-9,]*\.[0-9]{2}$")
     ASIN_IN_URL_REGEX = re.compile(
         r"/dp/([A-Z0-9]{10})(?:[/?]|$)",
         re.IGNORECASE,
@@ -53,7 +54,6 @@ class AmazonHandler(ShopHandler):
             return []
 
         # Perform the network lookups only after a winning strategy has been selected.
-        session = requests.Session()
         enriched_items: List[Dict[str, str]] = []
         seen_urls: set[str] = set()
 
@@ -64,7 +64,6 @@ class AmazonHandler(ShopHandler):
                 continue
 
             final_url, final_name, description, product_code = self._fetch_remote_details(
-                session,
                 base_url,
                 base_name,
             )
@@ -101,31 +100,124 @@ class AmazonHandler(ShopHandler):
         return enriched_items
 
     def _guess_items_strategy_one(self) -> List[Dict[str, str]]:
-        """Original table-driven strategy that walks invoice rows until totals appear."""
+        """Original table-driven strategy updated to honor the strict invoice end marker."""
         candidates: List[Dict[str, str]] = []
         seen_urls: set[str] = set()
-        reached_total_row = False
 
-        for row in self.sanitized_root.xpath(".//tr"):
-            if reached_total_row:
+        # Identify the terminating table row whose text matches the strict invoice total pattern and contains no
+        # nested tables. Everything that follows this row in document order is considered
+        # advertising noise and must be ignored.
+        cutoff_row: Optional[lxml_html.HtmlElement] = None
+        for potential_row in self.sanitized_root.xpath(".//tr"):
+            if self._is_total_row(potential_row):
+                cutoff_row = potential_row
                 break
 
-            row_text = self._normalize_whitespace(row.text_content())
-            if row_text and self._is_total_row(row_text):
-                reached_total_row = True
-                break
+        # Collect anchors in document order stopping when the cutoff row is reached. If the
+        # terminating row is absent we conservatively examine every anchor in the document.
+        relevant_anchors: List[lxml_html.HtmlElement] = []
+        if cutoff_row is None:
+            relevant_anchors = [anchor for anchor in self.sanitized_root.xpath(".//a")]
+        else:
+            for node in self.sanitized_root.iter():
+                if node is cutoff_row:
+                    break
+                if isinstance(getattr(node, "tag", None), str) and node.tag.lower() == "a":
+                    relevant_anchors.append(node)
 
-            for cell in row.xpath(".//td"):
-                candidate = self._extract_candidate_from_cell(cell)
-                if candidate is None:
+        for anchor in relevant_anchors:
+            # Ascend until we reach the containing table cell so that we can inspect the layout
+            # context surrounding the product link.
+            td_element: Optional[lxml_html.HtmlElement] = None
+            ancestor = anchor
+            while ancestor is not None:
+                ancestor = ancestor.getparent()
+                if ancestor is None:
+                    break
+                if isinstance(getattr(ancestor, "tag", None), str) and ancestor.tag.lower() == "td":
+                    td_element = ancestor
+                    break
+
+            if td_element is None:
+                continue
+
+            # Continue walking upward until we locate the parent table element.
+            table_element: Optional[lxml_html.HtmlElement] = None
+            ancestor = td_element
+            while ancestor is not None:
+                ancestor = ancestor.getparent()
+                if ancestor is None:
+                    break
+                if isinstance(getattr(ancestor, "tag", None), str) and ancestor.tag.lower() == "table":
+                    table_element = ancestor
+                    break
+
+            if table_element is None:
+                continue
+
+            # Use consistent document depth measurements so the product cell and any candidate quantity
+            # cell must sit at the same structural level within the invoice table.
+            # Measure the table cell depth relative to the document root so we can compare it against
+            # any quantity cells found within the same table structure.
+            td_depth_from_root = self._depth_from_root(td_element)
+
+            matching_quantity_cell_found = False
+            for quantity_cell in table_element.xpath(".//td[not(descendant::table)]"):
+                quantity_text = self._normalize_whitespace(quantity_cell.text_content())
+                if not quantity_text or not quantity_text.lower().startswith("quantity"):
                     continue
 
-                url_key = candidate.get("url", "")
-                if not url_key or url_key in seen_urls:
+                if self._depth_from_root(quantity_cell) == td_depth_from_root:
+                    matching_quantity_cell_found = True
+                    break
+
+            if not matching_quantity_cell_found:
+                continue
+
+            candidate = self._extract_candidate_from_cell(td_element)
+
+            if candidate is None:
+                # As a fallback, build a minimal candidate directly from the anchor. This keeps the
+                # extraction resilient even if pricing or quantity information is not embedded
+                # inside the same cell as the product link.
+                anchor_name = self._normalize_whitespace(anchor.text_content())
+                anchor_href = (anchor.get("href") or "").strip()
+                if not anchor_name or not anchor_href:
                     continue
 
-                candidates.append(candidate)
-                seen_urls.add(url_key)
+                candidate = {
+                    "name": anchor_name,
+                    "url": anchor_href,
+                }
+
+                dp_match = self.ASIN_IN_URL_REGEX.search(anchor_href)
+                if dp_match:
+                    candidate["product_code"] = dp_match.group(1).upper()
+
+                # Attempt to locate pricing and quantity details by inspecting the nearest table row.
+                row_element: Optional[lxml_html.HtmlElement] = td_element
+                while row_element is not None and (
+                    not isinstance(getattr(row_element, "tag", None), str)
+                    or row_element.tag.lower() != "tr"
+                ):
+                    row_element = row_element.getparent()
+
+                if row_element is not None:
+                    row_text = self._normalize_whitespace(row_element.text_content())
+                    price_match = self.PRICE_REGEX.search(row_text)
+                    if price_match:
+                        candidate["price"] = price_match.group(0).replace(" ", "")
+
+                    quantity_match = self.QUANTITY_REGEX.search(row_text)
+                    if quantity_match:
+                        candidate["quantity"] = quantity_match.group(1).replace(",", "")
+
+            url_key = candidate.get("url", "")
+            if not url_key or url_key in seen_urls:
+                continue
+
+            candidates.append(candidate)
+            seen_urls.add(url_key)
 
         return candidates
 
@@ -239,7 +331,7 @@ class AmazonHandler(ShopHandler):
         # Amazon listings that sometimes include massive embedded tables or scripts.
         parser = lxml_html.HTMLParser(huge_tree=True)
         try:
-            remote_root = lxml_html.fromstring(html_content)
+            remote_root = lxml_html.fromstring(html_content, parser=parser)
         except Exception:
             return final_url, final_name, description, product_code
 
@@ -273,12 +365,31 @@ class AmazonHandler(ShopHandler):
 
         return final_url, final_name, description, product_code
 
-    def _is_total_row(self, text: str) -> bool:
-        if not text:
+    def _is_total_row(self, row: lxml_html.HtmlElement) -> bool:
+        if row is None or not isinstance(getattr(row, "tag", None), str):
             return False
-        if not self.TOTAL_ROW_REGEX.search(text):
+        if row.tag.lower() != "tr":
             return False
-        return bool(self.PRICE_REGEX.search(text))
+
+        normalized_text = self._normalize_whitespace(row.text_content())
+        if not self.TOTAL_ROW_REGEX.fullmatch(normalized_text):
+            return False
+
+        # Ensure the terminating row does not contain additional nested tables. The business logic
+        # treats everything beyond this point as advertisement content that must be ignored.
+        if row.xpath(".//table"):
+            return False
+
+        return True
+
+    def _depth_from_root(self, element: lxml_html.HtmlElement) -> int:
+        """Return how many ancestors separate an element from the document root."""
+        depth = 0
+        current = element
+        while current is not None and current.getparent() is not None:
+            depth += 1
+            current = current.getparent()
+        return depth
 
     def _normalize_whitespace(self, value: Optional[str]) -> str:
         if not value:
