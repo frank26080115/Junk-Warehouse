@@ -130,7 +130,7 @@ def to_bool(value: Any) -> bool:
             return False
         if normalized in {"1", "true", "yes", "on", 't', 'y'}:
             return True
-        if normalized in {"0", "false", "no", "off", 'f'}:
+        if normalized in {"0", "false", "no", "off", 'f', 'n'}:
             return False
     # Fallback to Python's general truthiness rules for everything else.
     return bool(value)
