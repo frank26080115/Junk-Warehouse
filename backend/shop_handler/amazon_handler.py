@@ -19,17 +19,94 @@ class AmazonHandler(ShopHandler):
     TOTAL_ROW_REGEX = re.compile(r"(?i)\btotal\b")
     PRICE_REGEX = re.compile(r"\$\s*[0-9][0-9,]*\.?[0-9]{0,2}")
     QUANTITY_REGEX = re.compile(r"(?i)quantity\s*:\s*([0-9][0-9,]*)")
+    ASIN_IN_URL_REGEX = re.compile(
+        r"/dp/([A-Z0-9]{10})(?:[/?]|$)",
+        re.IGNORECASE,
+    )  # Amazon Standard Identification Numbers (ASINs) are 10 characters.
+    REQUEST_HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+        ),
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,"
+            "image/webp,image/apng,*/*;q=0.8"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    }
     REQUEST_TIMEOUT = 15
 
     def guess_items(self) -> List[Dict[str, str]]:
-        items: List[Dict[str, str]] = []
+        """Run the available extraction strategies and return the richest result set."""
+        candidates_from_invoice_tables = self._guess_items_strategy_one()
+        candidates_from_anchor_scan = self._guess_items_strategy_two()
+
+        # Compare the candidate lists so that the more complete option is used.
+        best_candidates = candidates_from_invoice_tables
+        if len(candidates_from_anchor_scan) > len(candidates_from_invoice_tables):
+            best_candidates = candidates_from_anchor_scan
+
+        if not best_candidates:
+            return []
+
+        # Perform the network lookups only after a winning strategy has been selected.
+        session = requests.Session()
+        enriched_items: List[Dict[str, str]] = []
+        seen_urls: set[str] = set()
+
+        for candidate in best_candidates:
+            base_url = candidate.get("url", "").strip()
+            base_name = candidate.get("name", "").strip()
+            if not base_url or not base_name:
+                continue
+
+            final_url, final_name, description, product_code = self._fetch_remote_details(
+                session,
+                base_url,
+                base_name,
+            )
+
+            item: Dict[str, str] = {
+                "name": final_name,
+                "url": final_url,
+                "source": self.POSSIBLE_NAMES[0],
+            }
+
+            fallback_product_code = candidate.get("product_code")
+            if product_code is None and fallback_product_code:
+                product_code = fallback_product_code
+            if product_code:
+                item["product_code"] = product_code
+
+            price_value = candidate.get("price", "")
+            if price_value:
+                item["price"] = price_value
+
+            quantity_value = candidate.get("quantity", "")
+            if quantity_value:
+                item["quantity"] = quantity_value
+
+            description_value = description or candidate.get("description", "")
+            if description_value:
+                item["description"] = description_value
+
+            url_key = item.get("url", "")
+            if url_key and url_key not in seen_urls:
+                enriched_items.append(item)
+                seen_urls.add(url_key)
+
+        return enriched_items
+
+    def _guess_items_strategy_one(self) -> List[Dict[str, str]]:
+        """Original table-driven strategy that walks invoice rows until totals appear."""
+        candidates: List[Dict[str, str]] = []
         seen_urls: set[str] = set()
         reached_total_row = False
 
-        # Walk every table row in order so that we can stop once the "Total" row is
-        # encountered. Amazon invoices often contain long marketing blocks after the
-        # totals section and we want to completely ignore those distractions.
-        for row in self.sanitized_root.xpath('.//tr'):
+        for row in self.sanitized_root.xpath(".//tr"):
             if reached_total_row:
                 break
 
@@ -38,23 +115,60 @@ class AmazonHandler(ShopHandler):
                 reached_total_row = True
                 break
 
-            # Examine every table cell because the invoice mixes product details and
-            # promotional content within the same table structure.
-            for cell in row.xpath('.//td'):
-                item = self._extract_item_from_cell(cell)
-                if item is None:
+            for cell in row.xpath(".//td"):
+                candidate = self._extract_candidate_from_cell(cell)
+                if candidate is None:
                     continue
 
-                url_key = item.get('url', '')
+                url_key = candidate.get("url", "")
                 if not url_key or url_key in seen_urls:
                     continue
 
-                items.append(item)
+                candidates.append(candidate)
                 seen_urls.add(url_key)
 
-        return items
+        return candidates
 
-    def _extract_item_from_cell(
+    def _guess_items_strategy_two(self) -> List[Dict[str, str]]:
+        """Secondary strategy scanning every anchor for Amazon product detail links."""
+        candidates: List[Dict[str, str]] = []
+        seen_urls: set[str] = set()
+
+        for anchor in self.sanitized_root.xpath(".//a"):
+            href = (anchor.get("href") or "").strip()
+            text = self._normalize_whitespace(anchor.text_content())
+            if not href or not text:
+                continue
+
+            dp_match = self.ASIN_IN_URL_REGEX.search(href)
+            if dp_match is None:
+                continue
+
+            if "amazon.com" not in href.lower():
+                # Convert relative or regional links into canonical amazon.com URLs.
+                normalized_path = href.lstrip("/")
+                if normalized_path:
+                    href = f"https://amazon.com/{normalized_path}"
+                else:
+                    href = "https://amazon.com/"
+
+            product_code = dp_match.group(1).upper()  # Normalize ASIN to uppercase for consistency.
+
+            if href in seen_urls:
+                continue
+
+            candidate: Dict[str, str] = {
+                "name": text,
+                "url": href,
+                "product_code": product_code,
+            }
+
+            candidates.append(candidate)
+            seen_urls.add(href)
+
+        return candidates
+
+    def _extract_candidate_from_cell(
         self,
         cell: lxml_html.HtmlElement,
     ) -> Optional[Dict[str, str]]:
@@ -63,7 +177,7 @@ class AmazonHandler(ShopHandler):
             return None
 
         text_content = self._normalize_whitespace(cell.text_content())
-        if 'quantity:' not in text_content.lower():
+        if "quantity:" not in text_content.lower():
             return None
 
         price_match = self.PRICE_REGEX.search(text_content)
@@ -71,42 +185,31 @@ class AmazonHandler(ShopHandler):
             return None
 
         quantity_match = self.QUANTITY_REGEX.search(text_content)
-        quantity_text = quantity_match.group(1).replace(',', '') if quantity_match else ''
+        quantity_text = quantity_match.group(1).replace(",", "") if quantity_match else ""
 
         base_name = self._normalize_whitespace(anchor.text_content())
-        base_url = (anchor.get('href') or '').strip()
+        base_url = (anchor.get("href") or "").strip()
         if not base_name or not base_url:
             return None
 
-        # Capture extra metadata from the remote details call, including any detected product code.
-        final_url, final_name, description, product_code = self._fetch_remote_details(base_url, base_name)
-
-        item: Dict[str, str] = {
-            'name': final_name,
-            'url': final_url,
-            'source': self.POSSIBLE_NAMES[0],
+        candidate: Dict[str, str] = {
+            "name": base_name,
+            "url": base_url,
+            "price": price_match.group(0).replace(" ", ""),
         }
 
-        if product_code is not None:
-            # Only attach the product code when it has been confidently extracted.
-            item['product_code'] = product_code
-
-        if price_match:
-            item['price'] = price_match.group(0).replace(' ', '')
         if quantity_text:
-            item['quantity'] = quantity_text
-        if description:
-            item['description'] = description
+            candidate["quantity"] = quantity_text
 
-        return item
+        return candidate
 
     def _find_amazon_anchor(self, cell: lxml_html.HtmlElement) -> Optional[lxml_html.HtmlElement]:
-        for anchor in cell.xpath('.//a'):
-            href = (anchor.get('href') or '').strip()
+        for anchor in cell.xpath(".//a"):
+            href = (anchor.get("href") or "").strip()
             text = self._normalize_whitespace(anchor.text_content())
             if not href or not text:
                 continue
-            if 'amazon.com' not in href.lower():
+            if "amazon.com" not in href.lower():
                 continue
             return anchor
         return None
@@ -118,8 +221,7 @@ class AmazonHandler(ShopHandler):
     ) -> tuple[str, str, str, Optional[str]]:
         final_url = url
         final_name = fallback_name
-        description = ''
-        # Default product code to None until we discover a valid value.
+        description = ""
         product_code: Optional[str] = None
 
         if not url:
@@ -146,7 +248,6 @@ class AmazonHandler(ShopHandler):
             updated_name = self._normalize_whitespace(title_element[0].text_content())
             if updated_name:
                 final_name = updated_name
-                # TODO: Use backend.automation.ai_helpers to shorten verbose Amazon product titles into concise names.
 
         feature_sections = remote_root.xpath('.//div[@id="feature-bullets"]')
         if feature_sections:
@@ -158,9 +259,7 @@ class AmazonHandler(ShopHandler):
 
             if bullet_lines:
                 description = "\r\n".join(bullet_lines)
-                # TODO: Use backend.automation.ai_helpers to summarize the feature bullets into a concise paragraph without marketing fluff.
 
-        # Normalize the URL so that it always points at amazon.com without duplicate slashes.
         if 'amazon.com' not in final_url.lower():
             normalized_path = final_url.lstrip('/')
             if normalized_path:
@@ -168,10 +267,9 @@ class AmazonHandler(ShopHandler):
             else:
                 final_url = 'https://amazon.com/'
 
-        # Attempt to extract the product code from the normalized URL when present.
-        dp_match = re.search(r"/dp/([^/?]+)", final_url)
+        dp_match = self.ASIN_IN_URL_REGEX.search(final_url)
         if dp_match:
-            product_code = dp_match.group(1)
+            product_code = dp_match.group(1).upper()  # Normalize ASIN to uppercase for consistency.
 
         return final_url, final_name, description, product_code
 
