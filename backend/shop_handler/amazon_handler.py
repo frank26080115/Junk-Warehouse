@@ -40,35 +40,92 @@ class AmazonHandler(ShopHandler):
         seen_urls: set[str] = set()
         session = requests.Session()
 
-        reached_total_row = False
-
-        # Walk every table row in order so that we can stop once the "Total" row is
-        # encountered. Amazon invoices often contain long marketing blocks after the
-        # totals section and we want to completely ignore those distractions.
-        for row in self.sanitized_root.xpath('.//tr'):
-            if reached_total_row:
-                break
-
-            row_text = self._normalize_whitespace(row.text_content())
-            if row_text and self._is_total_row(row_text):
-                reached_total_row = True
-                break
-
-            # Examine every table cell because the invoice mixes product details and
-            # promotional content within the same table structure.
-            for cell in row.xpath('.//td'):
-                item = self._extract_item_from_cell(session, cell)
-                if item is None:
-                    continue
-
-                url_key = item.get('url', '')
-                if not url_key or url_key in seen_urls:
-                    continue
-
-                items.append(item)
-                seen_urls.add(url_key)
+        # Perform a depth-first traversal so that we inspect nested tables that
+        # frequently appear inside Amazon invoices. The traversal helper returns
+        # True when the totals section has been reached, allowing us to halt early
+        # once we have moved past the actual product listings.
+        self._walk_rows_recursively(
+            node=self.sanitized_root,
+            session=session,
+            seen_urls=seen_urls,
+            collected_items=items,
+        )
 
         return items
+
+    def _walk_rows_recursively(
+        self,
+        node: lxml_html.HtmlElement,
+        session: requests.Session,
+        seen_urls: set[str],
+        collected_items: List[Dict[str, str]],
+        reached_total: bool = False,
+    ) -> bool:
+        # Iterate over direct children instead of using a global .//tr search so
+        # that nested tables are explored in a controlled order.
+        for child in node.iterchildren():
+            if reached_total:
+                break
+
+            if not isinstance(child, lxml_html.HtmlElement):
+                continue
+
+            tag_name = (child.tag or '').lower()
+            if tag_name == 'tr':
+                reached_total = self._process_row(
+                    row=child,
+                    session=session,
+                    seen_urls=seen_urls,
+                    collected_items=collected_items,
+                )
+                continue
+
+            reached_total = self._walk_rows_recursively(
+                node=child,
+                session=session,
+                seen_urls=seen_urls,
+                collected_items=collected_items,
+                reached_total=reached_total,
+            )
+
+        return reached_total
+
+    def _process_row(
+        self,
+        row: lxml_html.HtmlElement,
+        session: requests.Session,
+        seen_urls: set[str],
+        collected_items: List[Dict[str, str]],
+    ) -> bool:
+        # Normalize the full row text to detect when we have reached the totals
+        # section of the document.
+        row_text = self._normalize_whitespace(row.text_content())
+        if row_text and self._is_total_row(row_text):
+            return True
+
+        # Analyze every table cell so that product metadata is captured even when
+        # Amazon places descriptive content alongside the pricing information.
+        for cell in row.xpath('./td | ./th'):
+            item = self._extract_item_from_cell(session, cell)
+            if item is not None:
+                url_key = item.get('url', '')
+                if url_key and url_key not in seen_urls:
+                    collected_items.append(item)
+                    seen_urls.add(url_key)
+
+            # Recursively inspect the cell for nested rows. Amazon often nests
+            # additional tables within cells, so we continue walking deeper until
+            # the totals section is encountered.
+            reached_total = self._walk_rows_recursively(
+                node=cell,
+                session=session,
+                seen_urls=seen_urls,
+                collected_items=collected_items,
+            )
+            if reached_total:
+                return True
+
+        return False
 
     def _extract_item_from_cell(
         self,
