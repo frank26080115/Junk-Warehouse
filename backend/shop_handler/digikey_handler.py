@@ -212,8 +212,11 @@ class DigiKeyHandler(ShopHandler):
         if not html_text:
             return ''
 
+        # Configure the HTML parser with huge_tree support so exceptionally large
+        # DigiKey product pages can be processed without triggering parser guards.
+        parser = lxml_html.HTMLParser(huge_tree=True)
         try:
-            root = lxml_html.fromstring(html_text)
+            root = lxml_html.fromstring(html_text, parser=parser)
         except Exception:
             return ''
 

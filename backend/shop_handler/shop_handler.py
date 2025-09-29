@@ -63,11 +63,14 @@ class ShopHandler:
         if not isinstance(raw_html, str) or not raw_html.strip():
             raise ValueError("HTML content must be a non-empty string.")
 
+        # Use an HTML parser configured for extremely large documents so that gigantic
+        # invoices never trigger lxml's security limits during ingestion.
+        parser = lxml_html.HTMLParser(huge_tree=True)
         try:
-            root = lxml_html.fromstring(raw_html)
+            root = lxml_html.fromstring(raw_html, parser=parser)
         except Exception as exc:
             log.debug("Falling back to HTML fragment parsing during ingestion: %s", exc)
-            root = lxml_html.fragment_fromstring(raw_html, create_parent=True)
+            root = lxml_html.fragment_fromstring(raw_html, create_parent=True, parser=parser)
 
         sanitized_root = sanitize_dom(root)
         sanitized_html = lxml_html.tostring(sanitized_root, encoding="unicode")

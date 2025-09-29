@@ -133,6 +133,9 @@ class AmazonHandler(ShopHandler):
 
         final_url = resolved_url or final_url
 
+        # Parse the product page with a huge-tree capable parser to handle very large
+        # Amazon listings that sometimes include massive embedded tables or scripts.
+        parser = lxml_html.HTMLParser(huge_tree=True)
         try:
             remote_root = lxml_html.fromstring(html_content)
         except Exception:
