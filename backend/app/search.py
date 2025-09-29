@@ -495,13 +495,22 @@ def _execute_text_search_query(
     """
 
     smart_directive = False
+    suggest_directive = False
     mergewaiting_directive = False
     normalized_query = (query_text or "").strip()
     if isinstance(search_query, SearchQuery):
         # Delegate to SearchQuery.has_directive so validation remains consistent
         # and so this function does not need to inspect directive internals.
         smart_directive = search_query.has_directive("smart")
+        suggest_directive = search_query.has_directive("suggest")
         mergewaiting_directive = search_query.has_directive("mergewaiting")
+    if suggest_directive and normalized_query != "*":
+        return search_items_by_embeddings(
+            search_query,
+            session=session,
+            limit=default_limit,
+            embedding_table="container_embeddings",
+        )
     if smart_directive and normalized_query != "*":
         return search_items_by_embeddings(search_query, session=session, limit=default_limit)
 
@@ -761,6 +770,42 @@ def search_items(
                     return _finalize_item_rows([augment_item_dict(sid_rows[0])])
 
     query_text = sq.query_text or raw_query  # fallback just in case
+
+    if target_uuid and sq.has_directive("suggest"):
+        # Quietly amplify the query text with context from the target item so container suggestions
+        # inherit meaningful signals from the item currently being viewed.
+        try:
+            normalized_target = str(uuid.UUID(str(target_uuid)))
+        except (ValueError, AttributeError, TypeError):
+            normalized_target = None
+
+        if normalized_target:
+            try:
+                engine = get_engine()
+                target_row = get_db_item_as_dict(engine, "items", normalized_target)
+            except (LookupError, ValueError):
+                target_row = None
+            except Exception:
+                log.exception("Failed to load target item %s for suggest directive", normalized_target)
+                target_row = None
+
+            if target_row:
+                supplemental_bits: List[str] = []
+                for field_name in ("name", "metatext"):
+                    field_value = target_row.get(field_name)
+                    if isinstance(field_value, str):
+                        trimmed_value = field_value.strip()
+                        if trimmed_value:
+                            supplemental_bits.append(trimmed_value)
+
+                if supplemental_bits:
+                    invisible_hint = " ".join(supplemental_bits)
+                    combined_text = f"{(query_text or '').strip()} {invisible_hint}".strip()
+                    query_text = combined_text
+                    sq.query_text = combined_text
+                    if isinstance(getattr(sq, "query_terms", None), list):
+                        sq.query_terms = list(sq.query_terms) + invisible_hint.split()
+
     normalized_query_text = (query_text or "").strip()
     mergewaiting_directive = sq.has_directive("mergewaiting")
     merge_ready_ids: Optional[set[str]] = None

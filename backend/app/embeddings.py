@@ -12,6 +12,7 @@ from sqlalchemy import MetaData, Table, select, text
 from sqlalchemy.orm import Session
 
 from .db import get_engine, get_db_item_as_dict, get_or_create_session
+from .assoc_helper import CONTAINMENT_BIT
 from .helpers import normalize_pg_uuid
 from .search_expression import SearchQuery, get_sql_order_and_limit
 
@@ -99,6 +100,93 @@ def update_embeddings_for_item(item_or_identifier: Union[Mapping[str, Any], str,
             values_with_id["item_id"] = item_uuid
             conn.execute(embeddings_table.insert().values(**values_with_id))
 
+    # Containers and collections have an additional embedding that summarizes their contents.
+    if item_dict.get("is_container") or item_dict.get("is_collection"):
+        try:
+            update_embeddings_for_container(item_dict)
+        except Exception:
+            log.exception("Failed to update container embeddings for item %s", item_uuid)
+
+
+def update_embeddings_for_container(item_or_identifier: Union[Mapping[str, Any], str, uuid.UUID]) -> None:
+    """Rebuild the container_embeddings entry for the requested container item."""
+
+    try:
+        item_dict = _resolve_item_dict(item_or_identifier)
+    except Exception:
+        log.exception("Failed to resolve container for embedding update")
+        raise
+
+    container_uuid = uuid.UUID(str(item_dict.get("id")))
+    engine = get_engine()
+
+    # Start with the container's own descriptive text so the embedding reflects the container itself.
+    text_fragments: List[str] = []
+    base_text = _collect_item_text(item_dict)
+    if base_text:
+        text_fragments.append(base_text)
+
+    containment_sql = text(
+        """
+        SELECT assoc_id
+        FROM relationships
+        WHERE item_id = :container_id
+          AND (COALESCE(assoc_type, 0) & :containment_bit) <> 0
+        """
+    )
+
+    related_ids: List[str] = []
+    seen_related: set[str] = set()
+    with engine.begin() as conn:
+        rows = conn.execute(
+            containment_sql,
+            {"container_id": container_uuid, "containment_bit": CONTAINMENT_BIT},
+        ).scalars().all()
+        for identifier in rows:
+            if not identifier:
+                continue
+            normalized = str(identifier)
+            if normalized == str(container_uuid):
+                continue
+            if normalized in seen_related:
+                continue
+            related_ids.append(normalized)
+            seen_related.add(normalized)
+
+    # Gather names and metatext for each contained item. Descriptions are intentionally ignored.
+    for related_id in related_ids:
+        try:
+            related_item = get_db_item_as_dict(engine, "items", related_id)
+        except (LookupError, ValueError):
+            continue
+        if related_item.get("is_deleted"):
+            continue
+        trimmed_item = dict(related_item)
+        trimmed_item["description"] = ""
+        fragment = _collect_item_text(trimmed_item)
+        if fragment:
+            text_fragments.append(fragment)
+
+    text_input = " ".join(fragment for fragment in text_fragments if fragment)
+    vector = _build_embedding_vector(text_input)
+
+    metadata = MetaData()
+    embeddings_table = Table("container_embeddings", metadata, autoload_with=engine)
+    values = {"model": EMBEDDING_MODEL_NAME, "vec": vector}
+
+    with engine.begin() as conn:
+        existing = conn.execute(
+            select(embeddings_table.c.item_id).where(embeddings_table.c.item_id == container_uuid).limit(1)
+        ).first()
+        if existing:
+            conn.execute(
+                embeddings_table.update().where(embeddings_table.c.item_id == container_uuid).values(**values)
+            )
+        else:
+            values_with_id = dict(values)
+            values_with_id["item_id"] = container_uuid
+            conn.execute(embeddings_table.insert().values(**values_with_id))
+
 
 def _extract_query_text(query: Union[SearchQuery, str]) -> str:
     if isinstance(query, SearchQuery):
@@ -114,6 +202,7 @@ def search_items_by_embeddings(
     *,
     session: Optional[Session] = None,
     limit: Optional[int] = None,
+    embedding_table: str = "item_embeddings",
 ) -> List[Mapping[str, Any]]:
     query_text = _extract_query_text(search_query_or_text)
     if not query_text:
@@ -125,6 +214,12 @@ def search_items_by_embeddings(
         session = get_or_create_session()
 
     default_limit = DEFAULT_EMBEDDING_LIMIT if limit is None else max(int(limit), 1)
+
+    # Validate the caller-supplied table so the dynamically constructed SQL remains safe.
+    if embedding_table not in {"item_embeddings", "container_embeddings"}:
+        raise ValueError("Unsupported embedding table requested")
+
+    embedding_alias = "ie" if embedding_table == "item_embeddings" else "ce"
 
     table_name = "items"
     alias = "i"
@@ -167,9 +262,9 @@ def search_items_by_embeddings(
     sql_lines = [
         "SELECT",
         f"    {alias}.*,",
-        "    (ie.vec <=> :query_vec) AS embedding_distance",
-        "FROM item_embeddings AS ie",
-        f"JOIN {table_name} AS {alias} ON {alias}.id = ie.item_id",
+        f"    ({embedding_alias}.vec <=> :query_vec) AS embedding_distance",
+        f"FROM {embedding_table} AS {embedding_alias}",
+        f"JOIN {table_name} AS {alias} ON {alias}.id = {embedding_alias}.item_id",
     ]
 
     if where_clauses:
