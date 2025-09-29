@@ -14,7 +14,7 @@ from .user_login import login_required
 from .db import deduplicate_rows, get_db_item_as_dict, get_engine, get_or_create_session
 from .search_expression import SearchQuery, get_sql_order_and_limit
 from .embeddings import search_items_by_embeddings
-from .helpers import fuzzy_levenshtein_at_most, normalize_pg_uuid, _to_bool
+from .helpers import fuzzy_levenshtein_at_most, normalize_pg_uuid, to_bool
 from .items import augment_item_dict, get_item_thumbnails
 from .slugify import slugify
 
@@ -902,7 +902,7 @@ def search_api():
         data = request.get_json(silent=True) or {}
         raw_query = (data.get("q") or "").strip()
         target_uuid = data.get("target_uuid") or None
-        include_thumbnails = _to_bool(data.get("include_thumbnails"))
+        include_thumbnails = to_bool(data.get("include_thumbnails"))
 
         # Context can include request info if you want it later
         ctx = {

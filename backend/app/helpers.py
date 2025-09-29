@@ -121,7 +121,7 @@ def normalize_pg_uuid(s: str) -> str:
     cleaned = cleaned.lower()
     return f"{cleaned[0:8]}-{cleaned[8:12]}-{cleaned[12:16]}-{cleaned[16:20]}-{cleaned[20:32]}"
 
-def _to_bool(value: Any) -> bool:
+def to_bool(value: Any) -> bool:
     """Convert loose truthy and falsey values into a strict bool."""
     # Strings get special handling so user-supplied query parameters behave predictably.
     if isinstance(value, str):
