@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 import requests
 from lxml import html as lxml_html
 
-from .shop_handler import ShopHandler
+from shop_handler import ShopHandler
 
 
 class AmazonHandler(ShopHandler):

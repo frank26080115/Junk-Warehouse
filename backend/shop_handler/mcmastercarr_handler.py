@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Dict, List
 
-from .shop_handler import ShopHandler
+from shop_handler import ShopHandler
 
 
 class McMasterCarrHandler(ShopHandler):

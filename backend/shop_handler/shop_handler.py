@@ -76,9 +76,9 @@ class ShopHandler:
 
     @classmethod
     def _get_specific_handlers(cls) -> Sequence[Type["ShopHandler"]]:
-        from .amazon_handler import AmazonHandler
-        from .digikey_handler import DigiKeyHandler
-        from .mcmastercarr_handler import McMasterCarrHandler
+        from amazon_handler import AmazonHandler
+        from digikey_handler import DigiKeyHandler
+        from mcmastercarr_handler import McMasterCarrHandler
 
         return (AmazonHandler, DigiKeyHandler, McMasterCarrHandler)
 
