@@ -21,6 +21,7 @@ from .slugify import slugify
 from sqlalchemy import bindparam, text
 
 from app.config_loader import get_pin_open_expiry_hours
+from .assoc_helper import MERGE_BIT
 
 log = logging.getLogger(__name__)
 
@@ -383,6 +384,97 @@ def append_code_matched_items(
     destination[:0] = hydrated_rows
 
 
+def _collect_merge_ready_item_ids(session: Any) -> set[str]:
+    """Return identifiers for items that participate in a merge-marked relationship."""
+
+    merge_sql = text(
+        """
+        SELECT DISTINCT candidate_id
+        FROM (
+            SELECT r.item_id AS candidate_id
+            FROM relationships AS r
+            WHERE (COALESCE(r.assoc_type, 0) & :merge_bit) <> 0
+            UNION ALL
+            SELECT r.assoc_id AS candidate_id
+            FROM relationships AS r
+            WHERE (COALESCE(r.assoc_type, 0) & :merge_bit) <> 0
+        ) AS related_candidates
+        WHERE candidate_id IS NOT NULL
+        """
+    )
+
+    merge_ids = session.execute(merge_sql, {"merge_bit": MERGE_BIT}).scalars().all()
+    normalized_ids: set[str] = set()
+    for identifier in merge_ids:
+        if not identifier:
+            continue
+        normalized_ids.add(str(identifier))
+    return normalized_ids
+
+
+def _execute_mergewaiting_inventory_query(
+    session: Any,
+    criteria: Mapping[str, Any],
+    *,
+    table_name: str,
+    alias: str,
+    select_clause: str,
+    default_order_templates: Optional[Iterable[str]],
+    default_limit: int,
+) -> List[Mapping[str, Any]]:
+    """Execute a merge-aware listing that respects existing filters and limits."""
+
+    where_clauses: List[str] = []
+    touched_columns = criteria.get("touched_columns") or set()
+    if "is_deleted" not in touched_columns:
+        where_clauses.append(f"NOT {alias}.is_deleted")
+    for condition in criteria.get("where", []):
+        if condition:
+            where_clauses.append(condition)
+
+    order_by_clauses, limit_value, offset_value = get_sql_order_and_limit(
+        criteria,
+        alias=alias,
+        use_textsearch=False,
+        rank_expression=None,
+        default_order_templates=default_order_templates,
+        default_limit=default_limit,
+    )
+
+    sql_lines = [
+        "SELECT",
+        f"    DISTINCT {select_clause}",
+        f"FROM {table_name} AS {alias}",
+        "JOIN relationships AS rel",
+        f"    ON (rel.item_id = {alias}.id OR rel.assoc_id = {alias}.id)",
+        "WHERE",
+        "    (COALESCE(rel.assoc_type, 0) & :merge_bit) <> 0",
+    ]
+
+    for condition in where_clauses:
+        sql_lines.append(f"    AND {condition}")
+
+    if order_by_clauses:
+        sql_lines.append("ORDER BY")
+        for idx, clause in enumerate(order_by_clauses):
+            prefix = "    " if idx == 0 else "    , "
+            sql_lines.append(f"{prefix}{clause}")
+    if limit_value is not None:
+        sql_lines.append("LIMIT :limit")
+    if offset_value:
+        sql_lines.append("OFFSET :offset")
+
+    sql_params: Dict[str, Any] = {"merge_bit": MERGE_BIT}
+    sql_params.update(criteria.get("params", {}))
+    if limit_value is not None:
+        sql_params["limit"] = limit_value
+    if offset_value:
+        sql_params["offset"] = offset_value
+
+    merge_sql = text("\n".join(sql_lines))
+    return session.execute(merge_sql, sql_params).mappings().all()
+
+
 def _execute_text_search_query(
     session: Any,
     search_query: SearchQuery,
@@ -403,11 +495,14 @@ def _execute_text_search_query(
     """
 
     smart_directive = False
+    mergewaiting_directive = False
+    normalized_query = (query_text or "").strip()
     if isinstance(search_query, SearchQuery):
         # Delegate to SearchQuery.has_directive so validation remains consistent
         # and so this function does not need to inspect directive internals.
         smart_directive = search_query.has_directive("smart")
-    if smart_directive and (query_text or "").strip() != "*":
+        mergewaiting_directive = search_query.has_directive("mergewaiting")
+    if smart_directive and normalized_query != "*":
         return search_items_by_embeddings(search_query, session=session, limit=default_limit)
 
     criteria = search_query.get_sql_conditionals()
@@ -418,7 +513,25 @@ def _execute_text_search_query(
     select_clause = (select_template or "{alias}.*").format(alias=alias)
     textsearch_expr = (textsearch_template or "{alias}.textsearch").format(alias=alias)
 
-    normalized_query = (query_text or "").strip()
+    if (
+        mergewaiting_directive
+        and table_name == default_table
+        and table_name == "items"
+        and normalized_query in {"", "*"}
+    ):
+        # When the mergewaiting directive is paired with an empty or wildcard
+        # query we gather every merge-ready item while still honouring the
+        # caller's filter configuration.
+        return _execute_mergewaiting_inventory_query(
+            session,
+            criteria,
+            table_name=table_name,
+            alias=alias,
+            select_clause=select_clause,
+            default_order_templates=default_order_templates,
+            default_limit=default_limit,
+        )
+
     use_textsearch = bool(normalized_query and normalized_query != "*")
 
     ts_query_expr = None
@@ -648,6 +761,13 @@ def search_items(
                     return _finalize_item_rows([augment_item_dict(sid_rows[0])])
 
     query_text = sq.query_text or raw_query  # fallback just in case
+    normalized_query_text = (query_text or "").strip()
+    mergewaiting_directive = sq.has_directive("mergewaiting")
+    merge_ready_ids: Optional[set[str]] = None
+    if mergewaiting_directive and normalized_query_text and normalized_query_text != "*":
+        # Preload the identifiers of merge-ready items so we can filter the
+        # standard text-search results without complicating the SQL builder.
+        merge_ready_ids = _collect_merge_ready_item_ids(session)
 
     rows = _execute_text_search_query(
         session,
@@ -660,6 +780,10 @@ def search_items(
 
     for row in rows:
         row_dict = dict(row)
+        if merge_ready_ids is not None:
+            identifier = row_dict.get("id") or row_dict.get("pk")
+            if identifier is None or str(identifier) not in merge_ready_ids:
+                continue
         if sq.evaluate(row_dict):
             results.append(augment_item_dict(row_dict))
 
@@ -676,6 +800,24 @@ def search_items(
             results,
             augment_row=augment_item_dict,
         )
+
+    if mergewaiting_directive:
+        # Fetch the merge-aware identifier set if we skipped it earlier (for
+        # example, when the query text was empty and the SQL branch handled the
+        # heavy lifting) so pinned items and other additions still honor the
+        # directive.
+        if merge_ready_ids is None:
+            merge_ready_ids = _collect_merge_ready_item_ids(session)
+
+        active_merge_ids = merge_ready_ids if merge_ready_ids else set()
+        filtered_results: List[Dict[str, Any]] = []
+        for item in results:
+            identifier = item.get("pk") or item.get("id")
+            if identifier is None:
+                continue
+            if str(identifier) in active_merge_ids:
+                filtered_results.append(item)
+        results[:] = filtered_results
 
     # --- RELATION / TARGET-UUID ENHANCEMENT ---
     # This is intentionally *not* an else-if. The base search above should always take place.
