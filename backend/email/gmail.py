@@ -3,20 +3,16 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from sqlalchemy import text
 
-from automation.gmail_proc import (
-    extract_text_content,
-    get_full_message,
-    gmail_date_x_days_query,
-    list_message_ids,
-)
 from backend.app.config_loader import get_private_dir_path
 from app.db import get_engine, update_db_row_by_dict, unwrap_db_result
 
@@ -125,6 +121,88 @@ class GmailChecker(EmailChecker):
         return cleaned
 
     @staticmethod
+    def gmail_date_x_days_query(days: int) -> str:
+        """Build a Gmail search query that limits the lookback window."""
+        today_local = datetime.now().date()
+        after_date = (today_local - timedelta(days=days)).strftime("%Y/%m/%d")
+        query_parts: List[str] = []
+        # We scope the query to the inbox for consistency with previous automation behavior.
+        query_parts.append("in:inbox")
+        query_parts.append(f"newer_than:{days}d")
+        query_parts.append(f"after:{after_date}")
+        return " ".join(query_parts)
+
+    @staticmethod
+    def list_message_ids(service: Any, query: str, max_page: int = 10) -> List[str]:
+        """List Gmail message identifiers for the provided query."""
+        message_ids: List[str] = []
+        request = service.users().messages().list(userId="me", q=query, maxResults=100)
+        page_count = 0
+        while request is not None and page_count < max_page:
+            response = request.execute()
+            message_ids.extend([
+                message.get("id")
+                for message in response.get("messages", [])
+                if message.get("id")
+            ])
+            request = service.users().messages().list_next(
+                previous_request=request,
+                previous_response=response,
+            )
+            page_count += 1
+        return message_ids
+
+    @staticmethod
+    def get_full_message(service: Any, message_id: str) -> Dict[str, Any]:
+        """Fetch the full Gmail message resource for downstream processing."""
+        return service.users().messages().get(userId="me", id=message_id, format="full").execute()
+
+    @staticmethod
+    def _decode_part_body(part: Dict[str, Any]) -> str:
+        """Decode a MIME part body using the Gmail base64 encoding."""
+        data = part.get("body", {}).get("data")
+        if not data:
+            return ""
+        try:
+            raw_bytes = base64.urlsafe_b64decode(data.encode("utf-8"))
+        except Exception:
+            log.debug("Failed to decode MIME part data; returning an empty string.")
+            return ""
+        try:
+            return raw_bytes.decode("utf-8", errors="replace")
+        except Exception:
+            return raw_bytes.decode("latin-1", errors="replace")
+
+    @staticmethod
+    def _extract_text_content(payload: Dict[str, Any]) -> Dict[str, str]:
+        """Extract plain text and HTML content from the Gmail payload structure."""
+        if not payload:
+            return {"text": "", "html": ""}
+        mime_type = payload.get("mimeType", "")
+        if mime_type.startswith("text/"):
+            body = GmailChecker._decode_part_body(payload)
+            return {
+                "text": body if mime_type == "text/plain" else "",
+                "html": body if mime_type == "text/html" else "",
+            }
+        text_content = ""
+        html_content = ""
+        for part in payload.get("parts", []) or []:
+            part_type = part.get("mimeType", "")
+            if part_type == "text/plain" and not text_content:
+                text_content = GmailChecker._decode_part_body(part)
+            elif part_type == "text/html" and not html_content:
+                html_content = GmailChecker._decode_part_body(part)
+            elif part.get("parts"):
+                nested = GmailChecker._extract_text_content(part)
+                if not text_content:
+                    text_content = nested.get("text", "")
+                if not html_content:
+                    html_content = nested.get("html", "")
+        return {"text": text_content, "html": html_content}
+
+
+    @staticmethod
     def _handle_gmail_message(msg: Dict[str, Any]) -> Dict[str, Any]:
         """Process a Gmail API message and create or update invoice rows."""
         headers = {
@@ -134,7 +212,7 @@ class GmailChecker(EmailChecker):
         subject = headers.get("subject", "")
         message_id = msg.get("id") or ""
         normalized_id = GmailChecker._normalize_gmail_id(message_id)
-        content = extract_text_content(msg.get("payload", {}))
+        content = GmailChecker._extract_text_content(msg.get("payload", {}))
         html_body = content.get("html") or ""
         text_body = content.get("text") or ""
         email_date = EmailChecker.parse_email_date(headers.get("date"))
@@ -199,7 +277,7 @@ class GmailChecker(EmailChecker):
                 reason="Gmail credentials are not configured.",
             )
         lookback_days = EmailChecker.determine_lookback_days("gmail_seen")
-        query = gmail_date_x_days_query(lookback_days)
+        query = GmailChecker.gmail_date_x_days_query(lookback_days)
         try:
             service = GmailChecker._build_gmail_service()
         except Exception as exc:
@@ -215,7 +293,7 @@ class GmailChecker(EmailChecker):
                 error=str(exc),
             )
         try:
-            message_ids = list_message_ids(service, query)
+            message_ids = GmailChecker.list_message_ids(service, query)
         except Exception as exc:
             log.exception("Unable to list Gmail messages for query %s", query)
             return EmailChecker.build_summary(
@@ -241,7 +319,7 @@ class GmailChecker(EmailChecker):
         processed: List[Dict[str, Any]] = []
         for mid in new_ids:
             try:
-                msg = get_full_message(service, mid)
+                msg = GmailChecker.get_full_message(service, mid)
             except Exception as exc:
                 log.exception("Failed to fetch Gmail message %s", mid)
                 processed.append(
