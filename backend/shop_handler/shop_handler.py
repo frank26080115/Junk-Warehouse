@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import logging
 import re
@@ -13,11 +14,15 @@ from lxml import html as lxml_html
 
 if __name__ == "__main__" and __package__ is None:
     # Allow the module to be executed directly from the command line by ensuring that
-    # the backend directory (which contains the "automation" package) is importable.
+    # both the backend directory (which contains helper modules such as "automation")
+    # and the project root (which exposes the "backend" package) are importable.
     current_file = Path(__file__).resolve()
     backend_root = current_file.parent.parent
+    project_root = backend_root.parent
     if str(backend_root) not in sys.path:
         sys.path.insert(0, str(backend_root))
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
 
 from automation.html_dom_finder import analyze as analyze_dom_report, sanitize_dom
 from automation.html_invoice_helpers import parse_unknown_html_or_mhtml
@@ -76,11 +81,35 @@ class ShopHandler:
 
     @classmethod
     def _get_specific_handlers(cls) -> Sequence[Type["ShopHandler"]]:
-        from .amazon_handler import AmazonHandler
-        from .digikey_handler import DigiKeyHandler
-        from .mcmastercarr_handler import McMasterCarrHandler
+        handler_specs: Sequence[Tuple[str, str]] = (
+            ("amazon_handler", "AmazonHandler"),
+            ("digikey_handler", "DigiKeyHandler"),
+            ("mcmastercarr_handler", "McMasterCarrHandler"),
+        )
 
-        return (AmazonHandler, DigiKeyHandler, McMasterCarrHandler)
+        handler_package = cls._determine_handler_package()
+        resolved_handlers: List[Type[ShopHandler]] = []
+
+        for module_name, class_name in handler_specs:
+            module_path = f"{handler_package}.{module_name}"
+            module = importlib.import_module(module_path)
+            handler_type = getattr(module, class_name)
+            resolved_handlers.append(handler_type)
+
+        return tuple(resolved_handlers)
+
+    @staticmethod
+    def _determine_handler_package() -> str:
+        """Determine the package path used when loading store specific handlers."""
+
+        # When the module is imported as part of the backend package, __package__ is set
+        # accordingly (for example, "backend.shop_handler"). When the module is executed
+        # directly for offline testing, __package__ will be empty, so we fall back to the
+        # explicit package name. This dual-path approach keeps imports working in both
+        # deployment and standalone execution contexts.
+        if __package__:
+            return __package__
+        return "backend.shop_handler"
 
     @classmethod
     def _count_name_hits(cls, haystack: str) -> int:
