@@ -128,9 +128,9 @@ def to_bool(value: Any) -> bool:
         normalized = value.strip().lower()
         if not normalized:
             return False
-        if normalized in {"1", "true", "yes", "on"}:
+        if normalized in {"1", "true", "yes", "on", 't', 'y'}:
             return True
-        if normalized in {"0", "false", "no", "off"}:
+        if normalized in {"0", "false", "no", "off", 'f'}:
             return False
     # Fallback to Python's general truthiness rules for everything else.
     return bool(value)
