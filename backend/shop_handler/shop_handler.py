@@ -65,7 +65,7 @@ class ShopHandler:
 
         # Use an HTML parser configured for extremely large documents so that gigantic
         # invoices never trigger lxml's security limits during ingestion.
-        parser = lxml_html.HTMLParser(huge_tree=True)
+        parser = lxml_html.HTMLParser(huge_tree=True, recover=True)
         try:
             root = lxml_html.fromstring(raw_html, parser=parser)
         except Exception as exc:
