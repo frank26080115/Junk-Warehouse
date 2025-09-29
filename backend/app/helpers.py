@@ -5,6 +5,89 @@ import re
 import unicodedata
 from typing import Any, Union
 
+from lxml import etree
+
+# Regular expression used to collapse any run of whitespace characters into a single
+# standard space so that human readable spacing is preserved even after stripping
+# control characters or formatting hints out of the DOM text nodes.
+DOM_WHITESPACE_NORMALIZATION_PATTERN = re.compile(r"\s+")
+
+# Explicit tuple of non-breaking space characters that frequently appear in scraped
+# invoice text. We normalize these to ordinary spaces to avoid accidental word
+# concatenation when the sanitized text is consumed downstream.
+DOM_NON_BREAKING_SPACE_CHARACTERS = ("\u00A0", "\u202F")
+
+
+def clean_dom_text_fragment(fragment: str) -> str:
+    """Return a whitespace-normalized version of a raw DOM text fragment.
+
+    The sanitization performed here mirrors the private helper that previously lived
+    inside ``backend.shop_handler.shop_handler``. It removes invisible formatting
+    characters, replaces any variant of space separators with ordinary spaces, and
+    leaves all other characters untouched. Callers should still collapse repeated
+    spaces afterwards to ensure consistent layout in the final output string.
+    """
+
+    if not fragment:
+        return ""
+
+    sanitized_characters: list[str] = []
+    for character in fragment:
+        unicode_category = unicodedata.category(character)
+
+        # Remove any invisible formatting characters (category Cf) so that control
+        # hints such as left-to-right marks do not interfere with textual searches.
+        if unicode_category == "Cf":
+            continue
+
+        # Convert every Unicode space separator (category starting with "Z") and the
+        # hand-picked non-breaking variants into a normal space character. This keeps
+        # words separated without preserving the original, sometimes inconsistent,
+        # spacing.
+        if unicode_category.startswith("Z") or character in DOM_NON_BREAKING_SPACE_CHARACTERS:
+            sanitized_characters.append(" ")
+            continue
+
+        sanitized_characters.append(character)
+
+    return "".join(sanitized_characters)
+
+
+def lxml_cell_text(node: etree._Element) -> str:
+    """Produce human-friendly text content for the provided lxml element.
+
+    The default ``text_content`` helper from ``lxml`` often collapses spacing or
+    retains stray formatting characters. This implementation mimics the sanitizer
+    that powers :meth:`ShopHandler._get_sanitized_text`, gathering text from every
+    descendant, normalizing the fragments individually, and finally collapsing any
+    repeated whitespace.
+    """
+
+    if not isinstance(node, etree._Element):
+        raise TypeError("lxml_cell_text expects an lxml.etree._Element instance.")
+
+    text_segments: list[str] = []
+
+    # Iterate across every visible text node. ``itertext`` preserves document order
+    # which keeps the resulting text aligned with how a person would read it.
+    for fragment in node.itertext():
+        if not fragment:
+            continue
+
+        cleaned_fragment = clean_dom_text_fragment(fragment)
+        cleaned_fragment = DOM_WHITESPACE_NORMALIZATION_PATTERN.sub(" ", cleaned_fragment)
+        cleaned_fragment = cleaned_fragment.strip()
+
+        if cleaned_fragment:
+            text_segments.append(cleaned_fragment)
+
+    if not text_segments:
+        return ""
+
+    joined_text = " ".join(text_segments)
+    normalized_text = DOM_WHITESPACE_NORMALIZATION_PATTERN.sub(" ", joined_text).strip()
+    return normalized_text
+
 def normalize_pg_uuid(s: str) -> str:
     """
     Normalize an input string into a PostgreSQL UUID (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx).
