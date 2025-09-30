@@ -213,9 +213,6 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
   const [isActionBusy, setIsActionBusy] = useState<boolean>(false);
   const [hasQueried, setHasQueried] = useState<boolean>(false);
   const [selectedPks, setSelectedPks] = useState<Set<string>>(new Set());
-  const [relationDirection, setRelationDirection] = useState<
-    "forward" | "reverse"
-  >("forward");
   const [associationBits, setAssociationBits] = useState<number>(
     CONTAINMENT_BIT,
   );
@@ -816,13 +813,12 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          table: normalizedTable,
-          target_uuid: targetUuid,
-          pks: ids,
-          association_type: associationBits,
-          direction: relationDirection,
-        }),
+          body: JSON.stringify({
+            table: normalizedTable,
+            target_uuid: targetUuid,
+            pks: ids,
+            association_type: associationBits,
+          }),
       });
       let payload: any = null;
       try {
@@ -868,7 +864,7 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
     } finally {
       setIsActionBusy(false);
     }
-  }, [associationBits, associationSummary, isInvoiceMode, normalizedTable, query, relationDirection, runSearch, selectedCount, selectedPks, targetUuid]);
+  }, [associationBits, associationSummary, isInvoiceMode, normalizedTable, query, runSearch, selectedCount, selectedPks, targetUuid]);
 
   const handleUnlinkAssociation = useCallback(async () => {
     if (!targetUuid || selectedCount === 0) {
@@ -881,12 +877,11 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
       const response = await fetch(endpoint, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          table: normalizedTable,
-          target_uuid: targetUuid,
-          pks: ids,
-          direction: relationDirection,
-        }),
+          body: JSON.stringify({
+            table: normalizedTable,
+            target_uuid: targetUuid,
+            pks: ids,
+          }),
       });
       let payload: any = null;
       try {
@@ -925,7 +920,7 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
     } finally {
       setIsActionBusy(false);
     }
-  }, [normalizedTable, query, relationDirection, runSearch, selectedCount, selectedPks, targetUuid]);
+  }, [normalizedTable, query, runSearch, selectedCount, selectedPks, targetUuid]);
 
   const resolveThumbnail = useCallback((row: SearchRow): string => {
     if (smallMode || normalizedTable !== "items") {
@@ -1170,25 +1165,6 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
                   </>
                 ) : (
                   <>
-                    <button
-                      type="button"
-                      className="btn btn-outline-secondary btn-sm"
-                      onClick={() =>
-                        setRelationDirection((prev) =>
-                          prev === "forward" ? "reverse" : "forward"
-                        )
-                      }
-                      disabled={isBusy}
-                      aria-pressed={relationDirection === "reverse"}
-                      title={
-                        relationDirection === "forward"
-                          ? "Link from selected entries to target"
-                          : "Link from target to selected entries"
-                      }
-                    >
-                      {relationDirection === "forward" ? "➡️" : "⬅️"}
-                    </button>
-
                     <div className="d-flex align-items-center gap-2">
                       {ALL_ASSOCIATION_BITS.map((bit) => {
                         const checked =

@@ -7,7 +7,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from flask import Blueprint, jsonify, request, current_app
-from sqlalchemy import text
+from sqlalchemy import text, bindparam
 from werkzeug.datastructures import FileStorage
 
 from automation.order_num_extract import extract_order_number, extract_order_number_and_url
@@ -17,6 +17,7 @@ from lxml import html as lxml_html
 from app.db import get_db_item_as_dict, get_engine, update_db_row_by_dict, unwrap_db_result
 from .user_login import login_required
 from .job_manager import get_job_manager
+from .helpers import normalize_pg_uuid
 
 from backend.email_utils.gmail import GmailChecker
 from backend.email_utils.imap import ImapChecker
@@ -593,3 +594,185 @@ def analyze_invoice_html() -> Any:
         return jsonify({"ok": False, "error": str(exc)}), 503
 
     return jsonify({"job_id": job_id})
+
+
+@bp.route("/invoicesassociations", methods=["POST"])
+@login_required
+def bulk_link_invoices_api() -> Any:
+    payload = request.get_json(silent=True) or {}
+    table_name = str(payload.get("table") or "invoices").strip().lower()
+    if table_name != "invoices":
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": "Only invoice associations are supported by this endpoint.",
+                }
+            ),
+            400,
+        )
+
+    target_uuid = payload.get("target_uuid")
+    if not target_uuid:
+        return jsonify({"ok": False, "error": "Missing target UUID."}), 400
+
+    try:
+        normalized_target = normalize_pg_uuid(str(target_uuid))
+    except Exception as exc:
+        log.debug("bulk_link_invoices_api: invalid target UUID %r: %s", target_uuid, exc)
+        return jsonify({"ok": False, "error": "Invalid target UUID."}), 400
+
+    raw_ids = payload.get("pks")
+    if not isinstance(raw_ids, list):
+        return jsonify({"ok": False, "error": "pks must be a list."}), 400
+
+    insert_sql = text(
+        """
+        INSERT INTO invoice_items (item_id, invoice_id)
+        VALUES (:item_id, :invoice_id)
+        ON CONFLICT DO NOTHING
+        """
+    )
+
+    linked: List[str] = []
+    with get_engine().begin() as conn:
+        for candidate in raw_ids:
+            try:
+                normalized_invoice = normalize_pg_uuid(str(candidate))
+            except Exception as exc:
+                log.debug(
+                    "bulk_link_invoices_api: skipping invalid invoice identifier %r: %s",
+                    candidate,
+                    exc,
+                )
+                continue
+
+            result = conn.execute(
+                insert_sql,
+                {"item_id": normalized_target, "invoice_id": normalized_invoice},
+            )
+            if result.rowcount and result.rowcount > 0:
+                linked.append(normalized_invoice)
+
+    return jsonify({"ok": True, "linked": len(linked), "invoices": linked})
+
+
+@bp.route("/invoicesassociations", methods=["DELETE"])
+@login_required
+def bulk_unlink_invoices_api() -> Any:
+    payload = request.get_json(silent=True) or {}
+    table_name = str(payload.get("table") or "invoices").strip().lower()
+    if table_name != "invoices":
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": "Only invoice associations are supported by this endpoint.",
+                }
+            ),
+            400,
+        )
+
+    target_uuid = payload.get("target_uuid")
+    if not target_uuid:
+        return jsonify({"ok": False, "error": "Missing target UUID."}), 400
+
+    try:
+        normalized_target = normalize_pg_uuid(str(target_uuid))
+    except Exception as exc:
+        log.debug("bulk_unlink_invoices_api: invalid target UUID %r: %s", target_uuid, exc)
+        return jsonify({"ok": False, "error": "Invalid target UUID."}), 400
+
+    raw_ids = payload.get("pks")
+    if not isinstance(raw_ids, list):
+        return jsonify({"ok": False, "error": "pks must be a list."}), 400
+
+    normalized_invoices: List[str] = []
+    for candidate in raw_ids:
+        try:
+            normalized_invoices.append(normalize_pg_uuid(str(candidate)))
+        except Exception as exc:
+            log.debug(
+                "bulk_unlink_invoices_api: skipping invalid invoice identifier %r: %s",
+                candidate,
+                exc,
+            )
+
+    if not normalized_invoices:
+        return jsonify({"ok": False, "error": "No valid invoice identifiers supplied."}), 400
+
+    delete_sql = text(
+        """
+        DELETE FROM invoice_items
+        WHERE item_id = :item_id
+          AND invoice_id IN :invoice_ids
+        """
+    ).bindparams(bindparam("invoice_ids", expanding=True))
+
+    with get_engine().begin() as conn:
+        result = conn.execute(
+            delete_sql,
+            {"item_id": normalized_target, "invoice_ids": normalized_invoices},
+        )
+
+    return jsonify(
+        {
+            "ok": True,
+            "removed": int(result.rowcount or 0),
+            "invoices": normalized_invoices,
+        }
+    )
+
+
+@bp.route("/invoicesbulkdelete", methods=["POST"])
+@login_required
+def bulk_delete_invoices_api() -> Any:
+    payload = request.get_json(silent=True) or {}
+    table_name = str(payload.get("table") or "invoices").strip().lower()
+    if table_name != "invoices":
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": "Only invoices can be deleted through this endpoint.",
+                }
+            ),
+            400,
+        )
+
+    raw_ids = payload.get("pks")
+    if not isinstance(raw_ids, list):
+        return jsonify({"ok": False, "error": "pks must be a list."}), 400
+
+    normalized_invoices: List[str] = []
+    for candidate in raw_ids:
+        try:
+            normalized_invoices.append(normalize_pg_uuid(str(candidate)))
+        except Exception as exc:
+            log.debug(
+                "bulk_delete_invoices_api: skipping invalid invoice identifier %r: %s",
+                candidate,
+                exc,
+            )
+
+    if not normalized_invoices:
+        return jsonify({"ok": False, "error": "No valid invoice identifiers supplied."}), 400
+
+    delete_sql = text(
+        """
+        UPDATE invoices
+        SET is_deleted = TRUE
+        WHERE id IN :invoice_ids
+        """
+    ).bindparams(bindparam("invoice_ids", expanding=True))
+
+    with get_engine().begin() as conn:
+        result = conn.execute(delete_sql, {"invoice_ids": normalized_invoices})
+
+    return jsonify(
+        {
+            "ok": True,
+            "deleted": int(result.rowcount or 0),
+            "invoices": normalized_invoices,
+        }
+    )
