@@ -18,7 +18,7 @@ class DigiKeyHandler(ShopHandler):
         "Digi Key",
         "DigiKey",
     )
-    ORDER_NUMBER_REGEX = re.compile(r"(?i)order\s*[#:]*\s*(\d{7,10})")
+    ORDER_NUMBER_REGEX = re.compile(r"(?i)\s*number\s*is\s*[#:]*\s*(\d{7,10})")
     PRODUCT_CODES_REGEX = re.compile(
         r"(?is)digikey\s*part\s*number\W*([A-Za-z0-9][A-Za-z0-9\-._/ ]{0,80})\W*manufacturer\s*part\s*number\W*([A-Za-z0-9][A-Za-z0-9\-._/ ]{0,80})"
     )
