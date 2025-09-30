@@ -56,7 +56,7 @@ class McMasterCarrHandler(ShopHandler):
                         table_is_valid = False
                         break
 
-                    description_text = cells[2].text_content().strip()
+                    description_text = cells[1].text_content().strip()
                     if not description_text:
                         table_is_valid = False
                         break
@@ -98,7 +98,7 @@ class McMasterCarrHandler(ShopHandler):
                 if not product_code or not href or product_code not in href:
                     continue
 
-                description_text = cells[2].text_content().strip()
+                description_text = cells[1].text_content().strip()
                 if not description_text:
                     continue
 
