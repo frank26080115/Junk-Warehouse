@@ -153,6 +153,29 @@ class EmailChecker:
         if html_body:
             try:
                 handler = ShopHandler.ingest_html(html_body)
+                # Immediately check whether a human already completed work for this shop/order pair so we never duplicate effort.
+                candidate_order_number = (order_number or handler.get_order_number() or "").strip()
+                shop_name = (handler.get_shop_name() or "").strip()
+                already_handled = False
+                if shop_name and candidate_order_number:
+                    try:
+                        already_handled = handler.has_already_been_handled(shop_name, candidate_order_number)
+                    except Exception:
+                        log.exception(
+                            "Unable to confirm whether %s order %s was already handled.",
+                            shop_name,
+                            candidate_order_number,
+                        )
+                if already_handled:
+                    # Provide a clear status so callers understand the invoice required no action.
+                    return {
+                        "order_number": candidate_order_number or None,
+                        "invoice_id": None,
+                        "invoice_error": None,
+                        "status": "already_processed",
+                    }
+                if candidate_order_number:
+                    order_number = candidate_order_number
                 auto_summary = handler.build_auto_summary()
             except Exception:
                 log.exception(
