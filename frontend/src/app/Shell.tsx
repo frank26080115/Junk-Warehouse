@@ -73,7 +73,7 @@ const Shell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
           }}
           className="px-2"
         >
-          <Navbar.Brand as={Link} to="/">Junk Warehouse</Navbar.Brand>
+          <Navbar.Brand as={Link} to="/">&#127968;Junk Warehouse</Navbar.Brand>
           <Navbar.Toggle aria-controls="nav" className="toggler-tight" />
           <Navbar.Collapse id="nav">
             <Nav className="me-auto">
