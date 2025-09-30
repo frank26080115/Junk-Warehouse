@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from flask import Blueprint, send_from_directory, abort, Response
 import logging
+from typing import Optional
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DIST_DIR = REPO_ROOT / "frontend" / "dist"
@@ -41,7 +42,7 @@ def overlay_root(path: str):
     if "." not in path:
         return send_from_directory(DIST_DIR, "index.html")
 
-    log.error(f"static server overlay_root 404 \"{path}\" -> \"{pub_path}\"")
+    log.error(f'static server overlay_root 404 "{path}" -> "{pub_path}"')
 
     # 4. Otherwise, not found
     abort(404)
@@ -50,15 +51,47 @@ def get_public_html_path() -> Path:
     key = "public_html_path"
     default_path = REPO_ROOT / "var" / "public_html"
 
-    configured_path = None
+    # Attempt to read a runtime override from Flask's config so development and
+    # production deployments can point at their own static directories.
+    configured_path: Optional[object] = None
     try:
         from flask import current_app
         configured_path = current_app.config.get(key)
-    except:
+    except Exception:
         from app.config_loader import load_app_config
         app_cfg = load_app_config()
-        configured_path = app_cfg[key]
+        configured_path = app_cfg.get(key)
 
-    if configured_path:
-        return Path(configured_path)
+    resolved_path: Optional[Path] = None
+
+    if isinstance(configured_path, Path):
+        resolved_path = configured_path
+    elif configured_path is not None:
+        try:
+            raw_text = str(configured_path).strip()
+        except Exception:
+            raw_text = ""
+
+        if raw_text:
+            # Support repo-relative hints like "<REPO_ROOT>/frontend/public" so the
+            # configuration file can stay portable between machines.
+            repo_hint = "<REPO_ROOT>/"
+            if raw_text.startswith(repo_hint):
+                relative_text = raw_text[len(repo_hint):]
+                resolved_path = (REPO_ROOT / relative_text).resolve()
+            else:
+                try:
+                    candidate = Path(raw_text).expanduser()
+                    if not candidate.is_absolute():
+                        candidate = (REPO_ROOT / raw_text).resolve()
+                    resolved_path = candidate
+                except Exception:
+                    log.warning(
+                        "Configured public_html_path value %r could not be interpreted; falling back to default.",
+                        configured_path,
+                        exc_info=True,
+                    )
+
+    if resolved_path:
+        return resolved_path
     return default_path
