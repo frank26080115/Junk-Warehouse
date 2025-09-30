@@ -32,14 +32,33 @@ class DigiKeyHandler(ShopHandler):
         items: List[Dict[str, str]] = []
         seen_codes: set[str] = set()
 
-        # Iterate over every table cell so we can inspect deeply nested structures.
-        for cell in self.sanitized_root.xpath('.//td'):
-            anchor = self._locate_anchor(cell)
-            if anchor is None:
+        # Visit every hyperlink so we can verify where it leads and how it is presented.
+        for anchor in self.sanitized_root.xpath('.//a'):
+            href = (anchor.get('href') or '').strip()
+            if not href:
                 continue
 
-            combined_text = cell.text_content() or ""
-            match = self.PRODUCT_CODES_REGEX.search(combined_text)
+            if not self._is_digikey_link(href):
+                # Ignore links that do not clearly target Digi-Key product pages.
+                continue
+
+            if anchor.xpath('.//img'):
+                # The caller asked for plain text anchors only, so images disqualify the candidate.
+                continue
+
+            product_name = self._normalize_whitespace(anchor.text_content())
+            if not product_name:
+                continue
+
+            table = self._find_enclosing_table(anchor)
+            if table is None:
+                continue
+
+            table_summary = self._normalize_whitespace(table.text_content())
+            if not table_summary:
+                continue
+
+            match = self.PRODUCT_CODES_REGEX.search(table_summary)
             if not match:
                 continue
 
@@ -50,11 +69,6 @@ class DigiKeyHandler(ShopHandler):
 
             product_identifier = f"{digikey_code};{manufacturer_code}"
             if product_identifier in seen_codes:
-                continue
-
-            product_name = self._normalize_whitespace(anchor.text_content())
-            href = (anchor.get('href') or '').strip()
-            if not product_name or not href:
                 continue
 
             final_url, description = self._retrieve_remote_details(href)
@@ -166,14 +180,38 @@ class DigiKeyHandler(ShopHandler):
 
         return final_items
 
-    def _locate_anchor(self, cell: lxml_html.HtmlElement) -> Optional[lxml_html.HtmlElement]:
-        """Find the first meaningful hyperlink inside the provided cell."""
-        for anchor in cell.xpath('.//a'):
-            text = self._normalize_whitespace(anchor.text_content())
-            href = (anchor.get('href') or '').strip()
-            if text and href:
-                return anchor
+    def _find_enclosing_table(self, element: lxml_html.HtmlElement) -> Optional[lxml_html.HtmlElement]:
+        """Walk up the tree until we locate the nearest table that wraps the element."""
+        current: Optional[lxml_html.HtmlElement] = element
+        while current is not None:
+            if current.tag and current.tag.lower() == 'table':
+                return current
+            current = current.getparent()
         return None
+
+    def _is_digikey_link(self, href: str) -> bool:
+        """Validate that the hyperlink clearly targets a Digi-Key domain."""
+        if not href:
+            return False
+
+        candidate = href.strip()
+
+        # Normalise schemeless URLs so that urlsplit can inspect the host name reliably.
+        if candidate.startswith('//'):
+            candidate = f'https:{candidate}'
+        elif candidate.startswith('www.'):
+            candidate = f'https://{candidate}'
+
+        try:
+            parts = urlsplit(candidate)
+        except Exception:
+            return False
+
+        host = parts.netloc.lower()
+        if not host:
+            return False
+
+        return host.endswith('digikey.com')
 
     def _clean_code(self, raw_code: Optional[str]) -> str:
         """Normalize product codes by trimming and collapsing whitespace."""
