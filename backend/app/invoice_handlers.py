@@ -18,8 +18,8 @@ from app.db import get_db_item_as_dict, get_engine, update_db_row_by_dict, unwra
 from .user_login import login_required
 from .job_manager import get_job_manager
 
-from backend.email.gmail import GmailChecker
-from backend.email.imap import ImapChecker
+from backend.email_utils.gmail import GmailChecker
+from backend.email_utils.imap import ImapChecker
 
 bp = Blueprint("invoice_handlers", __name__, url_prefix="/api")
 
