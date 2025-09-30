@@ -5,7 +5,7 @@ Avoid side effects here—no network, DB, or logging setup.
 """
 
 # Re-export so callers can do: from app import create_app (or app)
-from .main import create_app, app  # noqa: F401
+# from .main import create_app, app  # noqa: F401
 
 __all__ = ["create_app", "app"]
 
