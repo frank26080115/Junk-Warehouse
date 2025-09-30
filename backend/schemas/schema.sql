@@ -335,19 +335,6 @@ CREATE TABLE public.imail_seen (
 );
 
 
-CREATE TABLE public.digikey_seen (
-    id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),  -- random PK
-    salesorder   bytea NOT NULL,                              -- the salesorder number
-    date_seen    timestamptz NOT NULL DEFAULT now(),          -- when processed
-    invoice_id   uuid UNIQUE,                                 -- one-to-one to invoices.id (nullable)
-    CONSTRAINT digikey_seen_salesorder_uniq UNIQUE (salesorder),
-    CONSTRAINT digikey_seen_invoice_fk
-        FOREIGN KEY (invoice_id)
-        REFERENCES public.invoices (id)
-        ON DELETE SET NULL       -- relationship can be null; do not cascade delete
-);
-
-
 CREATE TABLE history (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
