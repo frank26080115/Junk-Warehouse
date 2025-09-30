@@ -853,6 +853,34 @@ def _autogen_items_task(context: Dict[str, Any]) -> Dict[str, Any]:
                         }
                     )
 
+            tagged_img_url = structured.get("img_url", "")
+            if tagged_img_url:
+                image_error: Optional[str] = None
+                try:
+                    item_uuid_obj = uuid.UUID(new_item_id)
+                    store_image_for_item(
+                            item_uuid=item_uuid_obj,
+                            source_url=tagged_img_url,
+                        )
+                except (ImageBadRequest, ImageUnsupportedMedia) as img_exc:
+                    image_error = str(img_exc)
+                    log.warning("Image handling rejected for %s: %s", display_value, img_exc)
+                except (RuntimeError, FileNotFoundError, ValueError) as img_exc:
+                    image_error = str(img_exc)
+                    log.warning("Image handling failed for %s: %s", display_value, img_exc)
+                except Exception as img_exc:
+                    image_error = str(img_exc)
+                    log.exception("Unexpected image handling failure for %s", display_value)
+
+                if image_error:
+                    failures.append(
+                        {
+                            "client_id": client_id,
+                            "display": f"{display_value} (image)",
+                            "error": f"Image processing failed: {image_error}",
+                        }
+                    )
+
             succeeded_ids.append(client_id or new_item_id)
         except Exception as exc:
             error_message = str(exc)
