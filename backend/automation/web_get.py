@@ -8,7 +8,7 @@ from typing import Tuple
 from urllib.parse import urlsplit
 
 import requests
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError
 
 
 def fetch_with_playwright(url: str, loop_count: int = 3, loop_timeout_ms: int = 500) -> Tuple[str, str, str]:
@@ -22,6 +22,31 @@ def fetch_with_playwright(url: str, loop_count: int = 3, loop_timeout_ms: int = 
         try:
             # Navigate to the requested URL and wait for the initial DOM content to be ready.
             page.goto(url, wait_until="domcontentloaded")
+            # Evaluate whether the retrieved document is a placeholder that immediately redirects using JavaScript.
+            redirect_wait_ms = max(loop_timeout_ms, 0)
+            if redirect_wait_ms == 0:
+                redirect_wait_ms = 500
+            initial_url_after_goto = page.url
+            try:
+                placeholder_is_blank = page.evaluate(
+                    "() => Boolean(document.body && document.body.innerText.trim().length === 0)"
+                )
+            except PlaywrightError:
+                # If evaluation fails we assume navigation is still in progress and fall back to waiting for it.
+                placeholder_is_blank = True
+            if placeholder_is_blank and initial_url_after_goto == url:
+                # Some landing pages provide a minimal shell that navigates away almost instantly.
+                # Waiting for the next navigation ensures that we capture the true destination content.
+                try:
+                    page.wait_for_event(
+                        "framenavigated",
+                        timeout=redirect_wait_ms,
+                        predicate=lambda frame: frame == page.main_frame() and frame.url != initial_url_after_goto,
+                    )
+                    page.wait_for_load_state("domcontentloaded", timeout=redirect_wait_ms)
+                except PlaywrightTimeoutError:
+                    # If the redirect never arrives we continue gracefully with whatever content is available.
+                    pass
             # The caller can request additional passes that progressively scroll and wait for extra network quietness.
             for _ in range(max(loop_count, 0)):
                 try:
@@ -41,8 +66,16 @@ def fetch_with_playwright(url: str, loop_count: int = 3, loop_timeout_ms: int = 
                     # Some pages never reach a fully idle network state; do not treat this as fatal.
                     pass
             # Capture the rendered HTML and the human-readable text content.
-            html_content = page.content()
-            text_content = page.evaluate("document.body.innerText")
+            try:
+                html_content = page.content()
+            except PlaywrightError:
+                # When navigation interrupts content extraction we fall back to an empty document snapshot.
+                html_content = ""
+            try:
+                text_content = page.evaluate("() => document.body ? document.body.innerText : """)
+            except PlaywrightError:
+                # Provide an empty string when Playwright cannot evaluate the body text due to a late navigation.
+                text_content = ""
             current_url = page.url
             return html_content, text_content, current_url
         finally:
