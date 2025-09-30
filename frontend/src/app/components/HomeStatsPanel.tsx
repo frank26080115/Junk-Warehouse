@@ -43,12 +43,13 @@ const STAT_LAYOUT_TOKENS = {
   labelEmojiSize: "1.15rem",
   labelEmojiSpacing: "0.3rem",
   numberPadding: "8px 12px",
-  numberMinimumWidth: 120,
+  numberMinimumWidth: 150,
   numberFontSize: "1.6rem",
   buttonPadding: "8px 12px",
   buttonFontSize: "1.4rem",
 };
 
+// NOTE: label is not displayed
 const STAT_DEFINITIONS: StatDefinition[] = [
   {
     id: "staging",
@@ -74,7 +75,7 @@ const STAT_DEFINITIONS: StatDefinition[] = [
   {
     id: "merges",
     label: "Merges Planned",
-    emoji: "🤝",
+    emoji: "⏳🤝",
     query: "* \mergewaiting",
     endpoint: "items",
   },
@@ -354,7 +355,7 @@ const HomeStatsPanel: React.FC<HomeStatsPanelProps> = ({ onItemQuerySelected }) 
               >
                 {definition.emoji}
               </span>
-              <span>{definition.label}</span>
+              {/* the label is not displayed */}
             </div>
             <div style={mergedNumberWrapperStyle} aria-live="polite">
               <span style={mergedNumberTextStyle}>{displayValue}</span>
