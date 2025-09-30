@@ -59,14 +59,14 @@ const STAT_DEFINITIONS: StatDefinition[] = [
     id: "staging",
     label: "Staging Items",
     emoji: "⏳",
-    query: "* ?is_staging=true",
+    query: "* ?is_staging",
     endpoint: "items",
   },
   {
     id: "lost",
     label: "Lost Items",
     emoji: "👻",
-    query: "* ?is_lost=true",
+    query: "* ?is_lost",
     endpoint: "items",
   },
   {
@@ -98,7 +98,7 @@ const STAT_DEFINITIONS: StatDefinition[] = [
     id: "invoices-pending",
     label: "Unprocessed Invoices",
     emoji: "⏳✉️",
-    query: "* ?has_been_processed=false",
+    query: "* ?!has_been_processed",
     endpoint: "invoices",
   },
   {
