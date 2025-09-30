@@ -57,7 +57,7 @@ const Shell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         bg="light"
         expand="lg"
         className="mb-3"
-        style=
+        style={
           {
             ['--bs-navbar-padding-y' as any]: '0.10rem',
             ['--bs-navbar-brand-padding-y' as any]: '0.05rem',
