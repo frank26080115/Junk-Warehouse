@@ -58,6 +58,20 @@ const HomePage: React.FC = () => {
     [navigate],
   );
 
+  const handleInvoiceSearchSuggestion = useCallback(
+    (query: string) => {
+      // Ensure the invoice search page opens with a meaningful query whenever uploads finish.
+      const sanitized = query.trim();
+      if (!sanitized) {
+        navigate("/ledger");
+        return;
+      }
+      const encoded = encodeURIComponent(sanitized);
+      navigate(`/ledger/${encoded}`);
+    },
+    [navigate],
+  );
+
   if (status === "loading") {
     return <p>Loading…</p>;
   }
@@ -87,7 +101,10 @@ const HomePage: React.FC = () => {
           refreshToken={searchRefreshToken}
         />
       </div>
-      <InvoiceUploaderPanel />
+      <InvoiceUploaderPanel
+        onSearchPrefillSuggested={handleInvoiceSearchSuggestion}
+        showCheckEmailPanel={false}
+      />
     </div>
   );
 };
