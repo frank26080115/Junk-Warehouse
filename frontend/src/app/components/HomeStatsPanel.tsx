@@ -184,6 +184,13 @@ const SEARCH_BUTTON_HOVER_STYLE: React.CSSProperties = {
   backgroundColor: "#e2e8f0",
 };
 
+// This subtle placeholder keeps the queue size entry aligned with the other statistics while
+// ensuring no visible icon is rendered for the passive button shell.
+const PASSIVE_BUTTON_PLACEHOLDER_ICON_STYLE: React.CSSProperties = {
+  display: "inline-block",
+  visibility: "hidden",
+};
+
 const numberStyleConfig: Record<
   NumberDisplayStyle,
   { wrapper: React.CSSProperties; text: React.CSSProperties }
@@ -427,12 +434,65 @@ const HomeStatsPanel: React.FC<HomeStatsPanelProps> = ({ onItemQuerySelected }) 
           : count != null
           ? count.toLocaleString()
           : "--";
-        const isButtonVisible = !definition.hideSearchButton;
-        const buttonStyle =
-          isButtonVisible && buttonHoverId === definition.id
-            ? { ...SEARCH_BUTTON_STYLE, ...SEARCH_BUTTON_HOVER_STYLE }
-            : SEARCH_BUTTON_STYLE;
+        // Determine whether this entry should render an active search control or a passive placeholder.
+        const shouldRenderInteractiveButton = !definition.hideSearchButton;
+        const shouldRenderPassiveButton =
+          definition.usesQueueSizeEndpoint && definition.hideSearchButton;
+        const shouldRenderButtonShell =
+          shouldRenderInteractiveButton || shouldRenderPassiveButton;
+
+        let buttonStyle: React.CSSProperties | undefined;
+        if (shouldRenderButtonShell) {
+          if (shouldRenderInteractiveButton && buttonHoverId === definition.id) {
+            buttonStyle = { ...SEARCH_BUTTON_STYLE, ...SEARCH_BUTTON_HOVER_STYLE };
+          } else if (shouldRenderInteractiveButton) {
+            buttonStyle = { ...SEARCH_BUTTON_STYLE };
+          } else {
+            buttonStyle = {
+              ...SEARCH_BUTTON_STYLE,
+              cursor: "default",
+              pointerEvents: "none",
+            };
+          }
+        }
+
+        if (shouldRenderButtonShell && !buttonStyle) {
+          // Fall back to the baseline styling if no branch configured the button so React receives a consistent object.
+          buttonStyle = { ...SEARCH_BUTTON_STYLE };
+        }
+
+        // Prepare the shared button label once so both accessibility paths remain consistent.
         const buttonLabel = `Search for ${definition.label.toLowerCase()}`;
+        const buttonProps: React.ButtonHTMLAttributes<HTMLButtonElement> = shouldRenderInteractiveButton
+          ? {
+              onMouseEnter: () => setButtonHoverId(definition.id),
+              onMouseLeave: () =>
+                setButtonHoverId((current) =>
+                  current === definition.id ? null : current,
+                ),
+              onFocus: () => setButtonHoverId(definition.id),
+              onBlur: () =>
+                setButtonHoverId((current) =>
+                  current === definition.id ? null : current,
+                ),
+              onClick: () => handleSearchClick(definition),
+              "aria-label": buttonLabel,
+              title: buttonLabel,
+            }
+          : {
+              disabled: true,
+              tabIndex: -1,
+              "aria-hidden": true,
+            };
+
+        // Provide a visually hidden magnifying glass when the button is passive so spacing stays uniform.
+        const buttonContent = shouldRenderInteractiveButton ? (
+          "🔍"
+        ) : (
+          <span aria-hidden="true" style={PASSIVE_BUTTON_PLACEHOLDER_ICON_STYLE}>
+            🔍
+          </span>
+        );
         return (
           <div key={definition.id} style={BASE_ITEM_STYLE}>
             <div style={LABEL_SECTION_STYLE} title={errorMessage || definition.label}>
@@ -449,19 +509,9 @@ const HomeStatsPanel: React.FC<HomeStatsPanelProps> = ({ onItemQuerySelected }) 
             <div style={mergedNumberWrapperStyle} aria-live="polite">
               <span style={mergedNumberTextStyle}>{displayValue}</span>
             </div>
-            {isButtonVisible ? (
-              <button
-                type="button"
-                onMouseEnter={() => setButtonHoverId(definition.id)}
-                onMouseLeave={() => setButtonHoverId((current) => (current === definition.id ? null : current))}
-                onFocus={() => setButtonHoverId(definition.id)}
-                onBlur={() => setButtonHoverId((current) => (current === definition.id ? null : current))}
-                onClick={() => handleSearchClick(definition)}
-                style={buttonStyle}
-                aria-label={buttonLabel}
-                title={buttonLabel}
-              >
-                🔍
+            {shouldRenderButtonShell ? (
+              <button type="button" style={buttonStyle} {...buttonProps}>
+                {buttonContent}
               </button>
             ) : null}
           </div>
