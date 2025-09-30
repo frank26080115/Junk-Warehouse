@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import re
 from typing import Dict, List, Optional
-
+import logging
 
 from lxml import html as lxml_html
 
 from shop_handler import ShopHandler
 from automation.web_get import fetch_with_requests
+from automation.ai_helpers import AiInstance
 
+log = logging.getLogger(__name__)
 
 class AmazonHandler(ShopHandler):
     """Handler for Amazon order invoices."""
@@ -63,10 +65,19 @@ class AmazonHandler(ShopHandler):
             if not base_url or not base_name:
                 continue
 
-            final_url, final_name, description, product_code = self._fetch_remote_details(
+            final_url, prod_name, description, product_code = self._fetch_remote_details(
                 base_url,
                 base_name,
             )
+
+            final_name = prod_name
+            ai = AiInstance("offline")
+
+            try:
+                ai_name = ai.query([prod_name], "You will be given the product name of an item available on Amazon, it will have some useless information that can be removed, reply with a concise name for the object without any SEO info or quantity information.")
+                final_name = ai_name or prod_name
+            except Exception as ex:
+                log.error(f"AI exception when summarizing Amazon product name: {ex!r}")
 
             item: Dict[str, str] = {
                 "name": final_name,
@@ -80,16 +91,21 @@ class AmazonHandler(ShopHandler):
             if product_code:
                 item["product_code"] = product_code
 
-            price_value = candidate.get("price", "")
-            if price_value:
-                item["price"] = price_value
+            #price_value = candidate.get("price", "")
+            #if price_value:
+            #    item["price"] = price_value
 
-            quantity_value = candidate.get("quantity", "")
-            if quantity_value:
-                item["quantity"] = quantity_value
+            #quantity_value = candidate.get("quantity", "")
+            #if quantity_value:
+            #    item["quantity"] = quantity_value
 
             description_value = description or candidate.get("description", "")
             if description_value:
+                try:
+                    ai_desc = ai.query([final_name, description_value], "You will be given the product name and description of an item available on Amazon. Summarize it down to a short paragraph about what the item is and what it is used for.")
+                    description_value = ai_desc or description_value
+                except Exception as ex:
+                    log.error(f"AI exception when summarizing Amazon product name: {ex!r}")
                 item["description"] = description_value
 
             url_key = item.get("url", "")
