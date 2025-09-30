@@ -49,7 +49,7 @@ const API_ENDPOINTS: Record<
   items: {
     search: "/api/search",
     delete: "/api/bulkdelete",
-    relate: "/api/associations",
+    relate: "/api/bulkassoc",
   },
   invoices: {
     search: "/api/searchinvoices",
