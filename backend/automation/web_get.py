@@ -11,7 +11,7 @@ import requests
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 
-def fetch_with_playwright(url: str, loop_count: int = 0, loop_timeout_ms: int = 1000) -> Tuple[str, str, str]:
+def fetch_with_playwright(url: str, loop_count: int = 3, loop_timeout_ms: int = 500) -> Tuple[str, str, str]:
     """Retrieve a web page using Playwright with optional scrolling loops."""
     # Use Playwright to launch a Chromium instance in headless mode so that we can render the page.
     # The context manager ensures that the browser is torn down cleanly even if an error is raised.

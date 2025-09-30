@@ -7,7 +7,7 @@ import logging
 from lxml import html as lxml_html
 
 from shop_handler import ShopHandler
-from automation.web_get import fetch_with_requests
+from automation.web_get import fetch_with_requests, fetch_with_playwright
 from automation.ai_helpers import AiInstance
 
 log = logging.getLogger(__name__)
