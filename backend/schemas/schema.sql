@@ -322,6 +322,19 @@ CREATE TABLE public.gmail_seen (
 );
 
 
+CREATE TABLE public.imail_seen (
+    id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),  -- random PK
+    email_uuid   bytea NOT NULL,                              -- the email's own 64 bit UID
+    date_seen    timestamptz NOT NULL DEFAULT now(),          -- when processed
+    invoice_id   uuid UNIQUE,                                 -- one-to-one to invoices.id (nullable)
+    CONSTRAINT imail_seen_email_uuid_uniq UNIQUE (email_uuid),
+    CONSTRAINT imail_seen_invoice_fk
+        FOREIGN KEY (invoice_id)
+        REFERENCES public.invoices (id)
+        ON DELETE SET NULL       -- relationship can be null; do not cascade delete
+);
+
+
 --
 -- Name: container_embeddings container_embeddings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --

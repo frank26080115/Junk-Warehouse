@@ -49,7 +49,7 @@ const API_ENDPOINTS: Record<
   items: {
     search: "/api/search",
     delete: "/api/bulkdelete",
-    relate: "/api/associations",
+    relate: "/api/bulkassoc",
   },
   invoices: {
     search: "/api/searchinvoices",
@@ -213,9 +213,6 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
   const [isActionBusy, setIsActionBusy] = useState<boolean>(false);
   const [hasQueried, setHasQueried] = useState<boolean>(false);
   const [selectedPks, setSelectedPks] = useState<Set<string>>(new Set());
-  const [relationDirection, setRelationDirection] = useState<
-    "forward" | "reverse"
-  >("forward");
   const [associationBits, setAssociationBits] = useState<number>(
     CONTAINMENT_BIT,
   );
@@ -649,6 +646,19 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
       const isLost = Boolean((row as any).is_lost);
       const isStaging = Boolean((row as any).is_staging);
       const isConsumable = Boolean((row as any).is_consumable);
+      const reminderSource = (row as any).date_reminder;
+      const reminderDate = coerceToDate(reminderSource);
+      let isReminderOverdue = false;
+      if (reminderDate) {
+        // Treat the reminder as overdue whenever the current time is equal to or later than the stored reminder moment.
+        const reminderTime = reminderDate.getTime();
+        if (Number.isFinite(reminderTime)) {
+          const nowTime = Date.now();
+          if (nowTime >= reminderTime) {
+            isReminderOverdue = true;
+          }
+        }
+      }
 
       if (isCollection) {
         emojiParts.push("🗃️");
@@ -663,6 +673,10 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
       }
       if (isStaging) {
         emojiParts.push("⏳");
+      }
+      if (isReminderOverdue) {
+        // The reminder clock helps draw attention to entries whose reminder date has already passed.
+        emojiParts.push("⏰");
       }
       // === Consumable emoji logic START ===
       if (isConsumable) {
@@ -799,13 +813,12 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          table: normalizedTable,
-          target_uuid: targetUuid,
-          pks: ids,
-          association_type: associationBits,
-          direction: relationDirection,
-        }),
+          body: JSON.stringify({
+            table: normalizedTable,
+            target_uuid: targetUuid,
+            pks: ids,
+            association_type: associationBits,
+          }),
       });
       let payload: any = null;
       try {
@@ -851,7 +864,7 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
     } finally {
       setIsActionBusy(false);
     }
-  }, [associationBits, associationSummary, isInvoiceMode, normalizedTable, query, relationDirection, runSearch, selectedCount, selectedPks, targetUuid]);
+  }, [associationBits, associationSummary, isInvoiceMode, normalizedTable, query, runSearch, selectedCount, selectedPks, targetUuid]);
 
   const handleUnlinkAssociation = useCallback(async () => {
     if (!targetUuid || selectedCount === 0) {
@@ -864,12 +877,11 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
       const response = await fetch(endpoint, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          table: normalizedTable,
-          target_uuid: targetUuid,
-          pks: ids,
-          direction: relationDirection,
-        }),
+          body: JSON.stringify({
+            table: normalizedTable,
+            target_uuid: targetUuid,
+            pks: ids,
+          }),
       });
       let payload: any = null;
       try {
@@ -908,7 +920,7 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
     } finally {
       setIsActionBusy(false);
     }
-  }, [normalizedTable, query, relationDirection, runSearch, selectedCount, selectedPks, targetUuid]);
+  }, [normalizedTable, query, runSearch, selectedCount, selectedPks, targetUuid]);
 
   const resolveThumbnail = useCallback((row: SearchRow): string => {
     if (smallMode || normalizedTable !== "items") {
@@ -928,7 +940,7 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
     <div className="border rounded-3 p-3 bg-white" style={panelStyle}>
       {hasTitle && (
         <div className="mb-3">
-          <h2 className="h5 mb-0">{displayedTitle}</h2>
+          <h1 className="h5 mb-0">{displayedTitle}</h1>
         </div>
       )}
 
@@ -1153,25 +1165,6 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
                   </>
                 ) : (
                   <>
-                    <button
-                      type="button"
-                      className="btn btn-outline-secondary btn-sm"
-                      onClick={() =>
-                        setRelationDirection((prev) =>
-                          prev === "forward" ? "reverse" : "forward"
-                        )
-                      }
-                      disabled={isBusy}
-                      aria-pressed={relationDirection === "reverse"}
-                      title={
-                        relationDirection === "forward"
-                          ? "Link from selected entries to target"
-                          : "Link from target to selected entries"
-                      }
-                    >
-                      {relationDirection === "forward" ? "➡️" : "⬅️"}
-                    </button>
-
                     <div className="d-flex align-items-center gap-2">
                       {ALL_ASSOCIATION_BITS.map((bit) => {
                         const checked =

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import logging
 import re
@@ -11,22 +12,37 @@ from typing import Any, ClassVar, Dict, List, Optional, Sequence, Tuple, Type
 from lxml import etree
 from lxml import html as lxml_html
 
-if __name__ == "__main__" and __package__ is None:
-    # Allow the module to be executed directly from the command line by ensuring that
-    # the backend directory (which contains the "automation" package) is importable.
-    current_file = Path(__file__).resolve()
-    backend_root = current_file.parent.parent
-    if str(backend_root) not in sys.path:
-        sys.path.insert(0, str(backend_root))
+# Compute canonical project paths so the automation helpers can always be located,
+# even when an IDE launches this module with a different working directory.
+current_file = Path(__file__).resolve()
+backend_root = current_file.parent.parent
+project_root = backend_root.parent
+
+def _ensure_module_search_paths() -> None:
+    """Ensure automation helpers remain importable in IDE and CLI contexts."""
+    for candidate in (backend_root, project_root):
+        candidate_str = str(candidate)
+        if candidate_str not in sys.path:
+            sys.path.insert(0, candidate_str)
+
+_ensure_module_search_paths()
 
 from automation.html_dom_finder import analyze as analyze_dom_report, sanitize_dom
 from automation.html_invoice_helpers import parse_unknown_html_or_mhtml
 from automation.order_num_extract import extract_order_number
 
-from app.helpers import dict_to_tagged_text
+from app.helpers import (
+    DOM_WHITESPACE_NORMALIZATION_PATTERN,
+    clean_dom_text_fragment,
+    dict_to_tagged_text,
+)
 from app.search import find_code_matched_items
 
 log = logging.getLogger(__name__)
+
+
+# Collapse any run of whitespace into a single regular space so repeated spacing never leaks through.
+WHITESPACE_NORMALIZATION_PATTERN = DOM_WHITESPACE_NORMALIZATION_PATTERN
 
 
 class ShopHandler:
@@ -47,11 +63,14 @@ class ShopHandler:
         if not isinstance(raw_html, str) or not raw_html.strip():
             raise ValueError("HTML content must be a non-empty string.")
 
+        # Use an HTML parser configured for extremely large documents so that gigantic
+        # invoices never trigger lxml's security limits during ingestion.
+        parser = lxml_html.HTMLParser(huge_tree=True, recover=True)
         try:
-            root = lxml_html.fromstring(raw_html)
+            root = lxml_html.fromstring(raw_html, parser=parser)
         except Exception as exc:
             log.debug("Falling back to HTML fragment parsing during ingestion: %s", exc)
-            root = lxml_html.fragment_fromstring(raw_html, create_parent=True)
+            root = lxml_html.fragment_fromstring(raw_html, create_parent=True, parser=parser)
 
         sanitized_root = sanitize_dom(root)
         sanitized_html = lxml_html.tostring(sanitized_root, encoding="unicode")
@@ -76,11 +95,39 @@ class ShopHandler:
 
     @classmethod
     def _get_specific_handlers(cls) -> Sequence[Type["ShopHandler"]]:
-        from .amazon_handler import AmazonHandler
-        from .digikey_handler import DigiKeyHandler
-        from .mcmastercarr_handler import McMasterCarrHandler
+        from amazon_handler import AmazonHandler
+        from digikey_handler import DigiKeyHandler
+        from mcmastercarr_handler import McMasterCarrHandler
 
-        return (AmazonHandler, DigiKeyHandler, McMasterCarrHandler)
+        handler_specs: Sequence[Tuple[str, str]] = (
+            ("amazon_handler", "AmazonHandler"),
+            ("digikey_handler", "DigiKeyHandler"),
+            ("mcmastercarr_handler", "McMasterCarrHandler"),
+        )
+
+        handler_package = cls._determine_handler_package()
+        resolved_handlers: List[Type[ShopHandler]] = []
+
+        for module_name, class_name in handler_specs:
+            module_path = f"{handler_package}.{module_name}"
+            module = importlib.import_module(module_path)
+            handler_type = getattr(module, class_name)
+            resolved_handlers.append(handler_type)
+
+        return tuple(resolved_handlers)
+
+    @staticmethod
+    def _determine_handler_package() -> str:
+        """Determine the package path used when loading store specific handlers."""
+
+        # When the module is imported as part of the backend package, __package__ is set
+        # accordingly (for example, "backend.shop_handler"). When the module is executed
+        # directly for offline testing, __package__ will be empty, so we fall back to the
+        # explicit package name. This dual-path approach keeps imports working in both
+        # deployment and standalone execution contexts.
+        if __package__:
+            return __package__
+        return "backend.shop_handler"
 
     @classmethod
     def _count_name_hits(cls, haystack: str) -> int:
@@ -233,9 +280,27 @@ class ShopHandler:
 
     def _get_sanitized_text(self) -> str:
         if self._sanitized_text_cache is None:
-            self._sanitized_text_cache = lxml_html.tostring(
-                self.sanitized_root, encoding="unicode", method="text"
-            )
+            text_segments: List[str] = []
+            # Gather visible text from every node so downstream searches see the same
+            # spacing that a human would perceive between words separated by tags.
+            for fragment in self.sanitized_root.itertext():
+                if not fragment:
+                    continue
+
+                # Remove invisible formatting characters and normalize internal spacing
+                # within the fragment before we consider adding it to the aggregate list.
+                cleaned_fragment = clean_dom_text_fragment(fragment)
+                cleaned_fragment = WHITESPACE_NORMALIZATION_PATTERN.sub(" ", cleaned_fragment)
+                cleaned_fragment = cleaned_fragment.strip()
+
+                if cleaned_fragment:
+                    text_segments.append(cleaned_fragment)
+
+            # Join the fragments with single spaces so words that came from different
+            # elements or lines remain separated, then collapse any accidental doubles.
+            joined_text = " ".join(text_segments)
+            normalized_text = WHITESPACE_NORMALIZATION_PATTERN.sub(" ", joined_text).strip()
+            self._sanitized_text_cache = normalized_text
         return self._sanitized_text_cache
 
     def get_dom_report(self) -> Optional[Dict[str, Any]]:

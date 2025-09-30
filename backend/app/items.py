@@ -18,7 +18,11 @@ from .embeddings import update_embeddings_for_item
 from .slugify import slugify
 from .helpers import normalize_pg_uuid, parse_tagged_text_to_dict
 from .static_server import get_public_html_path
-from .assoc_helper import CONTAINMENT_BIT  # Shared containment association flag defined centrally.
+from .assoc_helper import (
+    CONTAINMENT_BIT,
+    get_item_relationship,
+    set_item_relationship,
+)
 from .image_handler import (
     store_image_for_item,
     BadRequest as ImageBadRequest,
@@ -110,8 +114,6 @@ def _ensure_containment_relationship(conn: Any, source_id: str, target_id: str) 
             "assoc_type": CONTAINMENT_BIT,
         },
     )
-
-
 def _synchronize_pinned_relationships(
     engine: Engine,
     *,
@@ -895,3 +897,212 @@ def autogen_items_api():
         return jsonify({"success": False, "error": str(exc)}), 503
 
     return jsonify({"job_id": job_id})
+
+
+def delete_item_relationship(relationship_identifier: Any) -> Optional[Dict[str, Any]]:
+    """Remove a relationship row identified by its primary key."""
+
+    try:
+        normalized_relationship_id = normalize_pg_uuid(str(relationship_identifier))
+    except Exception as exc:
+        log.debug(
+            "Unable to normalize relationship identifier %r for deletion: %s",
+            relationship_identifier,
+            exc,
+        )
+        return None
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        existing = conn.execute(
+            text(
+                """
+                SELECT id, item_id, assoc_id, assoc_type
+                FROM relationships
+                WHERE id = :relationship_id
+                """
+            ),
+            {"relationship_id": normalized_relationship_id},
+        ).mappings().first()
+
+        if existing is None:
+            return None
+
+        relationship_dict = dict(existing)
+
+        # TODO: Surface relationship_dict to an auditing or notification pipeline so the caller can react.
+
+        conn.execute(
+            text(
+                """
+                DELETE FROM relationships
+                WHERE id = :relationship_id
+                """
+            ),
+            {"relationship_id": normalized_relationship_id},
+        )
+
+        return relationship_dict
+
+
+@bp.route("/bulkassoc", methods=["POST"])
+@login_required
+def bulk_associate_items_api():
+    payload = request.get_json(silent=True) or {}
+    table_name = str(payload.get("table") or "items").strip().lower()
+    if table_name != "items":
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": "Only item associations are supported by this endpoint.",
+                }
+            ),
+            400,
+        )
+
+    target_uuid = payload.get("target_uuid")
+    if not target_uuid:
+        return jsonify({"ok": False, "error": "Missing target UUID."}), 400
+
+    try:
+        normalized_target = normalize_pg_uuid(str(target_uuid))
+    except Exception as exc:
+        log.debug("bulk_associate_items_api: invalid target UUID %r: %s", target_uuid, exc)
+        return jsonify({"ok": False, "error": "Invalid target UUID."}), 400
+
+    raw_ids = payload.get("pks")
+    if not isinstance(raw_ids, list):
+        return jsonify({"ok": False, "error": "pks must be a list."}), 400
+
+    try:
+        assoc_bits = int(payload.get("association_type", 0))
+    except (TypeError, ValueError):
+        assoc_bits = 0
+
+    processed: List[str] = []
+    for candidate in raw_ids:
+        try:
+            normalized_candidate = normalize_pg_uuid(str(candidate))
+        except Exception as exc:
+            log.debug(
+                "bulk_associate_items_api: skipping invalid item identifier %r: %s",
+                candidate,
+                exc,
+            )
+            continue
+
+        result = set_item_relationship(normalized_candidate, normalized_target, assoc_bits)
+        if result is None:
+            continue
+        processed.append(str(result.get("id") or normalized_candidate))
+
+    return jsonify({"ok": True, "updated": len(processed), "relationships": processed})
+
+
+@bp.route("/bulkassoc", methods=["DELETE"])
+@login_required
+def bulk_remove_item_associations_api():
+    payload = request.get_json(silent=True) or {}
+    table_name = str(payload.get("table") or "items").strip().lower()
+    if table_name != "items":
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": "Only item associations are supported by this endpoint.",
+                }
+            ),
+            400,
+        )
+
+    target_uuid = payload.get("target_uuid")
+    if not target_uuid:
+        return jsonify({"ok": False, "error": "Missing target UUID."}), 400
+
+    try:
+        normalized_target = normalize_pg_uuid(str(target_uuid))
+    except Exception as exc:
+        log.debug("bulk_remove_item_associations_api: invalid target UUID %r: %s", target_uuid, exc)
+        return jsonify({"ok": False, "error": "Invalid target UUID."}), 400
+
+    raw_ids = payload.get("pks")
+    if not isinstance(raw_ids, list):
+        return jsonify({"ok": False, "error": "pks must be a list."}), 400
+
+    removed: List[str] = []
+    for candidate in raw_ids:
+        try:
+            normalized_candidate = normalize_pg_uuid(str(candidate))
+        except Exception as exc:
+            log.debug(
+                "bulk_remove_item_associations_api: skipping invalid item identifier %r: %s",
+                candidate,
+                exc,
+            )
+            continue
+
+        relationship = get_item_relationship(normalized_candidate, normalized_target)
+        if not relationship:
+            continue
+
+        deleted = delete_item_relationship(relationship.get("id"))
+        if deleted is None:
+            continue
+        removed.append(str(relationship.get("id")))
+
+    return jsonify({"ok": True, "removed": len(removed), "relationships": removed})
+
+
+@bp.route("/bulkdelete", methods=["POST"])
+@login_required
+def bulk_delete_items_api():
+    payload = request.get_json(silent=True) or {}
+    table_name = str(payload.get("table") or "items").strip().lower()
+    if table_name != "items":
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": "Only inventory items can be deleted through this endpoint.",
+                }
+            ),
+            400,
+        )
+
+    raw_ids = payload.get("pks")
+    if not isinstance(raw_ids, list):
+        return jsonify({"ok": False, "error": "pks must be a list."}), 400
+
+    normalized_ids: List[str] = []
+    for candidate in raw_ids:
+        try:
+            normalized_ids.append(normalize_pg_uuid(str(candidate)))
+        except Exception as exc:
+            log.debug(
+                "bulk_delete_items_api: skipping invalid item identifier %r: %s",
+                candidate,
+                exc,
+            )
+
+    if not normalized_ids:
+        return jsonify({"ok": False, "error": "No valid item identifiers supplied."}), 400
+
+    delete_sql = text(
+        """
+        UPDATE items
+        SET is_deleted = TRUE
+        WHERE id IN :item_ids
+        """
+    ).bindparams(bindparam("item_ids", expanding=True))
+
+    with get_engine().begin() as conn:
+        result = conn.execute(delete_sql, {"item_ids": normalized_ids})
+
+    return jsonify(
+        {
+            "ok": True,
+            "deleted": int(result.rowcount or 0),
+            "processed_ids": normalized_ids,
+        }
+    )

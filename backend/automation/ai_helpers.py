@@ -1,13 +1,28 @@
 from __future__ import annotations
 
-import os, sys, pathlib
+import os
+import sys
+from pathlib import Path
 import json
 import requests
 
 from typing import List, Union
 
+# Guarantee that the repository root is discoverable on sys.path when this
+# module is invoked directly. This keeps imports such as app.config_loader
+# working during local scripting without requiring a package-style launch.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from openai import OpenAI
-from app.config_loader import CONFIG_DIR, CONFIG_PATH, load_app_config
+try:
+    from ..app.config_loader import CONFIG_DIR, CONFIG_PATH, load_app_config
+except:
+    CONFIG_DIR = REPO_ROOT / "config"
+    CONFIG_PATH = CONFIG_DIR / "appconfig.json"
+    def load_app_config():
+        return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 
 OLLAMA_HOST_URL = "http://127.0.0.1:11434"
 
@@ -208,3 +223,63 @@ class AiInstance(object):
                 messages=self.msg
             )
             return res.choices[0].message.content
+
+
+def main() -> None:
+    import argparse
+    import time
+
+    """Parse arguments, run the AI query, and report the timing."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Send a single user message to the configured AI provider while "
+            "optionally supplying a custom system prompt."
+        )
+    )
+    parser.add_argument(
+        "--model-name",
+        dest="model_name",
+        default="",
+        help=(
+            "Name of the model to use. Defaults to a blank string when not "
+            "supplied."
+        ),
+    )
+    parser.add_argument(
+        "--system-message",
+        dest="system_message",
+        default="",
+        help="System prompt content sent before the user message.",
+    )
+    parser.add_argument(
+        "--user-message",
+        dest="user_message",
+        default="",
+        help="User prompt content to send to the model.",
+    )
+
+    args = parser.parse_args()
+
+    # Instantiate AiInstance with the requested model name; this handles
+    # connecting to either Ollama or OpenAI based on configuration.
+    ai_instance = AiInstance(args.model_name)
+
+    # Measure the time it takes for the AI service to respond.
+    start_time = time.perf_counter()
+    response_text = ai_instance.query(
+        user_msg=args.user_message,
+        system_msg=args.system_message,
+    )
+    elapsed_seconds = time.perf_counter() - start_time
+
+    # Provide detailed output so that a user can see the response and timing.
+    print("AI response:\r\n")
+    print(response_text)
+    print(
+        "\r\nTotal request duration: {:.3f} seconds".format(elapsed_seconds)
+    )
+
+
+if __name__ == "__main__":
+    # Entry point for command-line execution.
+    main()

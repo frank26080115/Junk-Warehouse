@@ -11,16 +11,22 @@ import uuid
 from flask import Blueprint, jsonify, request, current_app
 
 from .user_login import login_required
-from .db import deduplicate_rows, get_db_item_as_dict, get_engine, get_or_create_session
+from .db import (
+    deduplicate_rows,
+    get_db_item_as_dict,
+    get_engine,
+    session_scope,
+)
 from .search_expression import SearchQuery, get_sql_order_and_limit
 from .embeddings import search_items_by_embeddings
-from .helpers import fuzzy_levenshtein_at_most, normalize_pg_uuid
+from .helpers import fuzzy_levenshtein_at_most, normalize_pg_uuid, to_bool
 from .items import augment_item_dict, get_item_thumbnails
 from .slugify import slugify
 
 from sqlalchemy import bindparam, text
 
 from app.config_loader import get_pin_open_expiry_hours
+from .assoc_helper import MERGE_BIT
 
 log = logging.getLogger(__name__)
 
@@ -262,73 +268,72 @@ def find_code_matched_items(
     if not candidate_codes and not candidate_urls:
         return []
 
-    session = get_or_create_session()
-
     matched_ids: List[str] = []
     seen_ids: set[str] = set()
 
-    if target_uuid_obj is not None:
-        product_sql = text(
-            """
-        SELECT id
-        FROM items
-        WHERE NOT is_deleted
-          AND id <> :target_id
-          AND product_code ILIKE :needle
-        """
-        )
-        url_sql = text(
-            """
-        SELECT id
-        FROM items
-        WHERE NOT is_deleted
-          AND id <> :target_id
-          AND url ILIKE :needle
-        """
-        )
-    else:
-        product_sql = text(
-            """
-        SELECT id
-        FROM items
-        WHERE NOT is_deleted
-          AND product_code ILIKE :needle
-        """
-        )
-        url_sql = text(
-            """
-        SELECT id
-        FROM items
-        WHERE NOT is_deleted
-          AND url ILIKE :needle
-        """
-        )
-
-    def _record_matches(sql_statement: Any, needle: str) -> None:
-        """Execute a query and merge unique identifiers into the accumulator."""
-
-        cleaned = (needle or "").strip()
-        if not cleaned:
-            return
-
-        parameters = {"needle": f"%{cleaned}%"}
+    with session_scope() as session:
         if target_uuid_obj is not None:
-            parameters["target_id"] = target_uuid_obj
-        rows = session.execute(sql_statement, parameters).scalars().all()
-        for raw_id in rows:
-            if raw_id is None:
-                continue
-            identifier = str(raw_id)
-            if identifier in seen_ids:
-                continue
-            seen_ids.add(identifier)
-            matched_ids.append(identifier)
+            product_sql = text(
+                """
+            SELECT id
+            FROM items
+            WHERE NOT is_deleted
+              AND id <> :target_id
+              AND product_code ILIKE :needle
+            """
+            )
+            url_sql = text(
+                """
+            SELECT id
+            FROM items
+            WHERE NOT is_deleted
+              AND id <> :target_id
+              AND url ILIKE :needle
+            """
+            )
+        else:
+            product_sql = text(
+                """
+            SELECT id
+            FROM items
+            WHERE NOT is_deleted
+              AND product_code ILIKE :needle
+            """
+            )
+            url_sql = text(
+                """
+            SELECT id
+            FROM items
+            WHERE NOT is_deleted
+              AND url ILIKE :needle
+            """
+            )
 
-    for code in candidate_codes:
-        _record_matches(product_sql, code)
+        def _record_matches(sql_statement: Any, needle: str) -> None:
+            """Execute a query and merge unique identifiers into the accumulator."""
 
-    for url_value in candidate_urls:
-        _record_matches(url_sql, url_value)
+            cleaned = (needle or "").strip()
+            if not cleaned:
+                return
+
+            parameters = {"needle": f"%{cleaned}%"}
+            if target_uuid_obj is not None:
+                parameters["target_id"] = target_uuid_obj
+            rows = session.execute(sql_statement, parameters).scalars().all()
+            for raw_id in rows:
+                if raw_id is None:
+                    continue
+                identifier = str(raw_id)
+                if identifier in seen_ids:
+                    continue
+                seen_ids.add(identifier)
+                matched_ids.append(identifier)
+
+        for code in candidate_codes:
+            _record_matches(product_sql, code)
+
+        for url_value in candidate_urls:
+            _record_matches(url_sql, url_value)
 
     return matched_ids
 
@@ -383,6 +388,97 @@ def append_code_matched_items(
     destination[:0] = hydrated_rows
 
 
+def _collect_merge_ready_item_ids(session: Any) -> set[str]:
+    """Return identifiers for items that participate in a merge-marked relationship."""
+
+    merge_sql = text(
+        """
+        SELECT DISTINCT candidate_id
+        FROM (
+            SELECT r.item_id AS candidate_id
+            FROM relationships AS r
+            WHERE (COALESCE(r.assoc_type, 0) & :merge_bit) <> 0
+            UNION ALL
+            SELECT r.assoc_id AS candidate_id
+            FROM relationships AS r
+            WHERE (COALESCE(r.assoc_type, 0) & :merge_bit) <> 0
+        ) AS related_candidates
+        WHERE candidate_id IS NOT NULL
+        """
+    )
+
+    merge_ids = session.execute(merge_sql, {"merge_bit": MERGE_BIT}).scalars().all()
+    normalized_ids: set[str] = set()
+    for identifier in merge_ids:
+        if not identifier:
+            continue
+        normalized_ids.add(str(identifier))
+    return normalized_ids
+
+
+def _execute_mergewaiting_inventory_query(
+    session: Any,
+    criteria: Mapping[str, Any],
+    *,
+    table_name: str,
+    alias: str,
+    select_clause: str,
+    default_order_templates: Optional[Iterable[str]],
+    default_limit: int,
+) -> List[Mapping[str, Any]]:
+    """Execute a merge-aware listing that respects existing filters and limits."""
+
+    where_clauses: List[str] = []
+    touched_columns = criteria.get("touched_columns") or set()
+    if "is_deleted" not in touched_columns:
+        where_clauses.append(f"NOT {alias}.is_deleted")
+    for condition in criteria.get("where", []):
+        if condition:
+            where_clauses.append(condition)
+
+    order_by_clauses, limit_value, offset_value = get_sql_order_and_limit(
+        criteria,
+        alias=alias,
+        use_textsearch=False,
+        rank_expression=None,
+        default_order_templates=default_order_templates,
+        default_limit=default_limit,
+    )
+
+    sql_lines = [
+        "SELECT",
+        f"    DISTINCT {select_clause}",
+        f"FROM {table_name} AS {alias}",
+        "JOIN relationships AS rel",
+        f"    ON (rel.item_id = {alias}.id OR rel.assoc_id = {alias}.id)",
+        "WHERE",
+        "    (COALESCE(rel.assoc_type, 0) & :merge_bit) <> 0",
+    ]
+
+    for condition in where_clauses:
+        sql_lines.append(f"    AND {condition}")
+
+    if order_by_clauses:
+        sql_lines.append("ORDER BY")
+        for idx, clause in enumerate(order_by_clauses):
+            prefix = "    " if idx == 0 else "    , "
+            sql_lines.append(f"{prefix}{clause}")
+    if limit_value is not None:
+        sql_lines.append("LIMIT :limit")
+    if offset_value:
+        sql_lines.append("OFFSET :offset")
+
+    sql_params: Dict[str, Any] = {"merge_bit": MERGE_BIT}
+    sql_params.update(criteria.get("params", {}))
+    if limit_value is not None:
+        sql_params["limit"] = limit_value
+    if offset_value:
+        sql_params["offset"] = offset_value
+
+    merge_sql = text("\n".join(sql_lines))
+    return session.execute(merge_sql, sql_params).mappings().all()
+
+
 def _execute_text_search_query(
     session: Any,
     search_query: SearchQuery,
@@ -403,11 +499,23 @@ def _execute_text_search_query(
     """
 
     smart_directive = False
+    suggest_directive = False
+    mergewaiting_directive = False
+    normalized_query = (query_text or "").strip()
     if isinstance(search_query, SearchQuery):
         # Delegate to SearchQuery.has_directive so validation remains consistent
         # and so this function does not need to inspect directive internals.
         smart_directive = search_query.has_directive("smart")
-    if smart_directive and (query_text or "").strip() != "*":
+        suggest_directive = search_query.has_directive("suggest")
+        mergewaiting_directive = search_query.has_directive("mergewaiting")
+    if suggest_directive and normalized_query != "*":
+        return search_items_by_embeddings(
+            search_query,
+            session=session,
+            limit=default_limit,
+            embedding_table="container_embeddings",
+        )
+    if smart_directive and normalized_query != "*":
         return search_items_by_embeddings(search_query, session=session, limit=default_limit)
 
     criteria = search_query.get_sql_conditionals()
@@ -418,7 +526,25 @@ def _execute_text_search_query(
     select_clause = (select_template or "{alias}.*").format(alias=alias)
     textsearch_expr = (textsearch_template or "{alias}.textsearch").format(alias=alias)
 
-    normalized_query = (query_text or "").strip()
+    if (
+        mergewaiting_directive
+        and table_name == default_table
+        and table_name == "items"
+        and normalized_query in {"", "*"}
+    ):
+        # When the mergewaiting directive is paired with an empty or wildcard
+        # query we gather every merge-ready item while still honouring the
+        # caller's filter configuration.
+        return _execute_mergewaiting_inventory_query(
+            session,
+            criteria,
+            table_name=table_name,
+            alias=alias,
+            select_clause=select_clause,
+            default_order_templates=default_order_templates,
+            default_limit=default_limit,
+        )
+
     use_textsearch = bool(normalized_query and normalized_query != "*")
 
     ts_query_expr = None
@@ -544,18 +670,7 @@ def _finalize_invoice_rows(rows: Iterable[Mapping[str, Any]]) -> List[Dict[str, 
     return deduplicate_rows(normalized, key="pk")
 
 
-def _to_bool(value: Any) -> bool:
-    """Convert loose truthy/falsey values to :class:`bool`."""
 
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if not normalized:
-            return False
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off"}:
-            return False
-    return bool(value)
 
 
 def search_items(
@@ -563,6 +678,7 @@ def search_items(
     target_uuid: Optional[str] = None,
     context: Any = None,
     primary_key_column: str = "id",
+    db_session: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """
     Execute an item search.
@@ -578,6 +694,10 @@ def search_items(
         Optional execution context; may contain request/session info later.
     primary_key_column : str
         Column name to use when resolving direct UUID lookups. Defaults to "id".
+    db_session : Optional[Any]
+        Optional SQLAlchemy session to reuse. When omitted, a temporary session
+        is created via :func:`session_scope` so connections are reliably
+        returned to the pool.
 
     Returns
     -------
@@ -586,12 +706,10 @@ def search_items(
         entry includes a ``pk`` (mirroring ``id``) and a ``slug`` computed via
         :func:`backend.app.slugify.slugify`.
     """
-    session = get_or_create_session()
-    results: List[Dict[str, Any]] = []
 
     if not (raw_query and raw_query.strip()):
         log.info("search_items: empty query -> returning empty list")
-        return _finalize_item_rows(results)
+        return _finalize_item_rows([])
 
     # Parse the query and extract normalized free-text
 
@@ -605,144 +723,216 @@ def search_items(
     sq_context.setdefault("table_alias", "i")
     sq = SearchQuery(s=raw_query, context=sq_context)
 
-    if not target_uuid and len(sq.identifiers) == 1:
-        identifier = sq.identifiers[0]
+    def _execute_with_session(session: Any) -> List[Dict[str, Any]]:
+        results: List[Dict[str, Any]] = []
 
-        uuid_candidate: Optional[str]
-        try:
-            uuid_candidate = str(uuid.UUID(identifier))
-        except (ValueError, AttributeError, TypeError):
-            uuid_candidate = None
+        if not target_uuid and len(sq.identifiers) == 1:
+            identifier = sq.identifiers[0]
 
-        if uuid_candidate and not (sq.query_text or "").strip():
-            column = _normalize_primary_key_column(primary_key_column)
+            uuid_candidate: Optional[str]
+            try:
+                uuid_candidate = str(uuid.UUID(identifier))
+            except (ValueError, AttributeError, TypeError):
+                uuid_candidate = None
 
-            direct_sql = text(
-                f"""
-                SELECT
-                    i.*
-                FROM items AS i
-                WHERE
-                    NOT i.is_deleted
-                    AND i.{column} = :identifier
-                LIMIT 1
-                """
-            )
+            if uuid_candidate and not (sq.query_text or "").strip():
+                column = _normalize_primary_key_column(primary_key_column)
 
-            row = session.execute(direct_sql, {"identifier": uuid_candidate}).mappings().first()
-            if row:
-                return _finalize_item_rows([augment_item_dict(row)])
-        else:
-            short_id_values = _short_id_candidates(identifier)
-            if short_id_values:
-                comparison_text = (sq.query_text or "").strip() or raw_query.strip()
-                short_sql = text(
-                    """
+                direct_sql = text(
+                    f"""
                     SELECT
                         i.*
                     FROM items AS i
                     WHERE
                         NOT i.is_deleted
-                        AND i.short_id = :short_id
+                        AND i.{column} = :identifier
+                    LIMIT 1
                     """
                 )
 
-                for value in short_id_values:
-                    sid_rows = session.execute(short_sql, {"short_id": value}).mappings().all()
-                    if not sid_rows:
-                        continue
+                row = session.execute(direct_sql, {"identifier": uuid_candidate}).mappings().first()
+                if row:
+                    return _finalize_item_rows([augment_item_dict(row)])
+            else:
+                short_id_values = _short_id_candidates(identifier)
+                if short_id_values:
+                    comparison_text = (sq.query_text or "").strip() or raw_query.strip()
+                    short_sql = text(
+                        """
+                        SELECT
+                            i.*
+                        FROM items AS i
+                        WHERE
+                            NOT i.is_deleted
+                            AND i.short_id = :short_id
+                        """
+                    )
 
-                    if comparison_text:
-                        best_row = _pick_best_short_id_row(sid_rows, comparison_text)
-                        return _finalize_item_rows([augment_item_dict(best_row)])
+                    for value in short_id_values:
+                        sid_rows = session.execute(short_sql, {"short_id": value}).mappings().all()
+                        if not sid_rows:
+                            continue
 
-                    return _finalize_item_rows([augment_item_dict(sid_rows[0])])
+                        if comparison_text:
+                            best_row = _pick_best_short_id_row(sid_rows, comparison_text)
+                            return _finalize_item_rows([augment_item_dict(best_row)])
 
-    query_text = sq.query_text or raw_query  # fallback just in case
+                        return _finalize_item_rows([augment_item_dict(sid_rows[0])])
 
-    rows = _execute_text_search_query(
-        session,
-        sq,
-        query_text,
-        default_table="items",
-        default_alias="i",
-        default_order_templates=["{alias}.date_last_modified {direction}"],
-    )
+        query_text = sq.query_text or raw_query  # fallback just in case
 
-    for row in rows:
-        row_dict = dict(row)
-        if sq.evaluate(row_dict):
-            results.append(augment_item_dict(row_dict))
+        if target_uuid and sq.has_directive("suggest"):
+            # Quietly amplify the query text with context from the target item so container suggestions
+            # inherit meaningful signals from the item currently being viewed.
+            try:
+                normalized_target = str(uuid.UUID(str(target_uuid)))
+            except (ValueError, AttributeError, TypeError):
+                normalized_target = None
 
+            if normalized_target:
+                try:
+                    engine = get_engine()
+                    target_row = get_db_item_as_dict(engine, "items", normalized_target)
+                except (LookupError, ValueError):
+                    target_row = None
+                except Exception:
+                    log.exception("Failed to load target item %s for suggest directive", normalized_target)
+                    target_row = None
 
-    if target_uuid and sq.has_directive("codematched"):
-        matched_ids = find_code_matched_items(target_uuid)
-        # Hydrate and prepend code-matched results ahead of standard search items.
-        append_code_matched_items(results, matched_ids, augment_row=augment_item_dict)
+                if target_row:
+                    supplemental_bits: List[str] = []
+                    for field_name in ("name", "metatext"):
+                        field_value = target_row.get(field_name)
+                        if isinstance(field_value, str):
+                            trimmed_value = field_value.strip()
+                            if trimmed_value:
+                                supplemental_bits.append(trimmed_value)
 
-    if sq.has_directive("pinned"):
-        append_pinned_items(
+                    if supplemental_bits:
+                        invisible_hint = " ".join(supplemental_bits)
+                        combined_text = f"{(query_text or '').strip()} {invisible_hint}".strip()
+                        query_text = combined_text
+                        sq.query_text = combined_text
+                        if isinstance(getattr(sq, "query_terms", None), list):
+                            sq.query_terms = list(sq.query_terms) + invisible_hint.split()
+
+        normalized_query_text = (query_text or "").strip()
+        mergewaiting_directive = sq.has_directive("mergewaiting")
+        merge_ready_ids: Optional[set[str]] = None
+        if mergewaiting_directive and normalized_query_text and normalized_query_text != "*":
+            # Preload the identifiers of merge-ready items so we can filter the
+            # standard text-search results without complicating the SQL builder.
+            merge_ready_ids = _collect_merge_ready_item_ids(session)
+
+        rows = _execute_text_search_query(
             session,
-            "items",
-            results,
-            augment_row=augment_item_dict,
+            sq,
+            query_text,
+            default_table="items",
+            default_alias="i",
+            default_order_templates=["{alias}.date_last_modified {direction}"],
         )
 
-    # --- RELATION / TARGET-UUID ENHANCEMENT ---
-    # This is intentionally *not* an else-if. The base search above should always take place.
-    if target_uuid:
-        relation_sql = text("""
-        SELECT
-            r.item_id,
-            r.assoc_id,
-            r.assoc_type
-        FROM relationships AS r
-        WHERE
-            r.item_id = :target_uuid
-            OR r.assoc_id = :target_uuid
-        """)
-        relation_rows = session.execute(relation_sql, {"target_uuid": target_uuid}).mappings().all()
+        for row in rows:
+            row_dict = dict(row)
+            if merge_ready_ids is not None:
+                identifier = row_dict.get("id") or row_dict.get("pk")
+                if identifier is None or str(identifier) not in merge_ready_ids:
+                    continue
+            if sq.evaluate(row_dict):
+                results.append(augment_item_dict(row_dict))
 
-        target_str = str(target_uuid)
-        relation_map: Dict[str, int] = {}
-        for relation in relation_rows:
-            relation_item_id = relation.get("item_id")
-            relation_assoc_id = relation.get("assoc_id")
-            if relation_item_id is None or relation_assoc_id is None:
-                continue
+        if target_uuid and sq.has_directive("codematched"):
+            matched_ids = find_code_matched_items(target_uuid)
+            # Hydrate and prepend code-matched results ahead of standard search items.
+            append_code_matched_items(results, matched_ids, augment_row=augment_item_dict)
 
-            item_id_str = str(relation_item_id)
-            assoc_id_str = str(relation_assoc_id)
+        if sq.has_directive("pinned"):
+            append_pinned_items(
+                session,
+                "items",
+                results,
+                augment_row=augment_item_dict,
+            )
 
-            if item_id_str == target_str:
-                other_id = assoc_id_str
-            elif assoc_id_str == target_str:
-                other_id = item_id_str
-            else:
-                continue
+        if mergewaiting_directive:
+            # Fetch the merge-aware identifier set if we skipped it earlier (for
+            # example, when the query text was empty and the SQL branch handled the
+            # heavy lifting) so pinned items and other additions still honor the
+            # directive.
+            if merge_ready_ids is None:
+                merge_ready_ids = _collect_merge_ready_item_ids(session)
 
-            assoc_type_value = relation.get("assoc_type")
-            if assoc_type_value is None:
-                assoc_type_value = -1
+            active_merge_ids = merge_ready_ids if merge_ready_ids else set()
+            filtered_results: List[Dict[str, Any]] = []
+            for item in results:
+                identifier = item.get("pk") or item.get("id")
+                if identifier is None:
+                    continue
+                if str(identifier) in active_merge_ids:
+                    filtered_results.append(item)
+            results[:] = filtered_results
 
-            existing_value = relation_map.get(other_id)
-            if existing_value is None:
-                relation_map[other_id] = assoc_type_value
-            elif existing_value < 0:
-                if assoc_type_value >= 0:
+        # --- RELATION / TARGET-UUID ENHANCEMENT ---
+        # This is intentionally *not* an else-if. The base search above should always take place.
+        if target_uuid:
+            relation_sql = text("""
+            SELECT
+                r.item_id,
+                r.assoc_id,
+                r.assoc_type
+            FROM relationships AS r
+            WHERE
+                r.item_id = :target_uuid
+                OR r.assoc_id = :target_uuid
+            """)
+            relation_rows = session.execute(relation_sql, {"target_uuid": target_uuid}).mappings().all()
+
+            target_str = str(target_uuid)
+            relation_map: Dict[str, int] = {}
+            for relation in relation_rows:
+                relation_item_id = relation.get("item_id")
+                relation_assoc_id = relation.get("assoc_id")
+                if relation_item_id is None or relation_assoc_id is None:
+                    continue
+
+                item_id_str = str(relation_item_id)
+                assoc_id_str = str(relation_assoc_id)
+
+                if item_id_str == target_str:
+                    other_id = assoc_id_str
+                elif assoc_id_str == target_str:
+                    other_id = item_id_str
+                else:
+                    continue
+
+                assoc_type_value = relation.get("assoc_type")
+                if assoc_type_value is None:
+                    assoc_type_value = -1
+
+                existing_value = relation_map.get(other_id)
+                if existing_value is None:
                     relation_map[other_id] = assoc_type_value
-            elif assoc_type_value >= 0:
-                relation_map[other_id] = existing_value | assoc_type_value
+                elif existing_value < 0:
+                    if assoc_type_value >= 0:
+                        relation_map[other_id] = assoc_type_value
+                elif assoc_type_value >= 0:
+                    relation_map[other_id] = existing_value | assoc_type_value
 
-        for item in results:
-            pk_value = item.get("pk") or item.get("id")
-            assoc_type = -1
-            if pk_value is not None:
-                assoc_type = relation_map.get(str(pk_value), -1)
-            item["assoc_type"] = assoc_type
+            for item in results:
+                pk_value = item.get("pk") or item.get("id")
+                assoc_type = -1
+                if pk_value is not None:
+                    assoc_type = relation_map.get(str(pk_value), -1)
+                item["assoc_type"] = assoc_type
 
+        return _finalize_item_rows(results)
 
-    return _finalize_item_rows(results)
+    if db_session is not None:
+        return _execute_with_session(db_session)
+
+    with session_scope() as session:
+        return _execute_with_session(session)
 
 
 def search_invoices(
@@ -750,13 +940,11 @@ def search_invoices(
     target_uuid: Optional[str] = None,
     context: Any = None,
     primary_key_column: str = "id",
+    db_session: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
-    session = get_or_create_session()
-    results: List[Dict[str, Any]] = []
-
     if not (raw_query and raw_query.strip()):
         log.info("search_invoices: empty query -> returning empty list")
-        return _finalize_invoice_rows(results)
+        return _finalize_invoice_rows([])
 
     if isinstance(context, dict):
         sq_context = dict(context)
@@ -768,107 +956,116 @@ def search_invoices(
     sq_context.setdefault("table_alias", "inv")
     sq = SearchQuery(s=raw_query, context=sq_context)
 
-    if not target_uuid and len(sq.identifiers) == 1:
-        identifier = sq.identifiers[0]
+    def _execute_with_session(session: Any) -> List[Dict[str, Any]]:
+        results: List[Dict[str, Any]] = []
 
-        uuid_candidate: Optional[str]
-        try:
-            uuid_candidate = str(uuid.UUID(identifier))
-        except (ValueError, AttributeError, TypeError):
-            uuid_candidate = None
+        if not target_uuid and len(sq.identifiers) == 1:
+            identifier = sq.identifiers[0]
 
-        if uuid_candidate and not (sq.query_text or "").strip():
-            column = _normalize_primary_key_column(primary_key_column)
+            uuid_candidate: Optional[str]
+            try:
+                uuid_candidate = str(uuid.UUID(identifier))
+            except (ValueError, AttributeError, TypeError):
+                uuid_candidate = None
 
-            direct_sql = text(
-                f"""
-                SELECT
-                    inv.*
-                FROM invoices AS inv
-                WHERE
-                    NOT inv.is_deleted
-                    AND inv.{column} = :identifier
-                LIMIT 1
-                """
-            )
+            if uuid_candidate and not (sq.query_text or "").strip():
+                column = _normalize_primary_key_column(primary_key_column)
 
-            row = session.execute(direct_sql, {"identifier": uuid_candidate}).mappings().first()
-            if row:
-                return _finalize_invoice_rows([row])
+                direct_sql = text(
+                    f"""
+                    SELECT
+                        inv.*
+                    FROM invoices AS inv
+                    WHERE
+                        NOT inv.is_deleted
+                        AND inv.{column} = :identifier
+                    LIMIT 1
+                    """
+                )
 
-    query_text = sq.query_text or raw_query
+                row = session.execute(direct_sql, {"identifier": uuid_candidate}).mappings().first()
+                if row:
+                    return _finalize_invoice_rows([row])
 
-    textsearch_template = (
-        "to_tsvector('english', "
-        "COALESCE({alias}.subject, '') || ' ' || "
-        "COALESCE({alias}.notes, '') || ' ' || "
-        "COALESCE({alias}.order_number, '') || ' ' || "
-        "COALESCE({alias}.shop_name, '') || ' ' || "
-        "COALESCE({alias}.urls, '') || ' ' || "
-        "COALESCE({alias}.html, ''))"
-    )
+        query_text = sq.query_text or raw_query
 
-    rows = _execute_text_search_query(
-        session,
-        sq,
-        query_text,
-        default_table="invoices",
-        default_alias="inv",
-        select_template="{alias}.*",
-        textsearch_template=textsearch_template,
-        default_order_templates=["{alias}.date {direction}"],
-    )
-
-    for row in rows:
-        row_dict = dict(row)
-        if sq.evaluate(row_dict):
-            results.append(row_dict)
-
-    if sq.has_directive("pinned"):
-        append_pinned_items(
-            session,
-            "invoices",
-            results,
+        textsearch_template = (
+            "to_tsvector('english', "
+            "COALESCE({alias}.subject, '') || ' ' || "
+            "COALESCE({alias}.notes, '') || ' ' || "
+            "COALESCE({alias}.order_number, '') || ' ' || "
+            "COALESCE({alias}.shop_name, '') || ' ' || "
+            "COALESCE({alias}.urls, '') || ' ' || "
+            "COALESCE({alias}.html, ''))"
         )
 
-    if target_uuid and results:
-        invoice_ids: List[str] = []
-        seen: set[str] = set()
-        for invoice in results:
-            pk_value = invoice.get("pk") or invoice.get("id")
-            if pk_value is None:
-                continue
-            value = str(pk_value)
-            if value in seen:
-                continue
-            seen.add(value)
-            invoice_ids.append(value)
+        rows = _execute_text_search_query(
+            session,
+            sq,
+            query_text,
+            default_table="invoices",
+            default_alias="inv",
+            select_template="{alias}.*",
+            textsearch_template=textsearch_template,
+            default_order_templates=["{alias}.date {direction}"],
+        )
 
-        if invoice_ids:
-            assoc_sql = (
-                text(
-                    """
-                    SELECT DISTINCT ii.invoice_id
-                    FROM invoice_items AS ii
-                    WHERE ii.item_id = :item_id
-                      AND ii.invoice_id IN :invoice_ids
-                    """
-                ).bindparams(bindparam("invoice_ids", expanding=True))
+        for row in rows:
+            row_dict = dict(row)
+            if sq.evaluate(row_dict):
+                results.append(row_dict)
+
+        if sq.has_directive("pinned"):
+            append_pinned_items(
+                session,
+                "invoices",
+                results,
             )
-            assoc_rows = session.execute(
-                assoc_sql,
-                {"item_id": target_uuid, "invoice_ids": invoice_ids},
-            ).scalars().all()
-            associated_ids = {str(value) for value in assoc_rows}
 
+        if target_uuid and results:
+            invoice_ids: List[str] = []
+            seen: set[str] = set()
             for invoice in results:
                 pk_value = invoice.get("pk") or invoice.get("id")
-                is_associated = False
-                if pk_value is not None:
-                    is_associated = str(pk_value) in associated_ids
-                invoice["is_associated"] = is_associated
+                if pk_value is None:
+                    continue
+                value = str(pk_value)
+                if value in seen:
+                    continue
+                seen.add(value)
+                invoice_ids.append(value)
 
-    return _finalize_invoice_rows(results)
+            if invoice_ids:
+                assoc_sql = (
+                    text(
+                        """
+                        SELECT DISTINCT ii.invoice_id
+                        FROM invoice_items AS ii
+                        WHERE ii.item_id = :item_id
+                          AND ii.invoice_id IN :invoice_ids
+                        """
+                    ).bindparams(bindparam("invoice_ids", expanding=True))
+                )
+                assoc_rows = session.execute(
+                    assoc_sql,
+                    {"item_id": target_uuid, "invoice_ids": invoice_ids},
+                ).scalars().all()
+                associated_ids = {str(value) for value in assoc_rows}
+
+                for invoice in results:
+                    pk_value = invoice.get("pk") or invoice.get("id")
+                    is_associated = False
+                    if pk_value is not None:
+                        is_associated = str(pk_value) in associated_ids
+                    invoice["is_associated"] = is_associated
+
+        return _finalize_invoice_rows(results)
+
+    if db_session is not None:
+        return _execute_with_session(db_session)
+
+    with session_scope() as session:
+        return _execute_with_session(session)
 
 
 
@@ -877,16 +1074,15 @@ def search_invoices(
 def pin_summary_api():
     """Return how many items and invoices are still considered opened pins."""
     try:
-        session = get_or_create_session()
+        with session_scope() as session:
+            # Follow the shared 36-hour window to decide whether a pin is still active.
+            items_opened = _count_open_pins(session, "items")
+            invoices_opened = _count_open_pins(session, "invoices")
 
-        # Follow the shared 36-hour window to decide whether a pin is still active.
-        items_opened = _count_open_pins(session, "items")
-        invoices_opened = _count_open_pins(session, "invoices")
-
-        payload = {
-            "items_opened": items_opened,
-            "invoices_opened": invoices_opened,
-        }
+            payload = {
+                "items_opened": items_opened,
+                "invoices_opened": invoices_opened,
+            }
 
         return jsonify(ok=True, data=payload)
     except Exception as exc:
@@ -913,7 +1109,7 @@ def search_api():
         data = request.get_json(silent=True) or {}
         raw_query = (data.get("q") or "").strip()
         target_uuid = data.get("target_uuid") or None
-        include_thumbnails = _to_bool(data.get("include_thumbnails"))
+        include_thumbnails = to_bool(data.get("include_thumbnails"))
 
         # Context can include request info if you want it later
         ctx = {
@@ -928,11 +1124,11 @@ def search_api():
         items = search_items(raw_query=raw_query, target_uuid=target_uuid, context=ctx)
 
         if include_thumbnails and items:
-            session = get_or_create_session()
-            thumbnail_map = get_item_thumbnails(
-                (item.get("pk") for item in items),
-                db_session=session,
-            )
+            with session_scope() as session:
+                thumbnail_map = get_item_thumbnails(
+                    (item.get("pk") for item in items),
+                    db_session=session,
+                )
             for item in items:
                 pk_value = item.get("pk")
                 thumbnail_url = None

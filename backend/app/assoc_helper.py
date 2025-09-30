@@ -1,5 +1,15 @@
 from __future__ import annotations
 
+import logging
+from typing import Any, Dict, Optional
+
+from sqlalchemy import text
+
+from .db import get_engine
+from .helpers import normalize_pg_uuid
+
+log = logging.getLogger(__name__)
+
 CONTAINMENT_BIT = 1
 RELATED_BIT = 2
 SIMILAR_BIT = 4
@@ -82,3 +92,167 @@ def collect_emoji_characters_from_int(value: int) -> list[str]:
 
 def collect_emoji_entities_from_int(value: int) -> list[str]:
     return [BIT_TO_EMOJI_HTML_ENTITY[bit] for bit in ALL_ASSOCIATION_BITS if value & bit]
+
+
+def get_item_relationship(first_identifier: Any, second_identifier: Any) -> Optional[Dict[str, Any]]:
+    """Retrieve or consolidate a relationship record between two items."""
+
+    try:
+        normalized_first = normalize_pg_uuid(str(first_identifier))
+        normalized_second = normalize_pg_uuid(str(second_identifier))
+    except Exception as exc:
+        log.debug(
+            "Unable to normalize relationship identifiers %r and %r: %s",
+            first_identifier,
+            second_identifier,
+            exc,
+        )
+        return None
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        selection = conn.execute(
+            text(
+                """
+                SELECT id, item_id, assoc_id, assoc_type
+                FROM relationships
+                WHERE (item_id = :first_id AND assoc_id = :second_id)
+                   OR (item_id = :second_id AND assoc_id = :first_id)
+                ORDER BY id
+                """
+            ),
+            {"first_id": normalized_first, "second_id": normalized_second},
+        ).mappings().all()
+
+        if not selection:
+            return None
+
+        if len(selection) == 1:
+            return dict(selection[0])
+
+        combined_bits = 0
+        for row in selection:
+            try:
+                combined_bits |= int(row.get("assoc_type") or 0)
+            except (TypeError, ValueError):
+                combined_bits |= 0
+
+        desired_item_id = normalized_first
+        desired_assoc_id = normalized_second
+        target_row: Optional[Dict[str, Any]] = None
+        for row in selection:
+            if str(row.get("item_id")) == desired_item_id and str(row.get("assoc_id")) == desired_assoc_id:
+                target_row = dict(row)
+                break
+
+        if target_row is None:
+            first_row = dict(selection[0])
+            conn.execute(
+                text(
+                    """
+                    UPDATE relationships
+                    SET item_id = :item_id, assoc_id = :assoc_id
+                    WHERE id = :relationship_id
+                    """
+                ),
+                {
+                    "item_id": desired_item_id,
+                    "assoc_id": desired_assoc_id,
+                    "relationship_id": first_row.get("id"),
+                },
+            )
+            target_row = first_row
+
+        conn.execute(
+            text(
+                """
+                UPDATE relationships
+                SET assoc_type = :assoc_type
+                WHERE id = :relationship_id
+                """
+            ),
+            {
+                "assoc_type": combined_bits,
+                "relationship_id": target_row.get("id"),
+            },
+        )
+
+        for row in selection:
+            if row.get("id") == target_row.get("id"):
+                continue
+            conn.execute(
+                text(
+                    """
+                    DELETE FROM relationships
+                    WHERE id = :relationship_id
+                    """
+                ),
+                {"relationship_id": row.get("id")},
+            )
+
+        final_row = conn.execute(
+            text(
+                """
+                SELECT id, item_id, assoc_id, assoc_type
+                FROM relationships
+                WHERE id = :relationship_id
+                """
+            ),
+            {"relationship_id": target_row.get("id")},
+        ).mappings().first()
+
+        return dict(final_row) if final_row else None
+
+
+def set_item_relationship(first_identifier: Any, second_identifier: Any, assoc_type: int) -> Optional[Dict[str, Any]]:
+    """Create or update a relationship while respecting existing directionality."""
+
+    existing = get_item_relationship(first_identifier, second_identifier)
+    if existing is None:
+        try:
+            normalized_first = normalize_pg_uuid(str(first_identifier))
+            normalized_second = normalize_pg_uuid(str(second_identifier))
+        except Exception as exc:
+            log.debug(
+                "Unable to normalize relationship identifiers %r and %r for insert: %s",
+                first_identifier,
+                second_identifier,
+                exc,
+            )
+            return None
+
+        engine = get_engine()
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO relationships (item_id, assoc_id, assoc_type)
+                    VALUES (:item_id, :assoc_id, :assoc_type)
+                    """
+                ),
+                {
+                    "item_id": normalized_first,
+                    "assoc_id": normalized_second,
+                    "assoc_type": int(assoc_type),
+                },
+            )
+
+        return get_item_relationship(first_identifier, second_identifier)
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE relationships
+                SET assoc_type = :assoc_type
+                WHERE id = :relationship_id
+                """
+            ),
+            {
+                "assoc_type": int(assoc_type),
+                "relationship_id": existing.get("id"),
+            },
+        )
+
+    return get_item_relationship(existing.get("item_id"), existing.get("assoc_id"))
