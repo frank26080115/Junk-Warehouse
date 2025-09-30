@@ -18,6 +18,7 @@ from app.db import get_db_item_as_dict, get_engine, update_db_row_by_dict, unwra
 from .user_login import login_required
 from .job_manager import get_job_manager
 from .helpers import normalize_pg_uuid
+from .history import log_history
 
 from backend.email_utils.gmail import GmailChecker
 from backend.email_utils.imap import ImapChecker
@@ -182,6 +183,7 @@ def _ingest_invoice_file(file_storage: FileStorage) -> Dict[str, Any]:
             )
         else:
             invoice_id = invoice_pk or invoice_row.get("id")
+            log_history(item_id_1=None, item_id_2=None, event="invoice ingest", meta=invoice_row)
 
     status = "invoice_created" if invoice_id else (
         "invoice_failed" if invoice_error else "no_order_number"
@@ -269,6 +271,8 @@ def set_invoice_api() -> Any:
     ) = unwrap_db_result(update_result)
     if is_error:
         return jsonify(reply_obj), status_code
+
+    log_history(item_id_1=None, item_id_2=None, event="invoice " + ("insert" if target_uuid == "new" else "update"), meta=invoice_row)
 
     invoice_id = primary_key or invoice_row.get("id")
     if not invoice_id and invoice_uuid:

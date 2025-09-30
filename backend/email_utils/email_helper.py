@@ -14,6 +14,7 @@ from sqlalchemy import text
 from automation.order_num_extract import extract_order_number, extract_order_number_and_url
 from shop_handler import ShopHandler
 from app.db import get_engine, update_db_row_by_dict, unwrap_db_result
+from app.history import log_history
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SECRETS_PATH = REPO_ROOT / "config" / "secrets.json"
@@ -248,6 +249,7 @@ class EmailChecker:
                     invoice_id = invoice_pk or (
                         invoice_row.get("id") if isinstance(invoice_row, dict) else None
                     )
+                    log_history(item_id_1=None, item_id_2=None, event="email invoice ingested", meta=invoice_row)
         status = "invoice_created" if invoice_id else (
             "invoice_failed" if invoice_error else "no_order_number"
         )

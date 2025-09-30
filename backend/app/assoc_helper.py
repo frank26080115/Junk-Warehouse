@@ -8,6 +8,7 @@ from sqlalchemy import text
 from .db import get_engine
 from .helpers import normalize_pg_uuid
 from .history import log_history
+from .embeddings import update_embeddings_for_item
 
 log = logging.getLogger(__name__)
 
@@ -208,20 +209,21 @@ def get_item_relationship(first_identifier: Any, second_identifier: Any) -> Opti
 def set_item_relationship(first_identifier: Any, second_identifier: Any, assoc_type: int) -> Optional[Dict[str, Any]]:
     """Create or update a relationship while respecting existing directionality."""
 
-    existing = get_item_relationship(first_identifier, second_identifier)
-    if existing is None:
-        try:
-            normalized_first = normalize_pg_uuid(str(first_identifier))
-            normalized_second = normalize_pg_uuid(str(second_identifier))
-        except Exception as exc:
-            log.debug(
-                "Unable to normalize relationship identifiers %r and %r for insert: %s",
-                first_identifier,
-                second_identifier,
-                exc,
-            )
-            return None
+    try:
+        normalized_first = normalize_pg_uuid(str(first_identifier))
+        normalized_second = normalize_pg_uuid(str(second_identifier))
+    except Exception as exc:
+        log.debug(
+            "Unable to normalize relationship identifiers %r and %r for insert: %s",
+            first_identifier,
+            second_identifier,
+            exc,
+        )
+        return None
 
+    existing = get_item_relationship(normalized_first, normalized_second)
+    
+    if existing is None:
         engine = get_engine()
         with engine.begin() as conn:
             conn.execute(
@@ -238,8 +240,8 @@ def set_item_relationship(first_identifier: Any, second_identifier: Any, assoc_t
                 },
             )
 
-        x = get_item_relationship(first_identifier, second_identifier)
-        log_history(item_id_1=first_identifier, item_id_2=second_identifier, event="new relationship", meta=x)
+        x = get_item_relationship(normalized_first, normalized_second)
+        log_history(item_id_1=normalized_first, item_id_2=normalized_second, event="new relationship", meta=x)
         return x
 
     engine = get_engine()
@@ -258,8 +260,18 @@ def set_item_relationship(first_identifier: Any, second_identifier: Any, assoc_t
             },
         )
 
+    if int_has_containment(int(assoc_type)):
+        try:
+            update_embeddings_for_item(normalized_first)
+        except:
+            pass
+        try:
+            update_embeddings_for_item(normalized_second)
+        except:
+            pass
+
     x = get_item_relationship(existing.get("item_id"), existing.get("assoc_id"))
-    log_history(item_id_1=first_identifier, item_id_2=second_identifier, event="update relationship", meta={
+    log_history(item_id_1=normalized_first, item_id_2=normalized_second, event="update relationship", meta={
             "before": existing,
             "after": x
         })
