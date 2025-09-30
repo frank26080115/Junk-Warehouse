@@ -940,7 +940,7 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
     <div className="border rounded-3 p-3 bg-white" style={panelStyle}>
       {hasTitle && (
         <div className="mb-3">
-          <h2 className="h5 mb-0">{displayedTitle}</h2>
+          <h1 className="h5 mb-0">{displayedTitle}</h1>
         </div>
       )}
 

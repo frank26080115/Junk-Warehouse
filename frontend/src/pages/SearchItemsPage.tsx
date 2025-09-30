@@ -10,7 +10,7 @@ const SearchItemsPage: React.FC = () => {
   return (
     <div className="container-lg py-4" style={{ maxWidth: "960px" }}>
       <SearchPanel
-        displayedTitle="Search Inventory items"
+        displayedTitle="Search Inventory Items"
         prefilledQuery={prefilled}
         tableName="items"
         allowDelete

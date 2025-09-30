@@ -30,7 +30,7 @@ interface HomeStatsPanelProps {
  * Adjust this constant to switch between the available number presentations.
  * The component has dedicated styling for each choice so future adjustments are straightforward.
  */
-const numberDisplayStyle: NumberDisplayStyle = "odometer";
+const numberDisplayStyle: NumberDisplayStyle = "flip";
 
 /**
  * The configuration block below keeps the layout knobs in one visible location so future

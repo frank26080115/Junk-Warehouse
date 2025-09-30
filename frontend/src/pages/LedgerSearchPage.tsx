@@ -15,9 +15,8 @@ const LedgerSearchPage: React.FC = () => {
 
   return (
     <div className="container-lg py-4" style={{ maxWidth: "960px" }}>
-      <h1 className="h3 mb-4">Search Invoices</h1>
       <SearchPanel
-        displayedTitle="Invoices"
+        displayedTitle="Search Ledger"
         prefilledQuery={searchPrefill}
         tableName="invoices"
         allowDelete

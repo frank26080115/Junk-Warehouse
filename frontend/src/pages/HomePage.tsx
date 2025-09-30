@@ -94,7 +94,7 @@ const HomePage: React.FC = () => {
       </div>
       <div className="mt-4">
         <SearchPanel
-          displayedTitle="Search inventory items"
+          displayedTitle="Search Inventory Items"
           prefilledQuery={searchPrefill}
           tableName="items"
           allowDelete
