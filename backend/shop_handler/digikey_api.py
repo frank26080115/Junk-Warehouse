@@ -280,12 +280,80 @@ def get_item_details(digikey_product_number: str) -> Dict[str, str]:
 
     product_code = ";".join(product_code_parts)
 
-    return {
+    def _clean_image_url(candidate: Any) -> Optional[str]:
+        """Return a normalised URL string when the candidate looks valid."""
+
+        if isinstance(candidate, str):
+            stripped = candidate.strip()
+            return stripped or None
+        return None
+
+    def _extract_image_url(source: Any) -> Optional[str]:
+        """Walk the Digi-Key payload and return the first plausible image URL."""
+
+        prioritized_keys = (
+            "Url",
+            "URL",
+            "ImageUrl",
+            "ImageURL",
+            "LargeImageUrl",
+            "MediumImageUrl",
+            "SmallImageUrl",
+            "PrimaryImageUrl",
+            "PrimaryImageURL",
+            "NormalizedUrl",
+            "PhotoUrl",
+        )
+
+        if isinstance(source, dict):
+            for key in prioritized_keys:
+                if key in source:
+                    cleaned = _clean_image_url(source.get(key))
+                    if cleaned:
+                        return cleaned
+            for value in source.values():
+                nested = _extract_image_url(value)
+                if nested:
+                    return nested
+            return None
+
+        if isinstance(source, (list, tuple, set)):
+            for entry in source:
+                nested = _extract_image_url(entry)
+                if nested:
+                    return nested
+            return None
+
+        return _clean_image_url(source)
+
+    potential_sources: List[Any] = []
+    for key in ("PrimaryPhoto", "PrimaryImage", "PrimaryProductImage"):
+        value = payload.get(key)
+        if value is not None:
+            potential_sources.append(value)
+
+    for key in ("ProductImages", "Media", "Images", "AlternatePhotos"):
+        value = payload.get(key)
+        if value is not None:
+            potential_sources.append(value)
+
+    image_url: Optional[str] = None
+    for source in potential_sources:
+        image_url = _extract_image_url(source)
+        if image_url:
+            break
+
+    result: Dict[str, str] = {
         "name": product_description.strip() if isinstance(product_description, str) else "",
         "description": detailed_description.strip() if isinstance(detailed_description, str) else "",
         "url": product_url.strip() if isinstance(product_url, str) else "",
         "product_code": product_code,
     }
+
+    if image_url:
+        result["img_url"] = image_url
+
+    return result
 
 
 

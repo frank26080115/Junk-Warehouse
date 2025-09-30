@@ -65,7 +65,7 @@ class AmazonHandler(ShopHandler):
             if not base_url or not base_name:
                 continue
 
-            final_url, prod_name, description, product_code = self._fetch_remote_details(
+            final_url, prod_name, description, product_code, image_url = self._fetch_remote_details(
                 base_url,
                 base_name,
             )
@@ -84,6 +84,11 @@ class AmazonHandler(ShopHandler):
                 "url": final_url,
                 "source": self.POSSIBLE_NAMES[0],
             }
+
+            if image_url:
+                # Preserve the image reference when Amazon exposes one so downstream
+                # consumers can render a helpful preview thumbnail.
+                item["img_url"] = image_url
 
             fallback_product_code = candidate.get("product_code")
             if product_code is None and fallback_product_code:
@@ -326,20 +331,21 @@ class AmazonHandler(ShopHandler):
         self,
         url: str,
         fallback_name: str,
-    ) -> tuple[str, str, str, Optional[str]]:
+    ) -> tuple[str, str, str, Optional[str], Optional[str]]:
         final_url = url
         final_name = fallback_name
         description = ""
         product_code: Optional[str] = None
+        image_url: Optional[str] = None
 
         if not url:
-            return final_url, final_name, description, product_code
+            return final_url, final_name, description, product_code, image_url
 
         try:
             # Use the shared automation helper so that HTTP behaviour stays consistent across handlers.
             html_content, _text_content, resolved_url = fetch_with_requests(url, timeout=self.REQUEST_TIMEOUT)
         except Exception:
-            return final_url, final_name, description, product_code
+            return final_url, final_name, description, product_code, image_url
 
         final_url = resolved_url or final_url
 
@@ -349,7 +355,7 @@ class AmazonHandler(ShopHandler):
         try:
             remote_root = lxml_html.fromstring(html_content, parser=parser)
         except Exception:
-            return final_url, final_name, description, product_code
+            return final_url, final_name, description, product_code, image_url
 
         title_element = remote_root.xpath('.//span[@id="productTitle"]')
         if title_element:
@@ -368,6 +374,24 @@ class AmazonHandler(ShopHandler):
             if bullet_lines:
                 description = "\r\n".join(bullet_lines)
 
+        if image_url is None:
+            # The main hero image typically carries the landingImage identifier.
+            landing_images = remote_root.xpath('.//img[@id="landingImage"]')
+            if landing_images:
+                candidate = (landing_images[0].get('src') or '').strip()
+                if candidate:
+                    image_url = candidate
+
+        if image_url is None:
+            # Certain layouts wrap the hero image inside a dedicated container.
+            wrapper_nodes = remote_root.xpath('.//div[@id="imgTagWrapperId"]')
+            if wrapper_nodes:
+                nested_images = wrapper_nodes[0].xpath('.//img')
+                if nested_images:
+                    candidate = (nested_images[0].get('src') or '').strip()
+                    if candidate:
+                        image_url = candidate
+
         if 'amazon.com' not in final_url.lower():
             normalized_path = final_url.lstrip('/')
             if normalized_path:
@@ -379,7 +403,7 @@ class AmazonHandler(ShopHandler):
         if dp_match:
             product_code = dp_match.group(1).upper()  # Normalize ASIN to uppercase for consistency.
 
-        return final_url, final_name, description, product_code
+        return final_url, final_name, description, product_code, image_url
 
     def _is_total_row(self, row: lxml_html.HtmlElement) -> bool:
         if row is None or not isinstance(getattr(row, "tag", None), str):
