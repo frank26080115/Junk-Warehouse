@@ -7,6 +7,7 @@ from sqlalchemy import text
 
 from .db import get_engine
 from .helpers import normalize_pg_uuid
+from .history import log_history
 
 log = logging.getLogger(__name__)
 
@@ -237,7 +238,9 @@ def set_item_relationship(first_identifier: Any, second_identifier: Any, assoc_t
                 },
             )
 
-        return get_item_relationship(first_identifier, second_identifier)
+        x = get_item_relationship(first_identifier, second_identifier)
+        log_history(item_id_1=first_identifier, item_id_2=second_identifier, event="new relationship", meta=x)
+        return x
 
     engine = get_engine()
     with engine.begin() as conn:
@@ -255,4 +258,9 @@ def set_item_relationship(first_identifier: Any, second_identifier: Any, assoc_t
             },
         )
 
-    return get_item_relationship(existing.get("item_id"), existing.get("assoc_id"))
+    x = get_item_relationship(existing.get("item_id"), existing.get("assoc_id"))
+    log_history(item_id_1=first_identifier, item_id_2=second_identifier, event="update relationship", meta={
+            "before": existing,
+            "after": x
+        })
+    return x

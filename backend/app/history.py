@@ -7,6 +7,7 @@ from typing import Any, Dict, Mapping, Optional, Union
 from sqlalchemy.engine import Engine
 
 from app.db import get_engine, update_db_row_by_dict
+from app.helpers import normalize_pg_uuid
 
 # We only import typing and database utilities so that this module remains focused on
 # transforming Python data into a shape that the generic insert/update helper can use.
@@ -46,9 +47,9 @@ def log_history(
 
     # Only include keys that received meaningful values.
     if item_id_1 is not None:
-        payload["item_id_1"] = item_id_1
+        payload["item_id_1"] = normalize_pg_uuid(item_id_1)
     if item_id_2 is not None:
-        payload["item_id_2"] = item_id_2
+        payload["item_id_2"] = normalize_pg_uuid(item_id_2)
     if event is not None:
         payload["event"] = event
 

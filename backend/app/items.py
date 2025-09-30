@@ -30,6 +30,7 @@ from .image_handler import (
 )
 from .job_manager import get_job_manager
 from app.config_loader import get_pin_open_expiry_hours
+from .history import log_history
 
 log = logging.getLogger(__name__)
 
@@ -441,6 +442,12 @@ def save_item_api():
     if payload.get("is_collection") is True:
         payload["is_container"] = True
 
+    before_item = None
+    try:
+        before_item = get_db_item_as_dict(engine, TABLE, item_uuid, id_col_name=ID_COL)
+    except:
+        pass
+
     try:
         # Fuzzy update: lets the helper map keys without hardcoding column names here
         update_result = update_db_row_by_dict(
@@ -462,6 +469,11 @@ def save_item_api():
 
         if is_error:
             return jsonify(reply_obj), status_code
+
+        log_history(item_id_1=row_data["id"], event="edited item", meta={
+            "before": before_item,
+            "after": row_data
+        })
 
         if item_uuid is None:
             item_uuid = primary_key if primary_key is not None else row_data.get(ID_COL)
@@ -623,6 +635,8 @@ def insert_item(
     db_row = get_db_item_as_dict(engine, TABLE, new_id, id_col_name=ID_COL)
     if not db_row:
         raise LookupError("Inserted item not found")
+
+    log_history(item_id_1=db_row["id"], event="inserted item", meta=db_row)
 
     try:
         update_embeddings_for_item(db_row)
@@ -819,10 +833,10 @@ def _autogen_items_task(context: Dict[str, Any]) -> Dict[str, Any]:
                     {"item_id": new_item_id, "invoice_id": invoice_uuid},
                 )
 
+            item_uuid_obj = uuid.UUID(new_item_id)
             if image_text:
                 image_error: Optional[str] = None
                 try:
-                    item_uuid_obj = uuid.UUID(new_item_id)
                     if image_text.lower().startswith("data:"):
                         store_image_for_item(
                             item_uuid=item_uuid_obj,
@@ -857,7 +871,6 @@ def _autogen_items_task(context: Dict[str, Any]) -> Dict[str, Any]:
             if tagged_img_url:
                 image_error: Optional[str] = None
                 try:
-                    item_uuid_obj = uuid.UUID(new_item_id)
                     store_image_for_item(
                             item_uuid=item_uuid_obj,
                             source_url=tagged_img_url,
@@ -942,6 +955,13 @@ def delete_item_relationship(relationship_identifier: Any) -> Optional[Dict[str,
         return None
 
     engine = get_engine()
+
+    before_row = None
+    try:
+        before_row = get_db_item_as_dict(engine, 'relationships', normalized_relationship_id, 'id')
+    except:
+        pass
+
     with engine.begin() as conn:
         existing = conn.execute(
             text(
@@ -970,6 +990,8 @@ def delete_item_relationship(relationship_identifier: Any) -> Optional[Dict[str,
             ),
             {"relationship_id": normalized_relationship_id},
         )
+
+        log_history(before_row['item_id'] if before_row else None, before_row['assoc_id'] if before_row else None, "delete relationship", before_row)
 
         return relationship_dict
 
