@@ -28,6 +28,27 @@ interface HomeStatsPanelProps {
  */
 const numberDisplayStyle: NumberDisplayStyle = "odometer";
 
+/**
+ * The configuration block below keeps the layout knobs in one visible location so future
+ * adjustments remain easy to reason about. All measurements use small, comfortable spacing so the
+ * rendered cards feel less bulky.
+ */
+const STAT_LAYOUT_TOKENS = {
+  minimumColumnWidth: 260,
+  gridGap: 12,
+  cardBorderRadius: 8,
+  cardBorderColor: "#d8dee9",
+  labelPadding: "8px 12px",
+  labelFontSize: "0.95rem",
+  labelEmojiSize: "1.15rem",
+  labelEmojiSpacing: "0.3rem",
+  numberPadding: "8px 12px",
+  numberMinimumWidth: 120,
+  numberFontSize: "1.6rem",
+  buttonPadding: "8px 12px",
+  buttonFontSize: "1.4rem",
+};
+
 const STAT_DEFINITIONS: StatDefinition[] = [
   {
     id: "staging",
@@ -82,16 +103,16 @@ const STAT_DEFINITIONS: StatDefinition[] = [
 
 const BASE_PANEL_STYLE: React.CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
-  gap: "16px",
+  gridTemplateColumns: `repeat(auto-fit, minmax(${STAT_LAYOUT_TOKENS.minimumColumnWidth}px, 1fr))`,
+  gap: `${STAT_LAYOUT_TOKENS.gridGap}px`,
   width: "100%",
 };
 
 const BASE_ITEM_STYLE: React.CSSProperties = {
   display: "flex",
   alignItems: "stretch",
-  borderRadius: "10px",
-  border: "1px solid #d8dee9",
+  borderRadius: `${STAT_LAYOUT_TOKENS.cardBorderRadius}px`,
+  border: `1px solid ${STAT_LAYOUT_TOKENS.cardBorderColor}`,
   backgroundColor: "#ffffff",
   boxShadow: "0 1px 3px rgba(0, 0, 0, 0.08)",
   overflow: "hidden",
@@ -101,25 +122,25 @@ const LABEL_SECTION_STYLE: React.CSSProperties = {
   flex: "1 1 auto",
   display: "flex",
   alignItems: "center",
-  padding: "12px 16px",
-  fontSize: "1rem",
+  padding: STAT_LAYOUT_TOKENS.labelPadding,
+  fontSize: STAT_LAYOUT_TOKENS.labelFontSize,
   fontWeight: 600,
   whiteSpace: "nowrap",
 };
 
 const BASE_NUMBER_WRAPPER_STYLE: React.CSSProperties = {
   flex: "0 0 auto",
-  minWidth: "140px",
+  minWidth: `${STAT_LAYOUT_TOKENS.numberMinimumWidth}px`,
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
-  padding: "12px 16px",
-  borderLeft: "1px solid #d8dee9",
-  borderRight: "1px solid #d8dee9",
+  padding: STAT_LAYOUT_TOKENS.numberPadding,
+  borderLeft: `1px solid ${STAT_LAYOUT_TOKENS.cardBorderColor}`,
+  borderRight: `1px solid ${STAT_LAYOUT_TOKENS.cardBorderColor}`,
 };
 
 const BASE_NUMBER_TEXT_STYLE: React.CSSProperties = {
-  fontSize: "1.9rem",
+  fontSize: STAT_LAYOUT_TOKENS.numberFontSize,
   fontWeight: 700,
   letterSpacing: "0.1em",
   textAlign: "center",
@@ -130,8 +151,8 @@ const SEARCH_BUTTON_STYLE: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
-  padding: "12px 16px",
-  fontSize: "1.6rem",
+  padding: STAT_LAYOUT_TOKENS.buttonPadding,
+  fontSize: STAT_LAYOUT_TOKENS.buttonFontSize,
   border: "none",
   backgroundColor: "#f1f5f9",
   cursor: "pointer",
@@ -265,9 +286,20 @@ const HomeStatsPanel: React.FC<HomeStatsPanelProps> = ({ onItemQuerySelected }) 
       }
     };
 
-    STAT_DEFINITIONS.forEach((definition) => {
-      void fetchCountForDefinition(definition);
-    });
+    const loadSequentially = async () => {
+      for (const definition of STAT_DEFINITIONS) {
+        if (isUnmounted) {
+          break;
+        }
+
+        // Await each request before starting the next one so the backend never receives a surge of
+        // concurrent search queries. This conservative approach helps the database remain stable
+        // even when additional statistics are introduced in the future.
+        await fetchCountForDefinition(definition);
+      }
+    };
+
+    void loadSequentially();
 
     return () => {
       isUnmounted = true;
@@ -314,7 +346,15 @@ const HomeStatsPanel: React.FC<HomeStatsPanelProps> = ({ onItemQuerySelected }) 
         return (
           <div key={definition.id} style={BASE_ITEM_STYLE}>
             <div style={LABEL_SECTION_STYLE} title={errorMessage || definition.label}>
-              <span style={{ fontSize: "1.3rem", marginRight: "0.2rem" }}>{definition.emoji}</span>
+              <span
+                style={{
+                  fontSize: STAT_LAYOUT_TOKENS.labelEmojiSize,
+                  marginRight: STAT_LAYOUT_TOKENS.labelEmojiSpacing,
+                }}
+              >
+                {definition.emoji}
+              </span>
+              <span>{definition.label}</span>
             </div>
             <div style={mergedNumberWrapperStyle} aria-live="polite">
               <span style={mergedNumberTextStyle}>{displayValue}</span>
