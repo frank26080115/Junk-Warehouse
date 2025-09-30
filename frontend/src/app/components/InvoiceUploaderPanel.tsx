@@ -161,19 +161,15 @@ const InvoiceUploaderPanel: React.FC<InvoiceUploaderPanelProps> = ({
     setSelectedFiles(Array.from(files));
   };
 
-  const handleUpload = async () => {
-    // Submit the selected email archives to the upload endpoint and surface progress information.
-    if (!selectedFiles.length || uploadBusy) {
-      return;
-    }
+  const submitFormDataToUploader = async (
+    formData: FormData,
+    onSuccessfulUpload?: () => void,
+  ) => {
+    // Shared routine that sends invoice data to the backend and keeps the calling context informed about progress.
     setUploadBusy(true);
     setUploadJobId(null);
     setUploadStatus(null);
     try {
-      const formData = new FormData();
-      selectedFiles.forEach((file) => {
-        formData.append("files", file);
-      });
       const response = await fetch("/api/invoiceupload", {
         method: "POST",
         body: formData,
@@ -211,10 +207,7 @@ const InvoiceUploaderPanel: React.FC<InvoiceUploaderPanelProps> = ({
         (result && (result.message || result.detail)) ||
         "Invoices uploaded successfully.";
       showModal("Invoice upload complete", message);
-      setSelectedFiles([]);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
+      onSuccessfulUpload?.();
     } catch (error: any) {
       if (!isMountedRef.current) {
         return;
@@ -230,6 +223,61 @@ const InvoiceUploaderPanel: React.FC<InvoiceUploaderPanelProps> = ({
     }
   };
 
+  const handleUpload = async () => {
+    // Submit the selected email archives to the upload endpoint and surface progress information.
+    if (!selectedFiles.length || uploadBusy) {
+      return;
+    }
+    const formData = new FormData();
+    selectedFiles.forEach((file) => {
+      formData.append("files", file);
+    });
+    await submitFormDataToUploader(formData, () => {
+      setSelectedFiles([]);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    });
+  };
+
+  const handleHtmlPaste = async (
+    event: React.ClipboardEvent<HTMLTextAreaElement>,
+  ) => {
+    // Translate rich HTML clipboard contents into an upload request so users can paste invoices directly.
+    event.preventDefault();
+    const target = event.target as HTMLTextAreaElement;
+    if (target) {
+      target.value = "";
+    }
+    if (uploadBusy) {
+      return;
+    }
+    const clipboardData = event.clipboardData;
+    if (!clipboardData) {
+      showModal(
+        "Clipboard unavailable",
+        "Could not access clipboard data. Please try pasting again or use the file upload control instead.",
+      );
+      return;
+    }
+    const hasHtml = clipboardData.types?.includes("text/html");
+    const htmlContent = clipboardData.getData("text/html");
+    if (!hasHtml || !htmlContent.trim()) {
+      showModal(
+        "No HTML detected",
+        "The pasted information did not include HTML formatting. Paste directly from the HTML invoice or upload the file instead.",
+      );
+      return;
+    }
+    const safeTimestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const fileName = `pasted-invoice-${safeTimestamp}.html`;
+    const htmlBlob = new Blob([htmlContent], { type: "text/html" });
+    const htmlFile = new File([htmlBlob], fileName, { type: "text/html" });
+    const formData = new FormData();
+    formData.append("files", htmlFile);
+    await submitFormDataToUploader(formData);
+  };
+
   const renderBusyIndicator = (message: string) => (
     // Provide a consistent inline spinner message pairing for the ongoing background jobs.
     <div className="d-flex align-items-center gap-2 mt-2" role="status">
@@ -239,7 +287,7 @@ const InvoiceUploaderPanel: React.FC<InvoiceUploaderPanelProps> = ({
   );
 
   return (
-    <div className="mt-5">
+    <div className="mt-5 border rounded-3 p-4">
       {showCheckEmailPanel && (
         <>
           <h2 className="h5">Check email for invoices</h2>
@@ -287,6 +335,16 @@ const InvoiceUploaderPanel: React.FC<InvoiceUploaderPanelProps> = ({
             {uploadBusy ? "Uploading…" : "Upload"}
           </button>
         </div>
+        {/* Lightweight paste target that stays empty while forwarding HTML clipboard content to the uploader. */}
+        <textarea
+          className="form-control mt-3"
+          placeholder="Paste HTML invoice here"
+          rows={3}
+          onPaste={handleHtmlPaste}
+          style={{ fontSize: "0.85rem" }}
+          value=""
+          readOnly
+        />
         {uploadBusy &&
           renderBusyIndicator(
             uploadStatus === "queued"
