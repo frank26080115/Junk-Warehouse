@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import re
 from typing import Dict, List
+from urllib.parse import urljoin
+
+from lxml import html as lxml_html
 
 from shop_handler import ShopHandler
+from automation.web_get import fetch_with_playwright
 
 
 class McMasterCarrHandler(ShopHandler):
@@ -119,7 +123,12 @@ class McMasterCarrHandler(ShopHandler):
 
                 items.append(item)
 
-        return items
+        # Enrich the harvested rows with authoritative metadata gathered from
+        # the corresponding product detail pages.
+        return [
+            self._apply_remote_details(candidate)
+            for candidate in items
+        ]
 
     def _guess_items_2(self) -> List[Dict[str, str]]:
         """Fallback strategy that inspects div-based product listings."""
@@ -195,4 +204,94 @@ class McMasterCarrHandler(ShopHandler):
 
             items.append(item)
 
-        return items
+        # Apply the same enrichment used by the table-driven parser so the
+        # calling code receives consistent results regardless of which path
+        # successfully interpreted the invoice.
+        return [
+            self._apply_remote_details(candidate)
+            for candidate in items
+        ]
+
+    def _apply_remote_details(self, item: Dict[str, str]) -> Dict[str, str]:
+        """Return a copy of ``item`` augmented with remote product details."""
+        product_code = item.get('product_code', '').strip()
+        base_url = item.get('url', '').strip()
+
+        final_url, name, description, image_url = self._fetch_remote_details(
+            product_code,
+            base_url,
+        )
+
+        enriched = dict(item)
+        if final_url:
+            enriched['url'] = final_url
+        if name:
+            enriched['name'] = name
+        if description:
+            enriched['description'] = description
+        if image_url:
+            enriched['img_url'] = image_url
+
+        return enriched
+
+    def _fetch_remote_details(
+        self,
+        product_code: str,
+        product_url: str,
+    ) -> tuple[str, str, str, str]:
+        """Look up the McMaster-Carr product page and extract key metadata."""
+        # Prefer the explicit hyperlink from the invoice. When it is missing,
+        # fall back to McMaster-Carr's predictable URL structure based on the
+        # product code itself.
+        candidate_url = product_url.strip()
+        if not candidate_url and product_code:
+            candidate_url = f"https://www.mcmaster.com/{product_code.strip()}/"
+
+        if not candidate_url:
+            return '', '', '', ''
+
+        try:
+            html_content, _text_content, resolved_url = fetch_with_playwright(candidate_url)
+        except Exception:
+            return candidate_url, '', '', ''
+
+        final_url = resolved_url or candidate_url
+
+        if not html_content:
+            return final_url, '', '', ''
+
+        parser = lxml_html.HTMLParser(huge_tree=True)
+        try:
+            remote_root = lxml_html.fromstring(html_content, parser=parser)
+        except Exception:
+            return final_url, '', '', ''
+
+        def _select_text(nodes: List[lxml_html.HtmlElement]) -> str:
+            for node in nodes:
+                text_value = (node.text_content() or '').strip()
+                if text_value:
+                    return text_value
+            return ''
+
+        def _match_xpath(tag: str, token: str) -> List[lxml_html.HtmlElement]:
+            lowercase_token = token.lower()
+            expression = (
+                f".//{tag}[contains(translate(@class, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), "
+                f"'{lowercase_token}')]"
+            )
+            return remote_root.xpath(expression)
+
+        name = _select_text(_match_xpath('h1', 'productdetailheaderprimary'))
+        description = _select_text(_match_xpath('h3', 'productdetailheadersecondary'))
+
+        image_url = ''
+        image_containers = _match_xpath('div', 'imagecontainer')
+        if image_containers:
+            first_container = image_containers[0]
+            image_nodes = first_container.xpath('.//img')
+            if image_nodes:
+                raw_src = (image_nodes[0].get('src') or '').strip()
+                if raw_src:
+                    image_url = urljoin('https://www.mcmaster.com/', raw_src)
+
+        return final_url, name, description, image_url
