@@ -60,7 +60,7 @@ const STAT_DEFINITIONS: StatDefinition[] = [
   {
     id: "invoices-pending",
     label: "Unprocessed Invoices",
-    emoji: "⏳🛒✉️",
+    emoji: "⏳✉️",
     query: "* ?has_been_processed=false",
     endpoint: "invoices",
   },
@@ -314,8 +314,7 @@ const HomeStatsPanel: React.FC<HomeStatsPanelProps> = ({ onItemQuerySelected }) 
         return (
           <div key={definition.id} style={BASE_ITEM_STYLE}>
             <div style={LABEL_SECTION_STYLE} title={errorMessage || definition.label}>
-              <span style={{ fontSize: "1.3rem", marginRight: "0.5rem" }}>{definition.emoji}</span>
-              <span>{definition.label}</span>
+              <span style={{ fontSize: "1.3rem", marginRight: "0.2rem" }}>{definition.emoji}</span>
             </div>
             <div style={mergedNumberWrapperStyle} aria-live="polite">
               <span style={mergedNumberTextStyle}>{displayValue}</span>
