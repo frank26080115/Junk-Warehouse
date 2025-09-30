@@ -72,7 +72,7 @@ def fetch_with_playwright(url: str, loop_count: int = 3, loop_timeout_ms: int = 
                 # When navigation interrupts content extraction we fall back to an empty document snapshot.
                 html_content = ""
             try:
-                text_content = page.evaluate("() => document.body ? document.body.innerText : """)
+                text_content = page.evaluate("() => document.body ? document.body.innerText : ''")
             except PlaywrightError:
                 # Provide an empty string when Playwright cannot evaluate the body text due to a late navigation.
                 text_content = ""
