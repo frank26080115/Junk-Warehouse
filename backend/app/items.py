@@ -1147,8 +1147,12 @@ def bulk_delete_items_api():
         """
     ).bindparams(bindparam("item_ids", expanding=True))
 
-    with get_engine().begin() as conn:
+    engine = get_engine()
+    with engine.begin() as conn:
         result = conn.execute(delete_sql, {"item_ids": normalized_ids})
+
+        for i in normalized_ids:
+            log_history(i, None, "marked as deleted", get_db_item_as_dict(engine, 'items', i))
 
     return jsonify(
         {
