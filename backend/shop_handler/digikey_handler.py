@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import re
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
@@ -7,8 +9,9 @@ from urllib.parse import urlsplit, urlunsplit
 from lxml import html as lxml_html
 
 from shop_handler import ShopHandler
-from automation.web_get import fetch_with_requests
+from automation.web_get import fetch_with_requests, fetch_with_playwright
 
+log = logging.getLogger(__name__)
 
 class DigiKeyHandler(ShopHandler):
     """Handler for Digi-Key order invoices."""
@@ -191,8 +194,9 @@ class DigiKeyHandler(ShopHandler):
 
         try:
             # Leverage the automation helper to obtain consistent HTTP handling and content parsing.
-            html_content, _text_content, resolved_url = fetch_with_requests(url, timeout=self.REQUEST_TIMEOUT)
-        except Exception:
+            html_content, _text_content, resolved_url = fetch_with_playwright(url)
+        except Exception as ex:
+            log.error(f"Digi-Key part remote fetch exception: {ex!r}")
             return url, ''
 
         final_url = self._strip_query(resolved_url or url)
