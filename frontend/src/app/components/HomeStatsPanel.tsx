@@ -9,6 +9,10 @@ interface StatDefinition {
   emoji: string;
   query: string;
   endpoint: EndpointType;
+  /**
+   * When set, the entry is only rendered as a hidden spacer so the responsive grid keeps rows aligned.
+   */
+  isLayoutSpacer?: boolean;
 }
 
 interface StatState {
@@ -72,6 +76,17 @@ const STAT_DEFINITIONS: StatDefinition[] = [
     query: "* ?alarm",
     endpoint: "items",
   },
+  /**
+   * This spacer keeps the pending and pinned statistics aligned when the grid collapses to two columns.
+   */
+  {
+    id: "layout-spacer-alarm",
+    label: "Layout Spacer",
+    emoji: "",
+    query: "",
+    endpoint: "items",
+    isLayoutSpacer: true,
+  },
   {
     id: "merges",
     label: "Merges Planned",
@@ -117,6 +132,11 @@ const BASE_ITEM_STYLE: React.CSSProperties = {
   backgroundColor: "#ffffff",
   boxShadow: "0 1px 3px rgba(0, 0, 0, 0.08)",
   overflow: "hidden",
+};
+// Provide an invisible spacer card so the responsive grid keeps row groupings tidy.
+const HIDDEN_SPACER_ITEM_STYLE: React.CSSProperties = {
+  ...BASE_ITEM_STYLE,
+  visibility: "hidden",
 };
 
 const LABEL_SECTION_STYLE: React.CSSProperties = {
@@ -234,6 +254,11 @@ const HomeStatsPanel: React.FC<HomeStatsPanelProps> = ({ onItemQuerySelected }) 
     const abortControllers = new Map<string, AbortController>();
 
     const fetchCountForDefinition = async (definition: StatDefinition) => {
+      if (definition.isLayoutSpacer) {
+        // Skip network activity for the spacer and mark it as ready immediately.
+        updateStatState(definition.id, { isLoading: false, errorMessage: null });
+        return;
+      }
       const controller = new AbortController();
       abortControllers.set(definition.id, controller);
       updateStatState(definition.id, { isLoading: true, errorMessage: null });
@@ -334,6 +359,10 @@ const HomeStatsPanel: React.FC<HomeStatsPanelProps> = ({ onItemQuerySelected }) 
     <div style={BASE_PANEL_STYLE}>
       {statStates.map((stat) => {
         const { definition, count, isLoading, errorMessage } = stat;
+        if (definition.isLayoutSpacer) {
+          // Render an invisible placeholder so the grid keeps its two-column alignment without exposing an empty card.
+          return <div key={definition.id} style={HIDDEN_SPACER_ITEM_STYLE} aria-hidden={true} />;
+        }
         const displayValue = isLoading
           ? "???"
           : count != null
