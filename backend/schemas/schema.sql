@@ -335,6 +335,37 @@ CREATE TABLE public.imail_seen (
 );
 
 
+CREATE TABLE public.digikey_seen (
+    id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),  -- random PK
+    salesorder   bytea NOT NULL,                              -- the salesorder number
+    date_seen    timestamptz NOT NULL DEFAULT now(),          -- when processed
+    invoice_id   uuid UNIQUE,                                 -- one-to-one to invoices.id (nullable)
+    CONSTRAINT digikey_seen_salesorder_uniq UNIQUE (salesorder),
+    CONSTRAINT digikey_seen_invoice_fk
+        FOREIGN KEY (invoice_id)
+        REFERENCES public.invoices (id)
+        ON DELETE SET NULL       -- relationship can be null; do not cascade delete
+);
+
+
+CREATE TABLE history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    -- timestamp when event was logged
+    date TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    -- optional references to items
+    item_id_1 UUID NULL REFERENCES items(id) ON DELETE SET NULL,
+    item_id_2 UUID NULL REFERENCES items(id) ON DELETE SET NULL,
+
+    -- event type/description
+    event TEXT NOT NULL DEFAULT '',
+
+    -- additional details as JSON/text
+    meta TEXT NOT NULL DEFAULT ''
+);
+
+
 --
 -- Name: container_embeddings container_embeddings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
