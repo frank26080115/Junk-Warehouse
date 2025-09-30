@@ -13,7 +13,7 @@ class McMasterCarrHandler(ShopHandler):
         "McMaster-Carr",
         "McMaster",
     )
-    ORDER_NUMBER_REGEX = re.compile(r"(?i)order\s*[#:]*\s*(\d{4,6}[A-Z]{3,20})")
+    ORDER_NUMBER_REGEX = re.compile(r"(\d{4,6}[A-Z]{3,20})")
     PRODUCT_CODE_REGEX = re.compile(r"^[A-Z0-9]+$")
 
     def guess_items(self) -> List[Dict[str, str]]:
