@@ -15,6 +15,10 @@ log = logging.getLogger(__name__)
 class AmazonHandler(ShopHandler):
     """Handler for Amazon order invoices."""
 
+    def has_already_been_handled(self, shop_name: str, order_number: str) -> bool:
+        """Amazon invoices reuse the shared human-processing lookup without modification."""
+        return super().has_already_been_handled(shop_name, order_number)
+
     POSSIBLE_NAMES = (
         "Amazon",
     )
