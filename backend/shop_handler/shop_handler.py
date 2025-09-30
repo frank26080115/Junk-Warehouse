@@ -266,6 +266,7 @@ class ShopHandler:
                     "product_code",
                     "url",
                     "source",
+                    "img_url",
                     "matchesbycode",
                 ],
             )

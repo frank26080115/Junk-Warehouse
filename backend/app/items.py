@@ -724,6 +724,7 @@ def _autogen_items_task(context: Dict[str, Any]) -> Dict[str, Any]:
                     "product_code",
                     "url",
                     "source",
+                    "img_url",
                 ])
 
             name_text = structured.get("name", "").strip()
