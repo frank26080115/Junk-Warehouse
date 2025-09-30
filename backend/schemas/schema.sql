@@ -341,6 +341,9 @@ CREATE TABLE history (
     -- timestamp when event was logged
     date TIMESTAMPTZ NOT NULL DEFAULT now(),
 
+    -- who did it
+    username TEXT NOT NULL DEFAULT '',
+
     -- optional references to items
     item_id_1 UUID NULL REFERENCES items(id) ON DELETE SET NULL,
     item_id_2 UUID NULL REFERENCES items(id) ON DELETE SET NULL,
