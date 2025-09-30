@@ -4,15 +4,21 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
+from uuid import UUID
 
 import requests
 
+from sqlalchemy import text
+
 from backend.app import config_loader
+from backend.app.db import session_scope
 
 __all__ = [
     "get_all_items",
     "get_item_details",
+    "has_seen_digikey_invoice",
+    "set_digikey_invoice_seen",
 ]
 
 log = logging.getLogger(__name__)
@@ -280,3 +286,126 @@ def get_item_details(digikey_product_number: str) -> Dict[str, str]:
         "url": product_url.strip() if isinstance(product_url, str) else "",
         "product_code": product_code,
     }
+
+
+
+
+
+
+
+
+
+def _encode_salesorder(salesorder: int) -> bytes:
+    """Convert a sales order identifier into the stored byte representation."""
+
+    if not isinstance(salesorder, int):
+        raise ValueError("salesorder must be provided as an integer value")
+
+    # The digikey_seen table stores the identifier as a BYTEA column containing the ASCII digits.
+    digits = str(salesorder).strip()
+    if not digits:
+        raise ValueError("salesorder cannot be an empty value")
+
+    return digits.encode("utf-8")
+
+
+
+def _coerce_invoice_uuid(invoice_id: Optional[Union[UUID, str]]) -> Optional[UUID]:
+    """Normalise optional invoice identifiers into UUID objects or None."""
+
+    if invoice_id is None:
+        return None
+
+    if isinstance(invoice_id, UUID):
+        return invoice_id
+
+    candidate = str(invoice_id).strip()
+    if not candidate:
+        return None
+
+    try:
+        return UUID(candidate)
+    except Exception as exc:  # pragma: no cover - defensive validation
+        raise ValueError(f"invoice_id {invoice_id!r} is not a valid UUID") from exc
+
+
+
+def has_seen_digikey_invoice(salesorder: int) -> bool:
+    """Return True when the sales order number has already been processed."""
+
+    encoded_salesorder = _encode_salesorder(salesorder)
+
+    with session_scope() as session:
+        # Use a lightweight existence check so repeated lookups stay inexpensive.
+        result = session.execute(
+            text(
+                """
+                SELECT 1 FROM digikey_seen WHERE salesorder = :salesorder LIMIT 1
+                """.strip()
+            ),
+            {"salesorder": encoded_salesorder},
+        ).first()
+
+    return result is not None
+
+
+
+def set_digikey_invoice_seen(
+    salesorder: int,
+    invoice_id: Optional[Union[UUID, str]] = None,
+) -> None:
+    """Insert or update the digikey_seen entry for the provided sales order."""
+
+    encoded_salesorder = _encode_salesorder(salesorder)
+    normalized_invoice_id = _coerce_invoice_uuid(invoice_id)
+
+    with session_scope() as session:
+        # Check whether an entry is already present so we can update instead of inserting.
+        existing_row = session.execute(
+            text(
+                """
+                SELECT id, invoice_id FROM digikey_seen
+                WHERE salesorder = :salesorder LIMIT 1
+                """.strip()
+            ),
+            {"salesorder": encoded_salesorder},
+        ).mappings().first()
+
+        if existing_row is None:
+            session.execute(
+                text(
+                    """
+                    INSERT INTO digikey_seen (salesorder, date_seen, invoice_id)
+                    VALUES (:salesorder, now(), :invoice_id)
+                    """.strip()
+                ),
+                {
+                    "salesorder": encoded_salesorder,
+                    "invoice_id": normalized_invoice_id,
+                },
+            )
+        else:
+            current_invoice_id = existing_row.get("invoice_id")
+            # Preserve an existing invoice reference when callers intentionally pass None.
+            effective_invoice_id = (
+                normalized_invoice_id
+                if normalized_invoice_id is not None
+                else current_invoice_id
+            )
+
+            session.execute(
+                text(
+                    """
+                    UPDATE digikey_seen
+                    SET date_seen = now(), invoice_id = :invoice_id
+                    WHERE id = :id
+                    """.strip()
+                ),
+                {
+                    "invoice_id": effective_invoice_id,
+                    "id": existing_row["id"],
+                },
+            )
+
+        # Persist the change immediately because this helper is used by background jobs.
+        session.commit()
