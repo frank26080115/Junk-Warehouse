@@ -6,8 +6,11 @@ import json
 import logging
 import re
 import sys
+import threading
 from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional, Sequence, Tuple, Type
+from sqlalchemy import MetaData, Table, select
+from sqlalchemy.engine import Engine
 
 from lxml import etree
 from lxml import html as lxml_html
@@ -36,9 +39,25 @@ from app.helpers import (
     clean_dom_text_fragment,
     dict_to_tagged_text,
 )
+from app.db import get_engine, session_scope
 from app.search import find_code_matched_items
 
 log = logging.getLogger(__name__)
+
+
+_invoice_table_lock = threading.Lock()
+_cached_invoice_table: Optional[Table] = None
+
+def _get_invoice_table(engine: Engine) -> Table:
+    """Reflect and cache the invoices table so repeated lookups stay inexpensive."""
+    global _cached_invoice_table
+    if _cached_invoice_table is not None:
+        return _cached_invoice_table
+    with _invoice_table_lock:
+        if _cached_invoice_table is None:
+            metadata = MetaData()
+            _cached_invoice_table = Table("invoices", metadata, autoload_with=engine)
+    return _cached_invoice_table
 
 
 # Collapse any run of whitespace into a single regular space so repeated spacing never leaks through.
@@ -50,6 +69,47 @@ class ShopHandler:
 
     POSSIBLE_NAMES: ClassVar[Sequence[str]] = tuple()
     ORDER_NUMBER_REGEX: ClassVar[Optional[re.Pattern[str]]] = None
+
+    def has_already_been_handled(self, shop_name: str, order_number: str) -> bool:
+        """Return True when a human already processed a matching invoice entry."""
+        # The surrounding email pipeline only invokes this hook after both the shop name
+        # and the order number have been confirmed. We reiterate that assumption here so
+        # the defensive trimming below is easy to understand during maintenance.
+        normalized_shop = (shop_name or "").strip()
+        normalized_order = (order_number or "").strip()
+
+        if not normalized_shop or not normalized_order:
+            # The caller only invokes this once both identifiers are known, but we guard against
+            # empty values so we never issue an under-specified database query.
+            return False
+
+        engine = get_engine()
+        invoices_table = _get_invoice_table(engine)
+
+        lookup_stmt = (
+            select(invoices_table.c.id)
+            .where(
+                invoices_table.c.shop_name == normalized_shop,
+                invoices_table.c.order_number == normalized_order,
+                invoices_table.c.has_been_processed.is_(True),
+            )
+            .limit(1)
+        )
+
+        try:
+            with session_scope() as session:
+                result = session.execute(lookup_stmt).first()
+        except Exception:
+            log.exception(
+                "has_already_been_handled: failed to query invoices for %s / %s",
+                normalized_shop,
+                normalized_order,
+            )
+            return False
+
+        # has_been_processed is set by a human who has completed the required follow-up,
+        # even if the source email was incomplete, so a matching row means we can skip work.
+        return result is not None
 
     def __init__(self, raw_html: str, sanitized_root: etree._Element, sanitized_html: str) -> None:
         self.raw_html = raw_html
@@ -309,6 +369,10 @@ class ShopHandler:
 
 
 class GenericShopHandler(ShopHandler):
+    def has_already_been_handled(self, shop_name: str, order_number: str) -> bool:
+        """Generic handlers rely on the base human-processing check without changes."""
+        return super().has_already_been_handled(shop_name, order_number)
+
     ORDER_NUMBER_REGEX = None
     TEXT_LENGTH_LIMIT = 12
 
