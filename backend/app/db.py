@@ -6,12 +6,12 @@ import logging
 import os
 import threading
 import re
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Tuple, Union
 from urllib.parse import quote_plus
 import uuid as _uuid
-from typing import List, Dict, Any, Mapping, Tuple, Union
-from flask import g
+from flask import Blueprint, g, has_app_context, jsonify
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, MetaData, Table, select, text
 from sqlalchemy.engine import Engine, Connection
@@ -75,9 +75,12 @@ def unwrap_db_result(result: Any) -> Tuple[int, bool, Dict[str, Any], Dict[str, 
 
 log = logging.getLogger(__name__)
 
+bp = Blueprint("dbstatus", __name__)
+
 # Module-level singletons
 _ENGINE: Optional[Engine] = None
-_SESSION_LOCAL: Optional[Session] = None
+_SESSION_FACTORY: Optional[sessionmaker] = None
+_SESSION_LOCAL: Optional[scoped_session] = None
 _INIT_LOCK = threading.Lock()
 
 # Resolve paths based on this file's location:
@@ -183,6 +186,7 @@ def get_engine() -> Engine:
     Creates it on first use, thread-safe.
     """
     global _ENGINE
+    global _SESSION_FACTORY
     global _SESSION_LOCAL
     if _ENGINE is not None:
         return _ENGINE
@@ -210,7 +214,10 @@ def get_engine() -> Engine:
             pool_pre_ping=pool_pre_ping,
             future=True,  # explicit for 2.x style
         )
-        _SESSION_LOCAL = scoped_session(sessionmaker(bind=_ENGINE))
+
+        session_factory = sessionmaker(bind=_ENGINE, future=True)
+        _SESSION_FACTORY = session_factory
+        _SESSION_LOCAL = scoped_session(session_factory)
         return _ENGINE
 
 
@@ -244,6 +251,42 @@ def get_or_create_session() -> Session:
     return s
 
 
+@contextmanager
+def session_scope() -> Iterator[Session]:
+    """Yield a database session and guarantee the associated connection is released."""
+
+    # When a Flask application context is active we reuse the request-scoped
+    # session managed by :func:`get_or_create_session`.  Background jobs, CLI
+    # utilities, and other callers that run outside of Flask receive a
+    # temporary session that is explicitly closed once the block completes.
+
+    created_here = False
+
+    if has_app_context():
+        session = get_or_create_session()
+    else:
+        global _SESSION_FACTORY
+
+        factory = _SESSION_FACTORY
+        if factory is None:
+            engine = get_engine()
+            factory = sessionmaker(bind=engine, future=True)
+            _SESSION_FACTORY = factory
+
+        session = factory()
+        created_here = True
+
+    try:
+        yield session
+    except Exception:
+        if session.in_transaction():
+            session.rollback()
+        raise
+    finally:
+        if created_here:
+            session.close()
+
+
 def ping_db() -> bool:
     """Quick health check."""
     try:
@@ -257,16 +300,28 @@ def ping_db() -> bool:
 
 def dispose_engine() -> None:
     """Close all pooled connections (useful in tests or graceful shutdown)."""
-    global _ENGINE, _SESSION_LOCAL
+    global _ENGINE, _SESSION_FACTORY, _SESSION_LOCAL
+
     if _ENGINE is not None:
         _ENGINE.dispose()
         _ENGINE = None
+
     if _SESSION_LOCAL:
         _SESSION_LOCAL.remove()
+        _SESSION_LOCAL = None
+
+    _SESSION_FACTORY = None
 
 
 def db_cleanup(_exc):
     global _SESSION_LOCAL
+
+    try:
+        g.pop("db", None)
+    except RuntimeError:
+        # Outside an application context there is no ``g`` to mutate.
+        pass
+
     if _SESSION_LOCAL:
         _SESSION_LOCAL.remove()
 
@@ -453,8 +508,8 @@ def get_column_types(engine: Engine, table: str) -> Dict[str, str]:
 
 
 def deduplicate_rows(
-    rows: List[Dict[str, Any]], 
-    key: str = "id", 
+    rows: List[Dict[str, Any]],
+    key: str = "id",
     keep: str = "first"
 ) -> List[Dict[str, Any]]:
     """
@@ -516,3 +571,30 @@ def deduplicate_rows(
         # Rows missing the key are always included, order preserved
         deduped.extend(with_no_key)
         return deduped
+
+
+@bp.get("/api/getdbqueuesize")
+def get_database_queue_size():
+    """Return a lightweight JSON payload describing the current database connection usage."""
+
+    engine = get_engine()
+
+    # SQLAlchemy's QueuePool exposes a descriptive status string. The text always contains the
+    # "Current Checked out connections" figure, which is the most meaningful representation of the
+    # queue size for administrators monitoring live load.
+    status_text = engine.pool.status()
+
+    match = re.search(r"Current Checked out connections:\s*(\d+)", status_text)
+    if match:
+        current_connections = int(match.group(1))
+    else:
+        digits = re.findall(r"\d+", status_text)
+        current_connections = int(digits[-1]) if digits else 0
+
+    # Provide both the parsed integer and the original status string so operators can inspect the
+    # full context if they choose to surface the endpoint elsewhere.
+    return jsonify({
+        "ok": True,
+        "queue_size": current_connections,
+        "status": status_text,
+    })
