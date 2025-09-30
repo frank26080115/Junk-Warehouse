@@ -16,10 +16,40 @@ def fetch_with_playwright(url: str, loop_count: int = 3, loop_timeout_ms: int = 
     # Use Playwright to launch a Chromium instance in headless mode so that we can render the page.
     # The context manager ensures that the browser is torn down cleanly even if an error is raised.
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
-        # A single new page is sufficient for this utility function; it will follow redirects automatically.
-        page = browser.new_page()
+        browser = playwright.chromium.launch(
+            headless=True,
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--disable-dev-shm-usage',
+            ],
+        )
+        # Track the context and page explicitly so that we can close them in the ``finally`` block even when
+        # navigation fails before they are fully constructed.
+        context = None
+        page = None
         try:
+            # Create a browsing context that imitates a standard desktop Chrome profile so that the site renders the headless
+            # session the same way it would render a real user. The extra signals mitigate scripts that check for automation.
+            context = browser.new_context(
+                user_agent=('Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
+                            'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'),
+                viewport={'width': 1366, 'height': 768},
+                locale='en-US',
+                timezone_id='America/Los_Angeles',
+            )
+            # Remove the most common automation fingerprints before any site scripts execute. Keeping this work in the context
+            # ensures the overrides apply to every page we create in the session.
+            context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            context.add_init_script(
+                """
+                const navigatorProto = Navigator.prototype;
+                Object.defineProperty(navigatorProto, 'plugins', { get: () => [1, 2, 3] });
+                Object.defineProperty(navigatorProto, 'languages', { get: () => ['en-US', 'en'] });
+                Object.defineProperty(window, 'chrome', { get: () => ({ runtime: {} }) });
+                """
+            )
+            # A single new page is sufficient for this utility function; it will follow redirects automatically.
+            page = context.new_page()
             # Navigate to the requested URL and wait for the initial DOM content to be ready.
             page.goto(url, wait_until="domcontentloaded")
             # Evaluate whether the retrieved document is a placeholder that immediately redirects using JavaScript.
@@ -79,8 +109,19 @@ def fetch_with_playwright(url: str, loop_count: int = 3, loop_timeout_ms: int = 
             current_url = page.url
             return html_content, text_content, current_url
         finally:
-            # Explicitly close the browser so that resources are released promptly.
-            browser.close()
+            # Attempt to close the active page before disposing of the broader browser context. Individual cleanup calls are
+            # wrapped so that one failure does not prevent the others from running.
+            if page is not None:
+                try:
+                    page.close()
+                except PlaywrightError:
+                    pass
+            try:
+                if context is not None:
+                    context.close()
+            finally:
+                browser.close()
+
 
 
 class _TextExtractor(HTMLParser):
