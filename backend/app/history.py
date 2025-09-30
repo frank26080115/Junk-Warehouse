@@ -4,6 +4,14 @@ from __future__ import annotations
 
 from typing import Any, Dict, Mapping, Optional, Union
 
+try:
+    # Importing from Flask only when available ensures CLI utilities
+    # can import this module without requiring a running Flask app.
+    from flask import has_request_context, session  # type: ignore
+except Exception:  # pragma: no cover - defensive fallback when Flask is absent
+    has_request_context = lambda: False  # type: ignore
+    session = {}  # type: ignore
+
 from sqlalchemy.engine import Engine
 
 from app.db import get_engine, update_db_row_by_dict
@@ -26,6 +34,27 @@ def _prepare_meta(meta_value: Optional[Union[str, Mapping[str, Any]]]) -> Option
     except Exception:
         # Fall back to a descriptive string so the insert still succeeds.
         return str(meta_value)
+
+def _resolve_username() -> Optional[str]:
+    """Return the authenticated username when available.
+
+    This helper gracefully handles non-request contexts so background
+    jobs and unit tests can continue to log history without providing
+    a username explicitly.
+    """
+
+    if has_request_context():
+        raw_username = session.get("user_id")  # type: ignore[index]
+        if isinstance(raw_username, str):
+            candidate = raw_username.strip()
+            if candidate:
+                return candidate
+        elif raw_username is not None:
+            # Some callers might stash alternate identifier types; str() keeps
+            # the value readable while avoiding surprises.
+            return str(raw_username)
+    return None
+
 
 def log_history(
     *,
@@ -56,6 +85,13 @@ def log_history(
     prepared_meta = _prepare_meta(meta)
     if prepared_meta is not None:
         payload["meta"] = prepared_meta
+
+    resolved_username = _resolve_username()
+    if resolved_username is not None:
+        # Persist the username when present so analysts can connect events
+        # to specific operators. Leaving the column out keeps database
+        # defaults intact for automated jobs that lack user context.
+        payload["username"] = resolved_username
 
     # Delegate the actual insert to the established helper so that error handling and
     # RETURNING behaviour stay consistent with the rest of the codebase.

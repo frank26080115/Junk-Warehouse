@@ -991,7 +991,12 @@ def delete_item_relationship(relationship_identifier: Any) -> Optional[Dict[str,
             {"relationship_id": normalized_relationship_id},
         )
 
-        log_history(before_row['item_id'] if before_row else None, before_row['assoc_id'] if before_row else None, "delete relationship", before_row)
+        log_history(
+            item_id_1=before_row["item_id"] if before_row else None,
+            item_id_2=before_row["assoc_id"] if before_row else None,
+            event="delete relationship",
+            meta=before_row,
+        )
 
         return relationship_dict
 
@@ -1152,7 +1157,12 @@ def bulk_delete_items_api():
         result = conn.execute(delete_sql, {"item_ids": normalized_ids})
 
         for i in normalized_ids:
-            log_history(i, None, "marked as deleted", get_db_item_as_dict(engine, 'items', i))
+            log_history(
+                item_id_1=i,
+                item_id_2=None,
+                event="marked as deleted",
+                meta=get_db_item_as_dict(engine, 'items', i),
+            )
 
     return jsonify(
         {
