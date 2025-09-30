@@ -13,6 +13,10 @@ from automation.web_get import fetch_with_playwright
 class McMasterCarrHandler(ShopHandler):
     """Handler for McMaster-Carr order invoices."""
 
+    def has_already_been_handled(self, shop_name: str, order_number: str) -> bool:
+        """McMaster-Carr invoices reuse the shared human-processing lookup without modification."""
+        return super().has_already_been_handled(shop_name, order_number)
+
     POSSIBLE_NAMES = (
         "McMaster-Carr",
         "McMaster",
