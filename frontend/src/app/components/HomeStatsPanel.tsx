@@ -10,9 +10,13 @@ interface StatDefinition {
   query: string;
   endpoint: EndpointType;
   /**
-   * When set, the entry is only rendered as a hidden spacer so the responsive grid keeps rows aligned.
+   * When true, the entry is updated through a dedicated polling routine instead of the shared search endpoint.
    */
-  isLayoutSpacer?: boolean;
+  usesQueueSizeEndpoint?: boolean;
+  /**
+   * When true, the entry renders without a trailing search button because navigation is not meaningful.
+   */
+  hideSearchButton?: boolean;
 }
 
 interface StatState {
@@ -53,6 +57,9 @@ const STAT_LAYOUT_TOKENS = {
   buttonFontSize: "1.4rem",
 };
 
+const QUEUE_SIZE_STAT_ID = "database-queue-size";
+const QUEUE_SIZE_REFRESH_INTERVAL_MS = 10_000;
+
 // NOTE: label is not displayed
 const STAT_DEFINITIONS: StatDefinition[] = [
   {
@@ -76,16 +83,14 @@ const STAT_DEFINITIONS: StatDefinition[] = [
     query: "* ?alarm",
     endpoint: "items",
   },
-  /**
-   * This spacer keeps the pending and pinned statistics aligned when the grid collapses to two columns.
-   */
   {
-    id: "layout-spacer-alarm",
-    label: "Layout Spacer",
-    emoji: "",
+    id: QUEUE_SIZE_STAT_ID,
+    label: "Database Queue Size",
+    emoji: "🌀",
     query: "",
     endpoint: "items",
-    isLayoutSpacer: true,
+    usesQueueSizeEndpoint: true,
+    hideSearchButton: true,
   },
   {
     id: "merges",
@@ -132,11 +137,6 @@ const BASE_ITEM_STYLE: React.CSSProperties = {
   backgroundColor: "#ffffff",
   boxShadow: "0 1px 3px rgba(0, 0, 0, 0.08)",
   overflow: "hidden",
-};
-// Provide an invisible spacer card so the responsive grid keeps row groupings tidy.
-const HIDDEN_SPACER_ITEM_STYLE: React.CSSProperties = {
-  ...BASE_ITEM_STYLE,
-  visibility: "hidden",
 };
 
 const LABEL_SECTION_STYLE: React.CSSProperties = {
@@ -254,9 +254,8 @@ const HomeStatsPanel: React.FC<HomeStatsPanelProps> = ({ onItemQuerySelected }) 
     const abortControllers = new Map<string, AbortController>();
 
     const fetchCountForDefinition = async (definition: StatDefinition) => {
-      if (definition.isLayoutSpacer) {
-        // Skip network activity for the spacer and mark it as ready immediately.
-        updateStatState(definition.id, { isLoading: false, errorMessage: null });
+      if (definition.usesQueueSizeEndpoint) {
+        // The queue size statistic is loaded by its own polling routine.
         return;
       }
       const controller = new AbortController();
@@ -314,6 +313,9 @@ const HomeStatsPanel: React.FC<HomeStatsPanelProps> = ({ onItemQuerySelected }) 
 
     const loadSequentially = async () => {
       for (const definition of STAT_DEFINITIONS) {
+        if (definition.usesQueueSizeEndpoint) {
+          continue;
+        }
         if (isUnmounted) {
           break;
         }
@@ -332,6 +334,67 @@ const HomeStatsPanel: React.FC<HomeStatsPanelProps> = ({ onItemQuerySelected }) 
       abortControllers.forEach((controller) => {
         controller.abort();
       });
+    };
+  }, [updateStatState]);
+
+  useEffect(() => {
+    let isUnmounted = false;
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+    let isFirstLoad = true;
+
+    const updateQueueStat = (update: StatUpdate) => {
+      if (!isUnmounted) {
+        updateStatState(QUEUE_SIZE_STAT_ID, update);
+      }
+    };
+
+    const fetchQueueSize = async (showLoading: boolean) => {
+      if (showLoading) {
+        updateQueueStat({ isLoading: true, errorMessage: null });
+      }
+
+      try {
+        const response = await fetch("/api/getdbqueuesize");
+
+        let payload: any = null;
+        try {
+          payload = await response.json();
+        } catch {
+          payload = null;
+        }
+
+        if (!response.ok) {
+          const message: string =
+            (payload && typeof payload.error === "string" && payload.error.trim()) ||
+            "Unable to load the database queue size.";
+          throw new Error(message);
+        }
+
+        const rawValue = payload && payload.queue_size;
+        const numericValue = typeof rawValue === "number" ? rawValue : Number(rawValue);
+        const safeValue = Number.isFinite(numericValue) ? Math.max(0, Math.trunc(numericValue)) : 0;
+
+        updateQueueStat({ count: safeValue, isLoading: false, errorMessage: null });
+      } catch (error: any) {
+        const message =
+          (error && typeof error.message === "string" && error.message) ||
+          "Unable to load the database queue size.";
+        updateQueueStat({ count: null, isLoading: false, errorMessage: message });
+      } finally {
+        isFirstLoad = false;
+      }
+    };
+
+    void fetchQueueSize(true);
+    intervalId = setInterval(() => {
+      void fetchQueueSize(isFirstLoad);
+    }, QUEUE_SIZE_REFRESH_INTERVAL_MS);
+
+    return () => {
+      isUnmounted = true;
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
     };
   }, [updateStatState]);
 
@@ -359,17 +422,14 @@ const HomeStatsPanel: React.FC<HomeStatsPanelProps> = ({ onItemQuerySelected }) 
     <div style={BASE_PANEL_STYLE}>
       {statStates.map((stat) => {
         const { definition, count, isLoading, errorMessage } = stat;
-        if (definition.isLayoutSpacer) {
-          // Render an invisible placeholder so the grid keeps its two-column alignment without exposing an empty card.
-          return <div key={definition.id} style={HIDDEN_SPACER_ITEM_STYLE} aria-hidden={true} />;
-        }
         const displayValue = isLoading
           ? "???"
           : count != null
           ? count.toLocaleString()
           : "--";
+        const isButtonVisible = !definition.hideSearchButton;
         const buttonStyle =
-          buttonHoverId === definition.id
+          isButtonVisible && buttonHoverId === definition.id
             ? { ...SEARCH_BUTTON_STYLE, ...SEARCH_BUTTON_HOVER_STYLE }
             : SEARCH_BUTTON_STYLE;
         const buttonLabel = `Search for ${definition.label.toLowerCase()}`;
@@ -389,19 +449,21 @@ const HomeStatsPanel: React.FC<HomeStatsPanelProps> = ({ onItemQuerySelected }) 
             <div style={mergedNumberWrapperStyle} aria-live="polite">
               <span style={mergedNumberTextStyle}>{displayValue}</span>
             </div>
-            <button
-              type="button"
-              onMouseEnter={() => setButtonHoverId(definition.id)}
-              onMouseLeave={() => setButtonHoverId((current) => (current === definition.id ? null : current))}
-              onFocus={() => setButtonHoverId(definition.id)}
-              onBlur={() => setButtonHoverId((current) => (current === definition.id ? null : current))}
-              onClick={() => handleSearchClick(definition)}
-              style={buttonStyle}
-              aria-label={buttonLabel}
-              title={buttonLabel}
-            >
-              🔍
-            </button>
+            {isButtonVisible ? (
+              <button
+                type="button"
+                onMouseEnter={() => setButtonHoverId(definition.id)}
+                onMouseLeave={() => setButtonHoverId((current) => (current === definition.id ? null : current))}
+                onFocus={() => setButtonHoverId(definition.id)}
+                onBlur={() => setButtonHoverId((current) => (current === definition.id ? null : current))}
+                onClick={() => handleSearchClick(definition)}
+                style={buttonStyle}
+                aria-label={buttonLabel}
+                title={buttonLabel}
+              >
+                🔍
+              </button>
+            ) : null}
           </div>
         );
       })}

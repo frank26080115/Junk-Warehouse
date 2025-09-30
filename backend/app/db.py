@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Tuple, Union
 from urllib.parse import quote_plus
 import uuid as _uuid
-from flask import g, has_app_context
+from flask import Blueprint, g, has_app_context, jsonify
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, MetaData, Table, select, text
 from sqlalchemy.engine import Engine, Connection
@@ -74,6 +74,8 @@ def unwrap_db_result(result: Any) -> Tuple[int, bool, Dict[str, Any], Dict[str, 
     return http_code, is_error, reply_obj, row_dict, primary_key, message_text
 
 log = logging.getLogger(__name__)
+
+bp = Blueprint("dbstatus", __name__)
 
 # Module-level singletons
 _ENGINE: Optional[Engine] = None
@@ -506,8 +508,8 @@ def get_column_types(engine: Engine, table: str) -> Dict[str, str]:
 
 
 def deduplicate_rows(
-    rows: List[Dict[str, Any]], 
-    key: str = "id", 
+    rows: List[Dict[str, Any]],
+    key: str = "id",
     keep: str = "first"
 ) -> List[Dict[str, Any]]:
     """
@@ -569,3 +571,30 @@ def deduplicate_rows(
         # Rows missing the key are always included, order preserved
         deduped.extend(with_no_key)
         return deduped
+
+
+@bp.get("/api/getdbqueuesize")
+def get_database_queue_size():
+    """Return a lightweight JSON payload describing the current database connection usage."""
+
+    engine = get_engine()
+
+    # SQLAlchemy's QueuePool exposes a descriptive status string. The text always contains the
+    # "Current Checked out connections" figure, which is the most meaningful representation of the
+    # queue size for administrators monitoring live load.
+    status_text = engine.pool.status()
+
+    match = re.search(r"Current Checked out connections:\s*(\d+)", status_text)
+    if match:
+        current_connections = int(match.group(1))
+    else:
+        digits = re.findall(r"\d+", status_text)
+        current_connections = int(digits[-1]) if digits else 0
+
+    # Provide both the parsed integer and the original status string so operators can inspect the
+    # full context if they choose to surface the endpoint elsewhere.
+    return jsonify({
+        "ok": True,
+        "queue_size": current_connections,
+        "status": status_text,
+    })

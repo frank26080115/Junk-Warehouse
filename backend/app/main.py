@@ -21,6 +21,7 @@ from .search import bp as bp_search
 from .job_manager import JobManager, RepeatableJob, bp as bp_jobs
 import app.helpers as helpers
 import app.db as db
+from app.db import bp as bp_dbstatus
 from app.config_loader import CONFIG_PATH, initialize_app_config
 
 # Load backend/.env explicitly (does nothing if file doesn't exist)
@@ -63,6 +64,7 @@ def create_app():
     app.register_blueprint(bp_items)
     app.register_blueprint(bp_maint)
     app.register_blueprint(bp_jobs)
+    app.register_blueprint(bp_dbstatus)
 
     # Delegate configuration loading so the logic stays in one place.
     initialize_app_config(app)
