@@ -15,11 +15,10 @@ from .db import get_engine, get_db_item_as_dict, get_or_create_session
 from .assoc_helper import CONTAINMENT_BIT
 from .helpers import normalize_pg_uuid
 from .search_expression import SearchQuery, get_sql_order_and_limit
+from ..automation.ai_helpers import EmbeddingAi
 
 log = logging.getLogger(__name__)
 
-EMBEDDING_DIMENSIONS = 384
-EMBEDDING_MODEL_NAME = "hash-embed-v1"
 DEFAULT_EMBEDDING_LIMIT = 50
 
 def _resolve_item_dict(item_or_identifier: Union[Mapping[str, Any], str, uuid.UUID]) -> Dict[str, Any]:
@@ -76,9 +75,8 @@ def _collect_item_text(item_row: Mapping[str, Any]) -> str:
     return "".join(parts)
 
 
-def _build_embedding_vector(text_input: str, *, dimensions: int = EMBEDDING_DIMENSIONS) -> List[float]:
-    # TODO, update this using EmbeddingAi from backend\automation\ai_helpers.py
-    pass
+def _build_embedding_vector(ai: EmbeddingAi, text_input: str, *, dimensions: int = 384) -> List[float]:
+    return ai.build_embedding_vector(text_input, dimensions = dimensions)
 
 
 def update_embeddings_for_item(item_or_identifier: Union[Mapping[str, Any], str, uuid.UUID]) -> None:
@@ -89,7 +87,8 @@ def update_embeddings_for_item(item_or_identifier: Union[Mapping[str, Any], str,
         raise
 
     text_input = _collect_item_text(item_dict)
-    vector = _build_embedding_vector(text_input)
+    ai = EmbeddingAi()
+    vector = _build_embedding_vector(ai, text_input)
 
     item_uuid = uuid.UUID(normalize_pg_uuid(item_dict.get("id")))
 
@@ -97,7 +96,7 @@ def update_embeddings_for_item(item_or_identifier: Union[Mapping[str, Any], str,
     metadata = MetaData()
     embeddings_table = Table("item_embeddings", metadata, autoload_with=engine)
 
-    values = {"model": EMBEDDING_MODEL_NAME, "vec": vector}
+    values = {"model": ai.model, "vec": vector}
 
     with engine.begin() as conn:
         existing = conn.execute(
@@ -180,11 +179,12 @@ def update_embeddings_for_container(item_or_identifier: Union[Mapping[str, Any],
             text_fragments.append(fragment)
 
     text_input = " ".join(fragment for fragment in text_fragments if fragment)
-    vector = _build_embedding_vector(text_input)
+    ai = EmbeddingAi()
+    vector = _build_embedding_vector(ai, text_input)
 
     metadata = MetaData()
     embeddings_table = Table("container_embeddings", metadata, autoload_with=engine)
-    values = {"model": EMBEDDING_MODEL_NAME, "vec": vector}
+    values = {"model": ai.model, "vec": vector}
 
     with engine.begin() as conn:
         existing = conn.execute(
@@ -220,7 +220,8 @@ def search_items_by_embeddings(
     if not query_text:
         return []
 
-    vector = _build_embedding_vector(query_text)
+    ai = EmbeddingAi()
+    vector = _build_embedding_vector(ai, query_text)
 
     if session is None:
         session = get_or_create_session()

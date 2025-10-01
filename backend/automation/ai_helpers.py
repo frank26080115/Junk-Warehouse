@@ -25,6 +25,7 @@ except:
         return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 
 from sentence_transformers import SentenceTransformer
+from huggingface_hub import HfApi
 
 import logging
 log = logging.getLogger(__name__)
@@ -102,6 +103,14 @@ def is_model_online(model: str) -> bool:
     local = set(list_ollama_models())
     if model in local:
         return False
+
+    try:
+        # Fast metadata check
+        HfApi().model_info(model)
+        return True
+    except Exception:
+        pass
+
     # expand as needed
     known_online = {
         "gpt-5-mini", "gpt-5-nano", "gpt-4o-mini", "gpt-4o", "gpt-4.1-mini",
@@ -250,8 +259,18 @@ class EmbeddingAi(object):
             self.is_online = False
             self.model = self.appconfig["emb_model_offline"]
             self.st = SentenceTransformer(self.model)
+        else:
+            # When a concrete model name is supplied, infer whether it is an online or offline option
+            # and initialize the appropriate client lazily so downstream calls operate consistently.
+            self.is_online = is_model_online(self.model)
+            if self.is_online:
+                self.client = get_openai_client()
+            else:
+                self.st = SentenceTransformer(self.model)
 
     def build_embedding_vector(self, text: str, *, dimensions: int = 3072) -> List[float]:
+        if not text:
+            return [0.0] * dimensions
         if self.is_online:
             return self.build_embedding_vector_openai(text, dimensions=dimensions)
         else:
