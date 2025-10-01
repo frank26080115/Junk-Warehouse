@@ -2,26 +2,23 @@ from __future__ import annotations
 
 """Utility helpers for recording history events in the database."""
 
-from typing import Any, Dict, Mapping, Optional, Union
+from typing import Any, Dict, List, Mapping, Optional, Union
 
 import logging
+
+from flask import Blueprint, jsonify, has_request_context, session
+from sqlalchemy import text
+from sqlalchemy.engine import Engine, RowMapping
+
+from app.db import get_engine, get_or_create_session, update_db_row_by_dict
+from app.helpers import normalize_pg_uuid
+from .user_login import login_required
+
 log = logging.getLogger(__name__)
 
-try:
-    # Importing from Flask only when available ensures CLI utilities
-    # can import this module without requiring a running Flask app.
-    from flask import has_request_context, session  # type: ignore
-except Exception:  # pragma: no cover - defensive fallback when Flask is absent
-    has_request_context = lambda: False  # type: ignore
-    session = {}  # type: ignore
+bp = Blueprint("history", __name__, url_prefix="/api/history")
+PAGE_SIZE = 100
 
-from sqlalchemy.engine import Engine
-
-from app.db import get_engine, update_db_row_by_dict
-from app.helpers import normalize_pg_uuid
-
-# We only import typing and database utilities so that this module remains focused on
-# transforming Python data into a shape that the generic insert/update helper can use.
 
 def _prepare_meta(meta_value: Optional[Union[str, Mapping[str, Any]]]) -> Optional[str]:
     """Convert mapping metadata into a JSON string while respecting plain text."""
@@ -37,6 +34,7 @@ def _prepare_meta(meta_value: Optional[Union[str, Mapping[str, Any]]]) -> Option
     except Exception:
         # Fall back to a descriptive string so the insert still succeeds.
         return str(meta_value)
+
 
 def _resolve_username() -> Optional[str]:
     """Return the authenticated username when available.
@@ -59,6 +57,113 @@ def _resolve_username() -> Optional[str]:
     return None
 
 
+def _coerce_uuid(value: Any) -> Optional[str]:
+    """Normalize UUID-like objects into strings for JSON serialization."""
+    if value is None:
+        return None
+    try:
+        return str(value)
+    except Exception:
+        return None
+
+
+def _summarize_item_name(raw_name: Optional[str]) -> Optional[str]:
+    """Produce a concise preview of an item's name for the list view."""
+    if not raw_name:
+        return None
+    trimmed = raw_name.strip()
+    if not trimmed:
+        return None
+    if len(trimmed) <= 20:
+        return trimmed
+    return trimmed[:20]
+
+
+def _serialize_row(row: Mapping[str, Any]) -> Dict[str, Any]:
+    """Translate a database row into a JSON-friendly dictionary."""
+    mapped: Mapping[str, Any] = row
+    item_name_value = mapped.get("item_1_name")
+    item_name = item_name_value if isinstance(item_name_value, str) else None
+    date_value = mapped.get("date")
+    if hasattr(date_value, "isoformat"):
+        date_text = date_value.isoformat()  # type: ignore[assignment]
+    else:
+        date_text = str(date_value or "")
+    return {
+        "id": _coerce_uuid(mapped.get("id")),
+        "date": date_text,
+        "username": str(mapped.get("username") or ""),
+        "itemId1": _coerce_uuid(mapped.get("item_id_1")),
+        "itemId2": _coerce_uuid(mapped.get("item_id_2")),
+        "event": str(mapped.get("event") or ""),
+        "meta": str(mapped.get("meta") or ""),
+        "itemNamePreview": _summarize_item_name(item_name),
+        "itemNameFull": item_name,
+    }
+
+
+def _query_history_rows(limit_value: int, offset_value: int) -> List[RowMapping]:
+    """Retrieve history rows ordered from newest to oldest."""
+    session_handle = get_or_create_session()
+    statement = text(
+        """
+        SELECT
+            h.id,
+            h.date,
+            h.username,
+            h.item_id_1,
+            h.item_id_2,
+            h.event,
+            h.meta,
+            i.name AS item_1_name
+        FROM history AS h
+        LEFT JOIN items AS i ON i.id = h.item_id_1
+        ORDER BY h.date DESC, h.id DESC
+        LIMIT :limit_value
+        OFFSET :offset_value
+        """
+    )
+    result = session_handle.execute(statement, {"limit_value": limit_value, "offset_value": offset_value})
+    return list(result.mappings())
+
+
+@bp.get("/")
+@bp.get("/<int:page>")
+@login_required
+def fetch_history(page: int = 1):
+    """Return a page of history entries for display in the UI."""
+    try:
+        parsed_page = int(page)
+    except (TypeError, ValueError):
+        parsed_page = 1
+    if parsed_page < 1:
+        parsed_page = 1
+
+    page_size = PAGE_SIZE
+    offset_value = (parsed_page - 1) * page_size
+
+    try:
+        rows = _query_history_rows(page_size + 1, offset_value)
+    except Exception as exc:
+        log.exception("Failed to retrieve history rows")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    has_next = len(rows) > page_size
+    visible_rows = rows[:page_size]
+    entries = [_serialize_row(row) for row in visible_rows]
+
+    response_payload = {
+        "ok": True,
+        "page": parsed_page,
+        "pageSize": page_size,
+        "hasNext": has_next,
+        "hasPrevious": parsed_page > 1,
+        "entries": entries,
+    }
+
+    return jsonify(response_payload)
+
+
 def log_history(
     *,
     item_id_1: Optional[str] = None,
@@ -67,7 +172,7 @@ def log_history(
     meta: Optional[Union[str, Mapping[str, Any]]] = None,
     engine: Optional[Engine] = None,
 ) -> Dict[str, Any]:
-    """Insert a row into the ``history`` table using the shared DB helper.
+    """Insert a row into the ``history`` table using the shared DB helper."""
 
     Parameters are optional so callers can rely on database defaults when appropriate.
     Passing ``None`` for a value omits that column from the insert payload, allowing
