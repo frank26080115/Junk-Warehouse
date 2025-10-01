@@ -118,22 +118,43 @@ const ContainmentPathPanel: React.FC<ContainmentPathPanelProps> = ({
     if (!paths.length) {
       return [];
     }
-    return paths.map((entry) => {
+    const normalizedTarget = targetUuid ? targetUuid.toLowerCase() : null;
+    const rows: DisplayRow[] = [];
+    paths.forEach((entry) => {
       const ids = Array.isArray(entry.path) ? entry.path : [];
       const names = Array.isArray(entry.names) ? entry.names : [];
       const resolvedNames = ids.map((id, index) => coerceName(names[index]));
+      let idsForDisplay = ids;
+      let namesForDisplay = resolvedNames;
+      if (
+        normalizedTarget &&
+        idsForDisplay.length > 0 &&
+        typeof idsForDisplay[0] === "string" &&
+        idsForDisplay[0].toLowerCase() === normalizedTarget
+      ) {
+        // The backend includes the target item as the first hop in the raw path.
+        // Remove it locally as a defensive measure so the breadcrumbs only show
+        // neighboring containers.
+        idsForDisplay = idsForDisplay.slice(1);
+        namesForDisplay = namesForDisplay.slice(1);
+      }
+      if (idsForDisplay.length === 0) {
+        // Without any other items there is nothing meaningful to display.
+        return;
+      }
       const isFixed = Boolean(entry.terminal_is_fixed_location);
       const summary = isFixed
         ? "🏠 Fixed location reached at the end of this path."
         : "🔚 No further containment relationships beyond this point.";
-      return {
-        ids,
-        names: resolvedNames,
+      rows.push({
+        ids: idsForDisplay,
+        names: namesForDisplay,
         summary,
         terminalIsFixed: isFixed,
-      };
+      });
     });
-  }, [paths]);
+    return rows;
+  }, [paths, targetUuid]);
 
   return (
     <div className="mb-4">
