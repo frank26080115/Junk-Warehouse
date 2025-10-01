@@ -146,6 +146,14 @@ class AsyncJob:
             self._exception = exc
             self._error = str(exc) or exc.__class__.__name__
             self._result = None
+            # Record the failure immediately so silent background errors can be diagnosed.
+            logger = getattr(self._manager, "_logger", None)
+            if logger is not None:
+                logger.exception(
+                    "Async job %s failed while processing context %s.",
+                    self._job_id,
+                    self._context,
+                )
 
     def is_busy(self) -> bool:
         return self._started and not self._done_event.is_set()
