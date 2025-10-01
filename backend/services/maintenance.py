@@ -5,7 +5,7 @@ import logging
 import time
 import uuid
 from contextlib import AbstractContextManager, nullcontext
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Set, Union
 
@@ -728,22 +728,49 @@ def process_pending_merges(
         cleanup()
 
 
-def main():
-    # Initialize logger using your existing setup
-    logger = start_log(app_name="maintenance")
-
-    while True:
-        try:
-            logger.info("Running maintenance task...")
-
-            # TODO: Add your housekeeping logic here
-            # e.g., cleaning old sessions, rotating temp files, etc.
-
-        except Exception as e:
-            logger.exception("Maintenance loop error")
-
-        time.sleep(60)  # wait 1 minute
-
-
+def _calculate_staging_cutoff(retention_days: int = 30) -> datetime:
+    """Return the latest acceptable timestamp for staging records."""
+    # Using UTC keeps the comparison consistent regardless of server locale.
+    now_utc = datetime.utcnow()
+    cutoff = now_utc - timedelta(days=retention_days)
+    return cutoff
+
+
+def _execute_housekeeping_step(
+    step_name: str,
+    logger: logging.Logger,
+    func: Callable[..., object],
+    *args,
+    **kwargs,
+) -> None:
+    """Run a maintenance helper while preventing a single failure from stopping the loop."""
+    try:
+        result = func(*args, **kwargs)
+        logger.info("Housekeeping step %s completed successfully: %s", step_name, result)
+    except Exception:
+        logger.exception("Housekeeping step %s failed", step_name)
+
+
+def _run_housekeeping_cycle(logger: logging.Logger) -> None:
+    """Execute the default suite of maintenance operations."""
+    staging_cutoff = _calculate_staging_cutoff()
+    logger.info("Using staging cutoff %s for housekeeping tasks", staging_cutoff.isoformat())
+    _execute_housekeeping_step("prune_deleted", logger, prune_deleted)
+    _execute_housekeeping_step("prune_stale_staging_items", logger, prune_stale_staging_items, staging_cutoff)
+    _execute_housekeeping_step("prune_stale_staging_invoices", logger, prune_stale_staging_invoices, staging_cutoff)
+    _execute_housekeeping_step("prune_images", logger, prune_images)
+
+
+def main():
+    """Entrypoint for running recurring maintenance tasks in a loop."""
+    logger = start_log(app_name="maintenance")
+    while True:
+        try:
+            logger.info("Running maintenance task cycle...")
+            _run_housekeeping_cycle(logger)
+        except Exception:
+            logger.exception("Maintenance loop error")
+        time.sleep(60)  # Pause briefly before the next maintenance cycle.
+
 if __name__ == "__main__":
     main()
