@@ -36,6 +36,9 @@ from .history import log_history
 log = logging.getLogger(__name__)
 
 bp = Blueprint("items", __name__, url_prefix="/api")
+# The items blueprint groups together every endpoint that interacts with item
+# records.  Consolidating the registration point makes it easier to understand
+# how the API surface is organized when reading the module for the first time.
 
 
 TABLE = "items"
@@ -56,6 +59,9 @@ def _fetch_recent_pin_ids(conn: Any, table_name: str) -> List[str]:
         if not raw_identifier:
             continue
         try:
+            # UUID columns sometimes arrive as UUID objects and sometimes as
+            # strings, so we coerce them to text before normalizing to avoid
+            # subtle mismatches in downstream comparisons.
             normalized_ids.append(str(uuid.UUID(str(raw_identifier))))
         except (ValueError, TypeError, AttributeError):
             log.debug("Skipping pinned %s with invalid id: %r", table_name, raw_identifier)
@@ -134,11 +140,17 @@ def _synchronize_pinned_relationships(
         return
 
     with engine.begin() as conn:
+        # Ensure every currently pinned item is marked as contained by the new
+        # source record.  This keeps the user-facing containment tree accurate
+        # when several entities are pinned before creating a new item.
         pinned_item_ids = _fetch_recent_pin_ids(conn, "items")
         for pinned_item_id in pinned_item_ids:
             _ensure_containment_relationship(conn, normalized_source, pinned_item_id)
 
         if include_invoices:
+            # Invoice pins should also be linked to the new item when the
+            # caller opts in.  The invoices list is tracked separately so we
+            # can reuse the helper for both tables without duplicating logic.
             pinned_invoice_ids = _fetch_recent_pin_ids(conn, "invoices")
             for pinned_invoice_id in pinned_invoice_ids:
                 _ensure_containment_relationship(conn, normalized_source, pinned_invoice_id)
