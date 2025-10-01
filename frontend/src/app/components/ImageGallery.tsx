@@ -207,6 +207,8 @@ const ImageGallery: React.FC<ImageGalleryProps> = ({ targetUuid, refreshToken })
 
   const mainImage = useMemo(() => images[0] ?? null, [images]);
   const otherImages = useMemo(() => (images.length > 1 ? images.slice(1) : []), [images]);
+  // Determine when the upload tile stands alone so we can center it on the grid for clarity.
+  const isUploadTileSolo = useMemo(() => otherImages.length === 0, [otherImages]);
 
   const renderErrorModal = () => {
     if (!showErrorModal || !errorMessage) {
@@ -262,8 +264,11 @@ const ImageGallery: React.FC<ImageGalleryProps> = ({ targetUuid, refreshToken })
         className="image-grid"
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
           gap: "1rem",
+          gridTemplateColumns: isUploadTileSolo
+            ? "minmax(220px, 360px)"
+            : "repeat(auto-fill, minmax(200px, 1fr))",
+          justifyContent: isUploadTileSolo ? "center" : "stretch",
         }}
       >
         {otherImages.map((image) => (
@@ -303,7 +308,12 @@ const ImageGallery: React.FC<ImageGalleryProps> = ({ targetUuid, refreshToken })
           className="upload-tile border border-2 border-secondary rounded d-flex flex-column align-items-stretch justify-content-between p-3"
           tabIndex={0}
           onPaste={handlePaste}
-          style={{ minHeight: "220px", backgroundColor: "#fafafa" }}
+          style={{
+            backgroundColor: "#fafafa",
+            justifySelf: isUploadTileSolo ? "center" : "stretch",
+            minHeight: "220px",
+            width: isUploadTileSolo ? "100%" : "auto",
+          }}
         >
           <div className="mb-3 text-center fw-semibold">➕📸</div>
           <div className="d-grid gap-2 mb-3">
