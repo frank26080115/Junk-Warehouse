@@ -4,7 +4,8 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
-  build: { minify: false },
+  publicDir: 'public',
+  build: { minify: false, copyPublicDir: true },
   server: {
     host: '0.0.0.0',        // bind to all interfaces so LAN devices can reach Vite
     port: 5173,             // development server port (change if you like)

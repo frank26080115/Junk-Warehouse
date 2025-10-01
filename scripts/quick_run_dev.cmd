@@ -1,4 +1,7 @@
 cd ..
+
+start powershell -NoExit -Command "npm run -w frontend build"
+
 start powershell -NoExit -Command "npm run -w frontend dev"
 
 cd backend
