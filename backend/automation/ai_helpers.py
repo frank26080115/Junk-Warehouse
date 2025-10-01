@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 import json
 import requests
-
+import math
 from typing import List, Union
 
 # Guarantee that the repository root is discoverable on sys.path when this
@@ -23,6 +23,11 @@ except:
     CONFIG_PATH = CONFIG_DIR / "appconfig.json"
     def load_app_config():
         return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+
+from sentence_transformers import SentenceTransformer
+
+import logging
+log = logging.getLogger(__name__)
 
 OLLAMA_HOST_URL = "http://127.0.0.1:11434"
 
@@ -106,16 +111,33 @@ def is_model_online(model: str) -> bool:
         return True
     raise ValueError(f"Unknown AI model specified: {model}")
 
+def get_openai_client():
+    secrets_path = CONFIG_DIR / "secrets.json"
+    api_key: str | None = None
+    if secrets_path.exists():
+        try:
+            data = json.loads(secrets_path.read_text(encoding="utf-8"))
+            api_key = data.get("openai_api_key")
+        except Exception:
+            pass
+    # Fallback to environment variable
+    api_key = api_key or os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "OpenAI API key not found. Set OPENAI_API_KEY or provide secrets.json with 'openai_api_key'."
+        )
+    return OpenAI(api_key=api_key)
+
 class LlmAi(object):
     def __init__(self, model: str):
         self.model = model
         self.appconfig = load_app_config()
 
         # Map convenience aliases
-        if model == "online":
-            self.model = self.appconfig["ai_model_online"]
-        elif model == "offline":
-            self.model = self.appconfig["ai_model_offline"]
+        if self.model == "online":
+            self.model = self.appconfig["llm_model_online"]
+        elif self.model == "offline":
+            self.model = self.appconfig["llm_model_offline"]
 
         # IMPORTANT: decide online/offline based on the resolved model
         self.is_online = is_model_online(self.model)
@@ -127,21 +149,7 @@ class LlmAi(object):
                 api_key="ollama"  # any non-empty string
             )
         else:
-            secrets_path = CONFIG_DIR / "secrets.json"
-            api_key: str | None = None
-            if secrets_path.exists():
-                try:
-                    data = json.loads(secrets_path.read_text(encoding="utf-8"))
-                    api_key = data.get("openai_api_key")
-                except Exception:
-                    pass
-            # Fallback to environment variable
-            api_key = api_key or os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                raise RuntimeError(
-                    "OpenAI API key not found. Set OPENAI_API_KEY or provide secrets.json with 'openai_api_key'."
-                )
-            self.client = OpenAI(api_key=api_key)
+            self.client = get_openai_client()
 
         self.tool = None
         self.system_msg = None
@@ -224,6 +232,64 @@ class LlmAi(object):
             )
             return res.choices[0].message.content
 
+def _emb_normalize(v: List[float]) -> List[float]:
+    n = math.sqrt(sum(x*x for x in v)) or 1.0
+    return [x / n for x in v]
+
+class EmbeddingAi(object):
+    def __init__(self, model: str = "offline"):
+        self.model = model
+        self.appconfig = load_app_config()
+
+        # Map convenience aliases
+        if self.model == "online":
+            self.is_online = True
+            self.model = self.appconfig["emb_model_online"]
+            self.client = get_openai_client()
+        elif self.model == "offline":
+            self.is_online = False
+            self.model = self.appconfig["emb_model_offline"]
+            self.st = SentenceTransformer(self.model)
+
+    def build_embedding_vector(self, text: str, *, dimensions: int = 3072) -> List[float]:
+        if self.is_online:
+            return self.build_embedding_vector_openai(text, dimensions=dimensions)
+        else:
+            return self.build_embedding_vector_st(text, dimensions=dimensions)
+
+    def build_embedding_vector_openai(self, texts: str, *, dimensions: int = 3072) -> List[float]:
+        resp = self.client.embeddings.create(model=self.model, input=texts)  # data[i].embedding
+        out = [row.embedding for row in resp.data]
+        # Some models have fixed dim; enforce/trim/pad to DB dim just in case
+        fixed = []
+        for v in out:
+            if len(v) > dimensions:
+                v = v[:dimensions]
+            elif len(v) < dimensions:
+                v = v + [0.0]*(dimensions - len(v))
+            fixed.append(_emb_normalize(v))
+        return fixed
+
+    def build_embedding_vector_st(self, texts: str, *, dimensions: int = 3072) -> List[float]:
+        vecs = self.st.encode(texts, batch_size=64, normalize_embeddings=True, convert_to_numpy=True)
+        out = vecs.tolist()
+        fixed = []
+        for v in out:
+            if len(v) > dimensions:
+                v = v[:dimensions]
+            elif len(v) < dimensions:
+                v = v + [0.0]*(dimensions - len(v))
+            fixed.append(_emb_normalize(v))
+        return fixed
+
+    def _deterministic_embedding(self, text: str, *, dimensions: int = 3072) -> List[float]:
+        if not text:
+            return [0.0] * dimensions
+        import hashlib, random
+        digest = hashlib.sha512(text.encode("utf-8")).digest()
+        seed = int.from_bytes(digest, "big")
+        rng = random.Random(seed)
+        return _emb_normalize([rng.uniform(-1.0, 1.0) for _ in range(dimensions)])
 
 def main() -> None:
     import argparse

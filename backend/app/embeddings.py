@@ -77,33 +77,8 @@ def _collect_item_text(item_row: Mapping[str, Any]) -> str:
 
 
 def _build_embedding_vector(text_input: str, *, dimensions: int = EMBEDDING_DIMENSIONS) -> List[float]:
-    """Build a deterministic pseudo-random embedding vector for the provided text.
-
-    The application does not depend on a true machine-learned embedding model. Instead,
-    it creates a stable stand-in vector so that items can still be indexed and searched.
-    The hash of the text is used as a seed for Python's pseudo-random number generator,
-    which guarantees that the same input text always yields the same output vector while
-    still distributing the values in a manner that mimics an embedding.
-    """
-    if not text_input:
-        # Without any textual content we return a zero vector so searches do not produce
-        # random noise for empty descriptions and callers can depend on consistent data.
-        return [0.0] * dimensions
-
-    # Convert the text into a SHA-512 digest. This digest acts as an easy-to-compute
-    # fingerprint that is extremely unlikely to collide for different texts.
-    digest = hashlib.sha512(text_input.encode("utf-8")).digest()
-    # Interpret the digest bytes as a large integer to seed the random number generator.
-    # Because the digest is derived solely from the text, the resulting sequence of
-    # pseudo-random numbers will be repeatable for the same textual input.
-    seed = int.from_bytes(digest, "big")
-    # Create a dedicated random generator instance so that other code using the global
-    # random module state remains unaffected by the deterministic seeding performed here.
-    rng = random.Random(seed)
-    # Draw floating-point values in the range [-1.0, 1.0]. The distribution is uniform,
-    # which is sufficient for this synthetic embedding because downstream consumers only
-    # rely on relative distances rather than trained semantic meaning.
-    return [rng.uniform(-1.0, 1.0) for _ in range(dimensions)]
+    # TODO, update this using EmbeddingAi from backend\automation\ai_helpers.py
+    pass
 
 
 def update_embeddings_for_item(item_or_identifier: Union[Mapping[str, Any], str, uuid.UUID]) -> None:
