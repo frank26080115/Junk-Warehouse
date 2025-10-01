@@ -15,6 +15,7 @@ from sqlalchemy import text
 
 from backend.app.config_loader import get_private_dir_path
 from app.db import get_engine, update_db_row_by_dict, unwrap_db_result
+from app.helpers import normalize_pg_uuid
 
 from .email_helper import EmailChecker
 
@@ -115,7 +116,7 @@ class GmailChecker(EmailChecker):
         if 16 <= len(hex_candidate) <= 32 and set(hex_candidate).issubset(hex_chars):
             try:
                 padded = hex_candidate.rjust(32, "0")
-                return str(uuid.UUID(padded))
+                return normalize_pg_uuid(padded)
             except Exception:
                 log.debug("Message id %s looked hex-like but failed UUID normalization", message_id)
         return cleaned

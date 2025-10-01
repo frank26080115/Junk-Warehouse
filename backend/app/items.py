@@ -134,7 +134,7 @@ def _synchronize_pinned_relationships(
         return
 
     try:
-        normalized_source = str(uuid.UUID(str(source_item_id)))
+        normalized_source = normalize_pg_uuid(source_item_id)
     except (ValueError, TypeError, AttributeError):
         log.debug("Unable to normalize source item id for relationship sync: %r", source_item_id)
         return

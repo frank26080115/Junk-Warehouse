@@ -731,7 +731,7 @@ def search_items(
 
             uuid_candidate: Optional[str]
             try:
-                uuid_candidate = str(uuid.UUID(identifier))
+                uuid_candidate = normalize_pg_uuid(identifier)
             except (ValueError, AttributeError, TypeError):
                 uuid_candidate = None
 
@@ -785,7 +785,7 @@ def search_items(
             # Quietly amplify the query text with context from the target item so container suggestions
             # inherit meaningful signals from the item currently being viewed.
             try:
-                normalized_target = str(uuid.UUID(str(target_uuid)))
+                normalized_target = normalize_pg_uuid(target_uuid)
             except (ValueError, AttributeError, TypeError):
                 normalized_target = None
 
@@ -964,7 +964,7 @@ def search_invoices(
 
             uuid_candidate: Optional[str]
             try:
-                uuid_candidate = str(uuid.UUID(identifier))
+                uuid_candidate = normalize_pg_uuid(identifier)
             except (ValueError, AttributeError, TypeError):
                 uuid_candidate = None
 

@@ -46,7 +46,7 @@ def get_all_containments(item_identifier: Any) -> List[str]:
             {"target": normalized, "containment_bit": CONTAINMENT_BIT},
         ).scalars().all()
 
-    return [str(uuid.UUID(str(row))) for row in rows]
+    return [normalize_pg_uuid(row) for row in rows]
 
 
 def fetch_containment_paths(item_identifier: Any) -> List[dict[str, Any]]:
@@ -62,7 +62,7 @@ def fetch_containment_paths(item_identifier: Any) -> List[dict[str, Any]]:
 
     normalized = normalize_pg_uuid(item_identifier)
     # Ensure we have a consistently formatted UUID string for comparison.
-    target_uuid_str = str(uuid.UUID(str(normalized)))
+    target_uuid_str = normalize_pg_uuid(normalized)
 
     engine = get_engine()
     sql = text(
@@ -128,7 +128,7 @@ def fetch_containment_paths(item_identifier: Any) -> List[dict[str, Any]]:
         for row in conn.execute(sql, {"target": normalized, "containment_bit": CONTAINMENT_BIT}).mappings():
             raw_path: Iterable[Any] = row.get("path") or []
             raw_names: Iterable[Any] = row.get("name_path") or []
-            normalized_path = [str(uuid.UUID(str(value))) for value in raw_path]
+            normalized_path = [normalize_pg_uuid(value) for value in raw_path]
             name_list = [str(value) if value is not None else "" for value in raw_names]
             # The recursive query returns the target item at the start of the path.
             # Remove that entry so callers only see the surrounding containment items.
