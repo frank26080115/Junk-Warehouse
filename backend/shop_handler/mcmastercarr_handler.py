@@ -24,6 +24,11 @@ class McMasterCarrHandler(ShopHandler):
     ORDER_NUMBER_REGEX = re.compile(r"(\d{4,6}[A-Z]{3,20})")
     PRODUCT_CODE_REGEX = re.compile(r"^[A-Z0-9]+$")
 
+    @staticmethod
+    def _contains_digit(value: str) -> bool:
+        """Return True when ``value`` includes any numeric digit."""
+        return any(character.isdigit() for character in value)
+
     def guess_items(self) -> List[Dict[str, str]]:
         """Attempt to extract item details from McMaster-Carr order tables."""
         # Gather every table in the sanitized DOM. The structure we care about should
@@ -116,7 +121,10 @@ class McMasterCarrHandler(ShopHandler):
                     first_part, remaining = description_text.split(',', 1)
                     name = first_part.strip()
                     description = remaining.strip()
-                    # TODO, if `name` does not contain numbers but `description` does, then `name` = `description_text`, `description` still = remaining.strip()
+                    # Preserve the digits from the trailing narrative when the main name lacks them.
+                    if description and self._contains_digit(description) and not self._contains_digit(name):
+                        # Retain the full text as the visible name so part numbers stay front-and-center.
+                        name = description_text.strip()
 
                 item: Dict[str, str] = {
                     'name': name,
@@ -198,7 +206,10 @@ class McMasterCarrHandler(ShopHandler):
                 first_part, remaining = anchor_text_clean.split(',', 1)
                 name = first_part.strip()
                 description = remaining.strip()
-                # TODO, if `name` does not contain numbers but `description` does, then `name` = `anchor_text_clean`, `description` still = remaining.strip()
+                # Apply the same digit-preserving logic for the fallback parser.
+                if description and self._contains_digit(description) and not self._contains_digit(name):
+                    # Promote the entire phrase to the name so identifiers are never hidden in the description alone.
+                    name = anchor_text_clean.strip()
 
             item: Dict[str, str] = {
                 'name': name,
@@ -289,7 +300,12 @@ class McMasterCarrHandler(ShopHandler):
 
         name = _select_text(_match_xpath('h1', 'productdetailheaderprimary'))
         description = _select_text(_match_xpath('h3', 'productdetailheadersecondary'))
-        # TODO, if `name` does not contain numbers but `description` does, then `name` = `name` + `,` + `description`, `description` still = `description`
+        if description and self._contains_digit(description) and not self._contains_digit(name):
+            # Mirror the invoice parsing heuristic so part numbers within the remote description remain visible in the name.
+            if name:
+                name = f"{name}, {description}"
+            else:
+                name = description
 
         image_url = ''
         image_containers = _match_xpath('div', 'imagecontainer')
