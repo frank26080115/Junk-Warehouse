@@ -357,17 +357,25 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # Instantiate LlmAi with the requested model name; this handles
-    # connecting to either Ollama or OpenAI based on configuration.
-    ai_instance = LlmAi(args.model_name)
+    if args.model_name.startswith("emb:"):
+        ai_instance = EmbeddingAi(args.model_name[4:])
+        # Measure the time it takes for the AI service to respond.
+        start_time = time.perf_counter()
+        v = ai_instance.build_embedding_vector(args.user_message, dimensions=384)
+        elapsed_seconds = time.perf_counter() - start_time
+        response_text = str(v[0])
+    else:
+        # Instantiate LlmAi with the requested model name; this handles
+        # connecting to either Ollama or OpenAI based on configuration.
+        ai_instance = LlmAi(args.model_name)
 
-    # Measure the time it takes for the AI service to respond.
-    start_time = time.perf_counter()
-    response_text = ai_instance.query(
-        user_msg=args.user_message,
-        system_msg=args.system_message,
-    )
-    elapsed_seconds = time.perf_counter() - start_time
+        # Measure the time it takes for the AI service to respond.
+        start_time = time.perf_counter()
+        response_text = ai_instance.query(
+            user_msg=args.user_message,
+            system_msg=args.system_message,
+        )
+        elapsed_seconds = time.perf_counter() - start_time
 
     # Provide detailed output so that a user can see the response and timing.
     print("AI response:\r\n")
