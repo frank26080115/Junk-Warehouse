@@ -58,7 +58,13 @@ const STAT_LAYOUT_TOKENS = {
 };
 
 const QUEUE_SIZE_STAT_ID = "database-queue-size";
-const QUEUE_SIZE_REFRESH_INTERVAL_MS = 10_000;
+/**
+ * The queue size poller expands its wait time whenever the queue remains empty so the backend can
+ * rest while idle. All values are expressed in milliseconds for clarity.
+ */
+const QUEUE_SIZE_MIN_REFRESH_INTERVAL_MS = 5_000;
+const QUEUE_SIZE_REFRESH_INCREMENT_MS = 5_000;
+const QUEUE_SIZE_MAX_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
 // NOTE: label is not displayed
 const STAT_DEFINITIONS: StatDefinition[] = [
@@ -346,7 +352,8 @@ const HomeStatsPanel: React.FC<HomeStatsPanelProps> = ({ onItemQuerySelected }) 
 
   useEffect(() => {
     let isUnmounted = false;
-    let intervalId: ReturnType<typeof setInterval> | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let currentDelayMs = QUEUE_SIZE_MIN_REFRESH_INTERVAL_MS;
     let isFirstLoad = true;
 
     const updateQueueStat = (update: StatUpdate) => {
@@ -359,6 +366,9 @@ const HomeStatsPanel: React.FC<HomeStatsPanelProps> = ({ onItemQuerySelected }) 
       if (showLoading) {
         updateQueueStat({ isLoading: true, errorMessage: null });
       }
+
+      // Remember the desired delay for the next poll so the scheduler can back off after the current request finishes.
+      let plannedDelayMs = currentDelayMs;
 
       try {
         const response = await fetch("/api/getdbqueuesize");
@@ -382,25 +392,45 @@ const HomeStatsPanel: React.FC<HomeStatsPanelProps> = ({ onItemQuerySelected }) 
         const safeValue = Number.isFinite(numericValue) ? Math.max(0, Math.trunc(numericValue)) : 0;
 
         updateQueueStat({ count: safeValue, isLoading: false, errorMessage: null });
+
+        // When there is work waiting in the queue, poll aggressively; otherwise gradually extend the delay up to five minutes.
+        if (safeValue > 0) {
+          plannedDelayMs = QUEUE_SIZE_MIN_REFRESH_INTERVAL_MS;
+        } else {
+          plannedDelayMs = Math.min(
+            QUEUE_SIZE_MAX_REFRESH_INTERVAL_MS,
+            currentDelayMs + QUEUE_SIZE_REFRESH_INCREMENT_MS,
+          );
+        }
       } catch (error: any) {
         const message =
           (error && typeof error.message === "string" && error.message) ||
           "Unable to load the database queue size.";
         updateQueueStat({ count: null, isLoading: false, errorMessage: message });
+        plannedDelayMs = QUEUE_SIZE_MIN_REFRESH_INTERVAL_MS;
       } finally {
         isFirstLoad = false;
+
+        currentDelayMs = plannedDelayMs;
+
+        if (!isUnmounted) {
+          if (timeoutId) {
+            clearTimeout(timeoutId);
+          }
+          timeoutId = setTimeout(() => {
+            void fetchQueueSize(false);
+          }, currentDelayMs);
+        }
       }
     };
 
+    // Start the polling loop immediately so the user receives feedback as soon as the page loads.
     void fetchQueueSize(true);
-    intervalId = setInterval(() => {
-      void fetchQueueSize(isFirstLoad);
-    }, QUEUE_SIZE_REFRESH_INTERVAL_MS);
 
     return () => {
       isUnmounted = true;
-      if (intervalId) {
-        clearInterval(intervalId);
+      if (timeoutId) {
+        clearTimeout(timeoutId);
       }
     };
   }, [updateStatState]);
