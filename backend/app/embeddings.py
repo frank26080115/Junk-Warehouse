@@ -79,7 +79,7 @@ def update_embeddings_for_item(item_or_identifier: Union[Mapping[str, Any], str,
     text_input = _collect_item_text(item_dict)
     vector = _build_embedding_vector(text_input)
 
-    item_uuid = uuid.UUID(str(item_dict.get("id")))
+    item_uuid = uuid.UUID(normalize_pg_uuid(item_dict.get("id")))
 
     engine = get_engine()
     metadata = MetaData()
