@@ -128,6 +128,7 @@ const Shell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
           >
             Junk-Warehouse <img src="/imgs/icons/github_white_sq.png" height="18" width="18" />
           </a>
+          <Link to="/history" style={{ color: "inherit", textDecoration: "none" }}>🪵</Link>
           <a href="/help" target="_blank" style={{ color: "inherit", textDecoration: "none" }}>
             🙋ℹ️
           </a>
