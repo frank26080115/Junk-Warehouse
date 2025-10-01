@@ -8,7 +8,7 @@ import random
 import uuid
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
-from sqlalchemy import MetaData, Table, select, text
+from sqlalchemy import MetaData, Table, select, text, inspect
 from sqlalchemy.orm import Session
 
 from .db import get_engine, get_db_item_as_dict, get_or_create_session
@@ -82,32 +82,55 @@ def _collect_item_text(item_row: Mapping[str, Any]) -> str:
 def _build_embedding_vector(ai: EmbeddingAi, text_input: str) -> List[float]:
     return ai.build_embedding_vector(text_input)[0]
 
-def ensure_embeddings_table_exists(tbl_prefix:str = EMB_TBL_NAME_PREFIX_ITEMS, ai: EmbeddingAi = None):
+def ensure_embeddings_table_exists(tbl_prefix: str = EMB_TBL_NAME_PREFIX_ITEMS, ai: EmbeddingAi = None) -> str:
+    """Create the embedding table for the requested model if it does not already exist."""
+
     if not ai:
         ai = EmbeddingAi()
     if tbl_prefix not in {EMB_TBL_NAME_PREFIX_ITEMS, EMB_TBL_NAME_PREFIX_CONTAINER}:
         raise ValueError("Unsupported embedding table requested")
-    tbl_name = f"{tbl_prefix}_{ai.get_as_suffix()}"
-    # TODO: check if the table exists, if it does, immediately return
-    # TODO: if it does not exist, create the table using the following SQL
-    sql  = f"CREATE TABLE public.{tbl_name} (\n"
-    sql += f"item_id uuid NOT NULL,\n"
-    sql += f"vec public.vector({ai.get_dimensions()}),\n"
-    sql += f"date_updated timestamp with time zone DEFAULT now() NOT NULL\n);\n\n"
-    sql += f"CREATE INDEX idx_{tbl_name}_vec ON public.{tbl_name} USING ivfflat (vec public.vector_cosine_ops) WITH (lists='100');\n\n"
-    sql += f"ALTER TABLE ONLY public.{tbl_name}\n"
-    sql += f"\tADD CONSTRAINT {tbl_name}_pkey PRIMARY KEY (item_id);\n\n"
-    sql += f"ALTER TABLE ONLY public.{tbl_name}\n"
-    sql += f"\tADD CONSTRAINT {tbl_name}_item_id_fkey FOREIGN KEY (item_id) REFERENCES public.items(id) ON DELETE CASCADE;\n\n"
-    sql += f"CREATE FUNCTION public.touch_{tbl_name}_updated() RETURNS trigger\n"
-    sql += f"\tLANGUAGE plpgsql\n"
-    sql += f"\tAS $$\n"
-    sql += f"BEGIN\n"
-    sql += f"\tNEW.date_updated := now();\n"
-    sql += f"\tRETURN NEW;\n"
-    sql += f"END;\n\n"
-    sql += f"CREATE TRIGGER trg_touch_{tbl_name}_updated BEFORE UPDATE ON public.{tbl_name} FOR EACH ROW EXECUTE FUNCTION public.touch_{tbl_name}_updated();\n\n"
-    # TODO: execute SQL here
+
+    engine = get_engine()
+    inspector = inspect(engine)
+    suffix = ai.get_as_suffix()
+    table_name = f"{tbl_prefix}_{suffix}"
+
+    if inspector.has_table(table_name, schema="public"):
+        return table_name
+
+    dimensions = ai.get_dimensions()
+    if not isinstance(dimensions, int) or dimensions <= 0:
+        raise RuntimeError("Embedding dimensions must be a positive integer before creating tables")
+
+    statements = [
+        f"""CREATE TABLE public.{table_name} (
+    item_id uuid NOT NULL,
+    model text NOT NULL,
+    vec public.vector({dimensions}),
+    date_updated timestamp with time zone DEFAULT now() NOT NULL
+);""",
+        f"CREATE INDEX idx_{table_name}_vec ON public.{table_name} USING ivfflat (vec public.vector_cosine_ops) WITH (lists='100');",
+        f"""ALTER TABLE ONLY public.{table_name}
+    ADD CONSTRAINT {table_name}_pkey PRIMARY KEY (item_id);""",
+        f"""ALTER TABLE ONLY public.{table_name}
+    ADD CONSTRAINT {table_name}_item_id_fkey FOREIGN KEY (item_id) REFERENCES public.items(id) ON DELETE CASCADE;""",
+        f"""CREATE FUNCTION public.touch_{table_name}_updated() RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    NEW.date_updated := now();
+    RETURN NEW;
+END;
+$$;""",
+        f"CREATE TRIGGER trg_touch_{table_name}_updated BEFORE UPDATE ON public.{table_name} FOR EACH ROW EXECUTE FUNCTION public.touch_{table_name}_updated();",
+    ]
+
+    with engine.begin() as conn:
+        for statement in statements:
+            conn.exec_driver_sql(statement)
+
+    return table_name
+
 
 def get_embeddings_vector_for(item_identifier: Union[str, uuid.UUID], ai = None) -> Optional[Dict[str, Any]]:
     """Return the persisted embedding vector for the requested item, if available."""
@@ -115,12 +138,12 @@ def get_embeddings_vector_for(item_identifier: Union[str, uuid.UUID], ai = None)
     if not ai:
         ai = EmbeddingAi()
 
-    ensure_embeddings_table_exists(tbl_prefix=EMB_TBL_NAME_PREFIX_ITEMS, ai=ai)
+    table_name = ensure_embeddings_table_exists(tbl_prefix=EMB_TBL_NAME_PREFIX_ITEMS, ai=ai)
 
     item_uuid = uuid.UUID(normalize_pg_uuid(str(item_identifier)))
     engine = get_engine()
     metadata = MetaData()
-    embeddings_table = Table(f"{EMB_TBL_NAME_PREFIX_ITEMS}_{ai.get_as_suffix()}", metadata, autoload_with=engine)
+    embeddings_table = Table(table_name, metadata, autoload_with=engine)
     with engine.begin() as conn:
         result = conn.execute(
             select(embeddings_table.c.model, embeddings_table.c.vec).where(embeddings_table.c.item_id == item_uuid).limit(1)
@@ -130,7 +153,7 @@ def get_embeddings_vector_for(item_identifier: Union[str, uuid.UUID], ai = None)
         if result:
             # Normalize to a dictionary so callers have a predictable structure.
             record = dict(result)
-            return {"vec": record["vec"]}
+            return {"vec": record.get("vec"), "model": record.get("model")}
     return None
 
 def update_embeddings_for_item(item_or_identifier: Union[Mapping[str, Any], str, uuid.UUID]) -> dict:
@@ -144,15 +167,15 @@ def update_embeddings_for_item(item_or_identifier: Union[Mapping[str, Any], str,
     ai = EmbeddingAi()
     vector = _build_embedding_vector(ai, text_input)
 
-    ensure_embeddings_table_exists(tbl_prefix=EMB_TBL_NAME_PREFIX_ITEMS, ai=ai)
+    table_name = ensure_embeddings_table_exists(tbl_prefix=EMB_TBL_NAME_PREFIX_ITEMS, ai=ai)
 
     item_uuid = uuid.UUID(normalize_pg_uuid(item_dict.get("id")))
 
     engine = get_engine()
     metadata = MetaData()
-    embeddings_table = Table(f"{EMB_TBL_NAME_PREFIX_ITEMS}_{ai.get_as_suffix()}", metadata, autoload_with=engine)
+    embeddings_table = Table(table_name, metadata, autoload_with=engine)
 
-    values = {"vec": vector}
+    values = {"vec": vector, "model": ai.get_model_name()}
 
     with engine.begin() as conn:
         existing = conn.execute(
@@ -197,20 +220,27 @@ def update_embeddings_for_container(item_or_identifier: Union[Mapping[str, Any],
     engine = get_engine()
     ai = EmbeddingAi()
     ensure_embeddings_table_exists(tbl_prefix=EMB_TBL_NAME_PREFIX_ITEMS, ai=ai)
-    ensure_embeddings_table_exists(tbl_prefix=EMB_TBL_NAME_PREFIX_CONTAINER, ai=ai)
+    container_table_name = ensure_embeddings_table_exists(tbl_prefix=EMB_TBL_NAME_PREFIX_CONTAINER, ai=ai)
 
     # Collect the container's own embedding and all descendant embeddings so we can
     # compute a representative summary vector. We skip any missing entries because an
     # embedding may not exist yet for every item.
     collected_vectors: List[Tuple[str, Dict[str, Any]]] = []
 
-    container_embedding = get_embeddings_vector_for(container_uuid, ai=ai) # assume this never fails because missing entries are automatically generated
-    collected_vectors.append((str(container_uuid), container_embedding))
+    container_embedding = get_embeddings_vector_for(container_uuid, ai=ai)
+    if not container_embedding:
+        container_embedding = update_embeddings_for_item(container_uuid)
+    if container_embedding and container_embedding.get("vec"):
+        collected_vectors.append((str(container_uuid), container_embedding))
 
     for child_uuid in get_all_containments(container_uuid):
         child_embedding = get_embeddings_vector_for(child_uuid, ai=ai)
-        if child_embedding:
+        if child_embedding and child_embedding.get("vec"):
             collected_vectors.append((str(child_uuid), child_embedding))
+
+    if not collected_vectors:
+        log.info("No embeddings available to summarize for container %s", container_uuid)
+        return
 
     # Prepare an accumulator for the arithmetic mean. The dimensions are determined by
     # the first vector because all embeddings generated by the same model share a fixed
@@ -229,8 +259,8 @@ def update_embeddings_for_container(item_or_identifier: Union[Mapping[str, Any],
     mean_vector = [component * reciprocal for component in totals]
 
     metadata = MetaData()
-    embeddings_table = Table(f"{EMB_TBL_NAME_PREFIX_CONTAINER}_{ai.get_as_suffix()}", metadata, autoload_with=engine)
-    values = {"vec": mean_vector}
+    embeddings_table = Table(container_table_name, metadata, autoload_with=engine)
+    values = {"vec": mean_vector, "model": ai.get_model_name()}
 
     with engine.begin() as conn:
         existing = conn.execute(
@@ -244,6 +274,8 @@ def update_embeddings_for_container(item_or_identifier: Union[Mapping[str, Any],
             values_with_id = dict(values)
             values_with_id["item_id"] = container_uuid
             conn.execute(embeddings_table.insert().values(**values_with_id))
+
+
 
 
 def _extract_query_text(query: Union[SearchQuery, str]) -> str:

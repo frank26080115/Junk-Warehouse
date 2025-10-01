@@ -355,35 +355,57 @@ class EmbeddingAi(object):
                 self.client = get_openai_client()
             else:
                 self.st = SentenceTransformer(self.model)
+
         self.dimensions = get_embedding_dim_for_model(self.model)
+        if self.dimensions is None and not self.is_online:
+            try:
+                self.dimensions = int(self.st.get_sentence_embedding_dimension())
+            except Exception:
+                log.exception("Failed to determine embedding dimension for model %s", self.model)
+                self.dimensions = None
+        if self.dimensions is None:
+            raise RuntimeError(
+                f"Unable to determine embedding dimension for model '{self.model}'. "
+                "Add the model to EMBEDDING_MODEL_DIMENSIONS or provide a deterministic dimension."
+            )
 
     def get_model_name(self) -> str:
         return self.model
 
     def get_model_name_cleaned(self) -> str:
-        return self.model.replace('-','').replace(':','').lower()
+        cleaned_parts: List[str] = []
+        for char in self.model:
+            if char.isalnum():
+                cleaned_parts.append(char.lower())
+            else:
+                cleaned_parts.append("_")
+        cleaned = "".join(cleaned_parts).strip("_")
+        return cleaned or "embedding_model"
 
     def get_dimensions(self) -> int:
+        if self.dimensions is None:
+            raise RuntimeError("Embedding dimension is not initialized")
         return self.dimensions
 
     def get_as_suffix(self) -> str:
-        return f"{self.get_model_name_cleaned}_{self.get_dimensions}"
+        return f"{self.get_model_name_cleaned()}_{self.get_dimensions()}"
 
     def build_embedding_vector(self, text: str) -> List[List[float]]:
+        dimensions = self.get_dimensions()
         if not text:
-            return [[0.0] * self.dimensions]
+            return [[0.0] * dimensions]
         if self.is_online:
             out = self.build_embedding_vector_openai(text)
         else:
             out = self.build_embedding_vector_st(text)
-        out = _ensure_vec(out, dimensions=self.dimensions)
+        out = _ensure_vec(out, dimensions=dimensions)
         # Some models have fixed dim; enforce/trim/pad to DB dim just in case
         fixed = []
         for v in out:
-            if len(v) > self.dimensions:
-                v = v[:self.dimensions]
-            elif len(v) < self.dimensions:
-                v = v + [0.0]*(self.dimensions - len(v))
+            if len(v) > dimensions:
+                v = v[:dimensions]
+            elif len(v) < dimensions:
+                v = v + [0.0] * (dimensions - len(v))
             fixed.append(_emb_normalize(v))
         return fixed
 
@@ -445,7 +467,7 @@ def main() -> None:
         ai_instance = EmbeddingAi(args.model_name[4:])
         # Measure the time it takes for the AI service to respond.
         start_time = time.perf_counter()
-        v = ai_instance.build_embedding_vector(args.user_message, dimensions=384)
+        v = ai_instance.build_embedding_vector(args.user_message)
         elapsed_seconds = time.perf_counter() - start_time
         response_text = str(v[0])
     else:
