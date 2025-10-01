@@ -172,7 +172,7 @@ def log_history(
     meta: Optional[Union[str, Mapping[str, Any]]] = None,
     engine: Optional[Engine] = None,
 ) -> Dict[str, Any]:
-    """Insert a row into the ``history`` table using the shared DB helper."""
+    """Insert a row into the ``history`` table using the shared DB helper.
 
     Parameters are optional so callers can rely on database defaults when appropriate.
     Passing ``None`` for a value omits that column from the insert payload, allowing
