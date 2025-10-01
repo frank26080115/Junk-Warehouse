@@ -76,7 +76,7 @@ def _collect_item_text(item_row: Mapping[str, Any]) -> str:
 
 
 def _build_embedding_vector(ai: EmbeddingAi, text_input: str, *, dimensions: int = 384) -> List[float]:
-    return ai.build_embedding_vector(text_input, dimensions = dimensions)
+    return ai.build_embedding_vector(text_input, dimensions = dimensions)[0]
 
 
 def update_embeddings_for_item(item_or_identifier: Union[Mapping[str, Any], str, uuid.UUID]) -> None:

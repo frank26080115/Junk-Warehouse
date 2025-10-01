@@ -270,7 +270,7 @@ class EmbeddingAi(object):
 
     def build_embedding_vector(self, text: str, *, dimensions: int = 3072) -> List[float]:
         if not text:
-            return [0.0] * dimensions
+            return [[0.0] * dimensions]
         if self.is_online:
             return self.build_embedding_vector_openai(text, dimensions=dimensions)
         else:
