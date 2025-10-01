@@ -62,7 +62,7 @@ def _fetch_recent_pin_ids(conn: Any, table_name: str) -> List[str]:
             # UUID columns sometimes arrive as UUID objects and sometimes as
             # strings, so we coerce them to text before normalizing to avoid
             # subtle mismatches in downstream comparisons.
-            normalized_ids.append(str(uuid.UUID(str(raw_identifier))))
+            normalized_ids.append(normalize_pg_uuid(raw_identifier))
         except (ValueError, TypeError, AttributeError):
             log.debug("Skipping pinned %s with invalid id: %r", table_name, raw_identifier)
     return normalized_ids
