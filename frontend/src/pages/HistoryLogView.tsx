@@ -160,7 +160,7 @@ const HistoryLogView: React.FC = () => {
                         <tr>
                             <th style={{ width: "20%" }}>Date and Time</th>
                             <th style={{ width: "50%" }}>Event</th>
-                            <th style={{ width: "30%" }}>Linked Item Preview</th>
+                            <th style={{ width: "30%" }}>Linked Item</th>
                         </tr>
                     </thead>
                     <tbody>
