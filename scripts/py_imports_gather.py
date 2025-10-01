@@ -10,6 +10,45 @@ from typing import Iterable, List, Set
 # that caret (^) and dollar sign ($) anchors respect individual lines.
 IMPORT_PATTERN = re.compile(r'^\s*(?:from\s+\S+\s+import\s+.+|import\s+.+)$', re.MULTILINE)
 
+
+def remove_trailing_comment(raw_line: str) -> str:
+    """Return the line content without any trailing comment text.
+
+    The scanning logic keeps track of quoted strings so that hash symbols that
+    appear inside string literals are preserved. This keeps legitimate module
+    names such as `module#part` intact while still trimming genuine comments.
+    """
+    in_single_quote = False
+    in_double_quote = False
+    escaped = False
+    for index, character in enumerate(raw_line):
+        if escaped:
+            escaped = False
+            continue
+        if character == '\\':
+            escaped = True
+            continue
+        if character == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            continue
+        if character == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            continue
+        if character == '#' and not in_single_quote and not in_double_quote:
+            return raw_line[:index].rstrip()
+    return raw_line.rstrip()
+
+
+def sanitize_import_statement(raw_statement: str) -> str:
+    """Normalize an import statement by trimming whitespace and comments.
+
+    The script prints sanitized statements so downstream tooling never sees
+    inline comments or incidental spacing differences.
+    """
+    without_comment = remove_trailing_comment(raw_statement)
+    return without_comment.strip()
+
+
 def discover_python_files(root: Path) -> Iterable[Path]:
     """Yield every Python source file beneath the provided root directory."""
     for current_root, directories, files in os.walk(root):
@@ -22,12 +61,19 @@ def discover_python_files(root: Path) -> Iterable[Path]:
             if filename.endswith('.py'):
                 yield current_path / filename
 
+
 def extract_imports(python_file: Path) -> List[str]:
     """Read a Python file and return all import statements detected via regex."""
     # Using 'errors="ignore"' ensures that even files with unexpected encodings
     # do not interrupt the overall search process.
     file_contents = python_file.read_text(encoding='utf-8', errors='ignore')
-    return [match.group(0).strip() for match in IMPORT_PATTERN.finditer(file_contents)]
+    extracted_statements: List[str] = []
+    for match in IMPORT_PATTERN.finditer(file_contents):
+        sanitized = sanitize_import_statement(match.group(0))
+        if sanitized:
+            extracted_statements.append(sanitized)
+    return extracted_statements
+
 
 def format_import_output(python_file: Path, import_statements: Iterable[str]) -> List[str]:
     """Prepare formatted strings that pair file paths with their import statements."""
@@ -37,9 +83,12 @@ def format_import_output(python_file: Path, import_statements: Iterable[str]) ->
         formatted_results.append(f"{relative_path}: {statement}")
     return formatted_results
 
+
 def parse_import_targets(import_statement: str) -> List[str]:
     """Return every module path referenced by a single import statement."""
-    cleaned_statement = import_statement.strip()
+    cleaned_statement = sanitize_import_statement(import_statement)
+    if not cleaned_statement:
+        return []
     targets: List[str] = []
     if cleaned_statement.startswith('from '):
         # Extract the module portion that follows the "from" keyword and
@@ -49,6 +98,7 @@ def parse_import_targets(import_statement: str) -> List[str]:
         if len(source_details) == 2:
             module_path = source_details[0].strip()
             if module_path and not module_path.startswith('.'):
+                module_path = module_path.split(' ', 1)[0]
                 targets.append(module_path)
         return targets
     if cleaned_statement.startswith('import '):
@@ -57,9 +107,26 @@ def parse_import_targets(import_statement: str) -> List[str]:
         imported_modules = cleaned_statement[7:]
         for module_fragment in imported_modules.split(','):
             leading_module = module_fragment.strip().split(' as ', 1)[0].strip()
-            if leading_module and not leading_module.startswith('.'):
-                targets.append(leading_module)
+            if leading_module:
+                leading_module = leading_module.split(' ', 1)[0]
+                if not leading_module.startswith('.'):
+                    targets.append(leading_module)
     return targets
+
+
+def derive_library_name(import_target: str) -> str:
+    """Return the high-level library name from a fully qualified import target.
+
+    The resulting name always stops at the first space or period so it matches
+    the user's expectation for a concise identifier.
+    """
+    cleaned_target = import_target.strip()
+    if not cleaned_target:
+        return ''
+    primary_token = cleaned_target.split(' ', 1)[0]
+    high_level = primary_token.split('.', 1)[0]
+    return high_level
+
 
 def collect_high_level_library_names(formatted_results: Iterable[str], backend_root: Path) -> List[str]:
     """Create a sorted list of unique top-level libraries from formatted import data."""
@@ -77,14 +144,15 @@ def collect_high_level_library_names(formatted_results: Iterable[str], backend_r
             # If the line cannot be split, skip it while keeping the script resilient.
             continue
         for target in parse_import_targets(import_statement):
-            high_level_name = target.split('.', 1)[0].strip()
-            if not high_level_name:
+            library_name = derive_library_name(target)
+            if not library_name:
                 continue
-            if high_level_name in backend_directories:
+            if library_name in backend_directories:
                 continue
-            discovered_libraries.add(high_level_name)
+            discovered_libraries.add(library_name)
 
     return sorted(discovered_libraries)
+
 
 def main() -> None:
     """Locate and print every import statement discovered in project Python files."""
@@ -107,6 +175,7 @@ def main() -> None:
         print('High level imported libraries (excluding backend directories):')
         for library_name in library_names:
             print(library_name)
+
 
 if __name__ == '__main__':
     # The script is intended to be executed from the repository root so that
