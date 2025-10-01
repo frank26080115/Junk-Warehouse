@@ -621,7 +621,7 @@ const ItemPage: React.FC = () => {
         <ImageGallery targetUuid={targetUuid} refreshToken={refreshToken} />
       </div>
 
-      {/* Pin management controls appear before related search panels so they are easy to find */}
+      {/* Pin management controls */}
       <div className="mb-4">
         <div className="d-flex flex-column flex-md-row align-items-start align-items-md-center gap-3">
           {pinDetails.instant && (
