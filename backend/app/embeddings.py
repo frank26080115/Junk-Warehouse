@@ -6,6 +6,7 @@ import hashlib
 import logging
 import random
 import uuid
+import math
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 from sqlalchemy import MetaData, Table, select, text, inspect
@@ -80,7 +81,12 @@ def _collect_item_text(item_row: Mapping[str, Any]) -> str:
 
 
 def _build_embedding_vector(ai: EmbeddingAi, text_input: str) -> List[float]:
-    return ai.build_embedding_vector(text_input)[0]
+    return unit_vect(ai.build_embedding_vector(text_input)[0])
+
+def unit_vect(vec: List[float]) -> List[float]:
+    """Normalize a vector to unit length (L2 norm = 1)."""
+    norm = math.sqrt(sum(x * x for x in vec))
+    return [x / norm for x in vec] if norm > 0 else vec
 
 def ensure_embeddings_table_exists(tbl_prefix: str = EMB_TBL_NAME_PREFIX_ITEMS, ai: EmbeddingAi = None) -> str:
     """Create the embedding table for the requested model if it does not already exist."""
@@ -105,7 +111,6 @@ def ensure_embeddings_table_exists(tbl_prefix: str = EMB_TBL_NAME_PREFIX_ITEMS, 
     statements = [
         f"""CREATE TABLE public.{table_name} (
     item_id uuid NOT NULL,
-    model text NOT NULL,
     vec public.vector({dimensions}),
     date_updated timestamp with time zone DEFAULT now() NOT NULL
 );""",
@@ -146,14 +151,14 @@ def get_embeddings_vector_for(item_identifier: Union[str, uuid.UUID], ai = None)
     embeddings_table = Table(table_name, metadata, autoload_with=engine)
     with engine.begin() as conn:
         result = conn.execute(
-            select(embeddings_table.c.model, embeddings_table.c.vec).where(embeddings_table.c.item_id == item_uuid).limit(1)
+            select(embeddings_table.c.vec).where(embeddings_table.c.item_id == item_uuid).limit(1)
         ).first()
         if not result:
             result = update_embeddings_for_item(item_uuid)
         if result:
             # Normalize to a dictionary so callers have a predictable structure.
             record = dict(result)
-            return {"vec": record.get("vec"), "model": record.get("model")}
+            return {"vec": record.get("vec")}
     return None
 
 def update_embeddings_for_item(item_or_identifier: Union[Mapping[str, Any], str, uuid.UUID]) -> dict:
@@ -175,7 +180,7 @@ def update_embeddings_for_item(item_or_identifier: Union[Mapping[str, Any], str,
     metadata = MetaData()
     embeddings_table = Table(table_name, metadata, autoload_with=engine)
 
-    values = {"vec": vector, "model": ai.get_model_name()}
+    values = {"vec": unit_vect(vector)}
 
     with engine.begin() as conn:
         existing = conn.execute(
@@ -192,7 +197,7 @@ def update_embeddings_for_item(item_or_identifier: Union[Mapping[str, Any], str,
 
         # Re-select the row so we can return the fresh model and vector payload.
         existing = conn.execute(
-            select(embeddings_table.c.model, embeddings_table.c.vec, embeddings_table.c.item_id)
+            select(embeddings_table.c.vec, embeddings_table.c.item_id)
             .where(embeddings_table.c.item_id == item_uuid)
             .limit(1)
         ).first()
@@ -205,6 +210,59 @@ def update_embeddings_for_item(item_or_identifier: Union[Mapping[str, Any], str,
             log.exception("Failed to update container embeddings for item %s", item_uuid)
 
     return dict(existing) if existing else None
+
+
+def summarize_container_embeddings(container_uuid,
+                                   k_prior: int = 1) -> List[float]:
+    """
+    Build a container summary embedding using a 'k prior':
+    the container's own vector counts as k virtual children.
+    k_prior = 0 -> ignore label (contents only)
+    k_prior = 1 -> self counts once
+    k_prior >=3 -> label remains influential as bin grows
+    """
+    # 1) collect vectors
+    e_self = None
+    child_vecs: List[List[float]] = []
+
+    container_embedding = get_embeddings_vector_for(container_uuid, ai=True)
+    if not container_embedding:
+        container_embedding = update_embeddings_for_item(container_uuid)
+    if container_embedding and container_embedding.get("vec"):
+        e_self = unit_vect([float(x) for x in container_embedding["vec"]])  # normalize
+
+    for child_uuid in get_all_containments(container_uuid):
+        child_embedding = get_embeddings_vector_for(child_uuid, ai=True)
+        if child_embedding and child_embedding.get("vec"):
+            child_vecs.append(unit([float(x) for x in child_embedding["vec"]]))  # normalize
+
+    if not e_self and not child_vecs:
+        log.info("No embeddings available to summarize for container %s", container_uuid)
+        return []
+
+    # 2) compute weighted mean
+    # sum_children
+    if child_vecs:
+        vec_len = len(child_vecs[0])
+        sum_children = [0.0] * vec_len
+        for v in child_vecs:
+            for i, val in enumerate(v):
+                sum_children[i] += val
+        n = len(child_vecs)
+    else:
+        sum_children, n = None, 0
+
+    if e_self and n > 0:
+        # combined = (k * e_self + sum_children) / (k + n)
+        combined = [(k_prior * e_self[i] + sum_children[i]) / (k_prior + n) for i in range(len(e_self))]
+    elif e_self:
+        # only self
+        combined = e_self[:]  # already normalized
+    else:
+        # only children
+        combined = [sum_children[i] / n for i in range(len(sum_children))]
+
+    return unit_vect(combined)  # normalize final vector
 
 
 def update_embeddings_for_container(item_or_identifier: Union[Mapping[str, Any], str, uuid.UUID]) -> None:
@@ -222,45 +280,9 @@ def update_embeddings_for_container(item_or_identifier: Union[Mapping[str, Any],
     ensure_embeddings_table_exists(tbl_prefix=EMB_TBL_NAME_PREFIX_ITEMS, ai=ai)
     container_table_name = ensure_embeddings_table_exists(tbl_prefix=EMB_TBL_NAME_PREFIX_CONTAINER, ai=ai)
 
-    # Collect the container's own embedding and all descendant embeddings so we can
-    # compute a representative summary vector. We skip any missing entries because an
-    # embedding may not exist yet for every item.
-    collected_vectors: List[Tuple[str, Dict[str, Any]]] = []
-
-    container_embedding = get_embeddings_vector_for(container_uuid, ai=ai)
-    if not container_embedding:
-        container_embedding = update_embeddings_for_item(container_uuid)
-    if container_embedding and container_embedding.get("vec"):
-        collected_vectors.append((str(container_uuid), container_embedding))
-
-    for child_uuid in get_all_containments(container_uuid):
-        child_embedding = get_embeddings_vector_for(child_uuid, ai=ai)
-        if child_embedding and child_embedding.get("vec"):
-            collected_vectors.append((str(child_uuid), child_embedding))
-
-    if not collected_vectors:
-        log.info("No embeddings available to summarize for container %s", container_uuid)
-        return
-
-    # Prepare an accumulator for the arithmetic mean. The dimensions are determined by
-    # the first vector because all embeddings generated by the same model share a fixed
-    # length.
-    vector_length = len(collected_vectors[0][1]["vec"])
-    totals: List[float] = [0.0] * vector_length
-    contributing_vectors = 0
-
-    for source_id, entry in collected_vectors:
-        vector = entry["vec"]
-        for index, value in enumerate(vector):
-            totals[index] += float(value)
-        contributing_vectors += 1
-
-    reciprocal = 1.0 / float(contributing_vectors)
-    mean_vector = [component * reciprocal for component in totals]
-
     metadata = MetaData()
     embeddings_table = Table(container_table_name, metadata, autoload_with=engine)
-    values = {"vec": mean_vector, "model": ai.get_model_name()}
+    values = {"vec": summarize_container_embeddings(container_uuid, ai=ai)}
 
     with engine.begin() as conn:
         existing = conn.execute(
@@ -274,8 +296,6 @@ def update_embeddings_for_container(item_or_identifier: Union[Mapping[str, Any],
             values_with_id = dict(values)
             values_with_id["item_id"] = container_uuid
             conn.execute(embeddings_table.insert().values(**values_with_id))
-
-
 
 
 def _extract_query_text(query: Union[SearchQuery, str]) -> str:
