@@ -23,7 +23,7 @@ from .assoc_helper import (
     get_item_relationship,
     set_item_relationship,
 )
-from .contaiment_path import fetch_containment_paths
+from .containment_path import fetch_containment_paths
 from .image_handler import (
     store_image_for_item,
     BadRequest as ImageBadRequest,

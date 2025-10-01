@@ -1,10 +1,6 @@
 # AGENT GUIDELINES
 
-
-
 These instructions apply to the entire repository.
-
-
 
 ## Workflow Expectations
 
@@ -21,15 +17,11 @@ These instructions apply to the entire repository.
 
 - Default to Windows-style line endings (CRLF) for all files, except for scripts intended to run strictly on Unix-like systems (e.g., `*.sh`), which should keep LF endings.
 
-
-
 ## Tooling and Commands
 
 - Do **not** install npm, pip, or other language packages during environment initialization. Avoid running package installation commands unless explicitly instructed by the user.
 
 - Skip running automated tests or lint commands unless the user specifically requests them.
-
-
 
 ## Technology Notes
 
