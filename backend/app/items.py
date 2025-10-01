@@ -350,12 +350,6 @@ def augment_item_dict(
     return out
 
 
-def _augment_item(d: Dict[str, Any]) -> Dict[str, Any]:
-    """Compatibility wrapper that delegates to :func:`augment_item_dict`."""
-
-    return augment_item_dict(d)
-
-
 def _resolve_item_by_xyz(xyz: str) -> Optional[Dict[str, Any]]:
     """
     Resolve a front-end locator (id/slug/short-id/etc.) using the same search pipeline.
@@ -408,7 +402,7 @@ def get_item_api():
         db_row = get_db_item_as_dict(engine, TABLE, item_uuid, id_col_name=ID_COL)
         if not db_row:
             return jsonify({"error": "Item not found"}), 404
-        return jsonify(_augment_item(db_row)), 200
+        return jsonify(augment_item_dict(db_row)), 200
     except Exception as e:
         log.exception("getitem failed")
         return jsonify({"error": str(e)}), 400
@@ -494,7 +488,7 @@ def save_item_api():
         except Exception:
             log.exception("Failed to refresh item embeddings after save")
 
-        return jsonify(_augment_item(db_row)), 200
+        return jsonify(augment_item_dict(db_row)), 200
 
     except Exception as e:
         log.exception("saveitem failed")
@@ -653,7 +647,7 @@ def insert_item(
     except Exception:
         log.exception("Failed to synchronize pinned relationships for new item")
 
-    return _augment_item(db_row)
+    return augment_item_dict(db_row)
 
 
 @bp.route("/insertitem", methods=["POST"])
