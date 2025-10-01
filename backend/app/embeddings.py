@@ -20,6 +20,9 @@ from .containment_path import get_all_containments
 
 log = logging.getLogger(__name__)
 
+EMB_TBL_NAME_PREFIX_ITEMS = "items_embeddings"
+EMB_TBL_NAME_PREFIX_CONTAINER = "container_embeddings"
+
 DEFAULT_EMBEDDING_LIMIT = 50
 
 def _resolve_item_dict(item_or_identifier: Union[Mapping[str, Any], str, uuid.UUID]) -> Dict[str, Any]:
@@ -76,16 +79,48 @@ def _collect_item_text(item_row: Mapping[str, Any]) -> str:
     return "".join(parts)
 
 
-def _build_embedding_vector(ai: EmbeddingAi, text_input: str, *, dimensions: int = 384) -> List[float]:
-    return ai.build_embedding_vector(text_input, dimensions = dimensions)[0]
+def _build_embedding_vector(ai: EmbeddingAi, text_input: str) -> List[float]:
+    return ai.build_embedding_vector(text_input)[0]
 
-def get_embeddings_vector_for(item_identifier: Union[str, uuid.UUID]) -> Optional[Dict[str, Any]]:
+def ensure_embeddings_table_exists(tbl_prefix:str = EMB_TBL_NAME_PREFIX_ITEMS, ai: EmbeddingAi = None):
+    if not ai:
+        ai = EmbeddingAi()
+    if tbl_prefix not in {EMB_TBL_NAME_PREFIX_ITEMS, EMB_TBL_NAME_PREFIX_CONTAINER}:
+        raise ValueError("Unsupported embedding table requested")
+    tbl_name = f"{tbl_prefix}_{ai.get_as_suffix()}"
+    # TODO: check if the table exists, if it does, immediately return
+    # TODO: if it does not exist, create the table using the following SQL
+    sql  = f"CREATE TABLE public.{tbl_name} (\n"
+    sql += f"item_id uuid NOT NULL,\n"
+    sql += f"vec public.vector({ai.get_dimensions()}),\n"
+    sql += f"date_updated timestamp with time zone DEFAULT now() NOT NULL\n);\n\n"
+    sql += f"CREATE INDEX idx_{tbl_name}_vec ON public.{tbl_name} USING ivfflat (vec public.vector_cosine_ops) WITH (lists='100');\n\n"
+    sql += f"ALTER TABLE ONLY public.{tbl_name}\n"
+    sql += f"\tADD CONSTRAINT {tbl_name}_pkey PRIMARY KEY (item_id);\n\n"
+    sql += f"ALTER TABLE ONLY public.{tbl_name}\n"
+    sql += f"\tADD CONSTRAINT {tbl_name}_item_id_fkey FOREIGN KEY (item_id) REFERENCES public.items(id) ON DELETE CASCADE;\n\n"
+    sql += f"CREATE FUNCTION public.touch_{tbl_name}_updated() RETURNS trigger\n"
+    sql += f"\tLANGUAGE plpgsql\n"
+    sql += f"\tAS $$\n"
+    sql += f"BEGIN\n"
+    sql += f"\tNEW.date_updated := now();\n"
+    sql += f"\tRETURN NEW;\n"
+    sql += f"END;\n\n"
+    sql += f"CREATE TRIGGER trg_touch_{tbl_name}_updated BEFORE UPDATE ON public.{tbl_name} FOR EACH ROW EXECUTE FUNCTION public.touch_{tbl_name}_updated();\n\n"
+    # TODO: execute SQL here
+
+def get_embeddings_vector_for(item_identifier: Union[str, uuid.UUID], ai = None) -> Optional[Dict[str, Any]]:
     """Return the persisted embedding vector for the requested item, if available."""
+
+    if not ai:
+        ai = EmbeddingAi()
+
+    ensure_embeddings_table_exists(tbl_prefix=EMB_TBL_NAME_PREFIX_ITEMS, ai=ai)
 
     item_uuid = uuid.UUID(normalize_pg_uuid(str(item_identifier)))
     engine = get_engine()
     metadata = MetaData()
-    embeddings_table = Table("item_embeddings", metadata, autoload_with=engine)
+    embeddings_table = Table(f"{EMB_TBL_NAME_PREFIX_ITEMS}_{ai.get_as_suffix()}", metadata, autoload_with=engine)
     with engine.begin() as conn:
         result = conn.execute(
             select(embeddings_table.c.model, embeddings_table.c.vec).where(embeddings_table.c.item_id == item_uuid).limit(1)
@@ -95,7 +130,7 @@ def get_embeddings_vector_for(item_identifier: Union[str, uuid.UUID]) -> Optiona
         if result:
             # Normalize to a dictionary so callers have a predictable structure.
             record = dict(result)
-            return {"model": record["model"], "vector": record["vec"]}
+            return {"vec": record["vec"]}
     return None
 
 def update_embeddings_for_item(item_or_identifier: Union[Mapping[str, Any], str, uuid.UUID]) -> dict:
@@ -109,13 +144,15 @@ def update_embeddings_for_item(item_or_identifier: Union[Mapping[str, Any], str,
     ai = EmbeddingAi()
     vector = _build_embedding_vector(ai, text_input)
 
+    ensure_embeddings_table_exists(tbl_prefix=EMB_TBL_NAME_PREFIX_ITEMS, ai=ai)
+
     item_uuid = uuid.UUID(normalize_pg_uuid(item_dict.get("id")))
 
     engine = get_engine()
     metadata = MetaData()
-    embeddings_table = Table("item_embeddings", metadata, autoload_with=engine)
+    embeddings_table = Table(f"{EMB_TBL_NAME_PREFIX_ITEMS}_{ai.get_as_suffix()}", metadata, autoload_with=engine)
 
-    values = {"model": ai.model, "vec": vector}
+    values = {"vec": vector}
 
     with engine.begin() as conn:
         existing = conn.execute(
@@ -158,66 +195,42 @@ def update_embeddings_for_container(item_or_identifier: Union[Mapping[str, Any],
 
     container_uuid = uuid.UUID(normalize_pg_uuid(item_dict.get("id")))
     engine = get_engine()
+    ai = EmbeddingAi()
+    ensure_embeddings_table_exists(tbl_prefix=EMB_TBL_NAME_PREFIX_ITEMS, ai=ai)
+    ensure_embeddings_table_exists(tbl_prefix=EMB_TBL_NAME_PREFIX_CONTAINER, ai=ai)
 
     # Collect the container's own embedding and all descendant embeddings so we can
     # compute a representative summary vector. We skip any missing entries because an
     # embedding may not exist yet for every item.
     collected_vectors: List[Tuple[str, Dict[str, Any]]] = []
 
-    container_embedding = get_embeddings_vector_for(container_uuid)
-    if container_embedding:
-        collected_vectors.append((str(container_uuid), container_embedding))
+    container_embedding = get_embeddings_vector_for(container_uuid, ai=ai) # assume this never fails because missing entries are automatically generated
+    collected_vectors.append((str(container_uuid), container_embedding))
 
     for child_uuid in get_all_containments(container_uuid):
-        child_embedding = get_embeddings_vector_for(child_uuid)
+        child_embedding = get_embeddings_vector_for(child_uuid, ai=ai)
         if child_embedding:
             collected_vectors.append((str(child_uuid), child_embedding))
-
-    if not collected_vectors:
-        log.warning("No embeddings available to summarize container %s", container_uuid)
-        return
-
-    model_name = collected_vectors[0][1]["model"]
 
     # Prepare an accumulator for the arithmetic mean. The dimensions are determined by
     # the first vector because all embeddings generated by the same model share a fixed
     # length.
-    vector_length = len(collected_vectors[0][1]["vector"])
+    vector_length = len(collected_vectors[0][1]["vec"])
     totals: List[float] = [0.0] * vector_length
     contributing_vectors = 0
 
     for source_id, entry in collected_vectors:
-        vector = entry["vector"]
-        if entry["model"] != model_name:
-            log.warning(
-                "Skipping embedding for %s because model %s does not match expected %s",
-                source_id,
-                entry["model"],
-                model_name,
-            )
-            continue
-        if len(vector) != vector_length:
-            log.warning(
-                "Skipping embedding for %s due to mismatched vector length %s (expected %s)",
-                source_id,
-                len(vector),
-                vector_length,
-            )
-            continue
+        vector = entry["vec"]
         for index, value in enumerate(vector):
             totals[index] += float(value)
         contributing_vectors += 1
-
-    if not contributing_vectors:
-        log.warning("No compatible embeddings found while summarizing container %s", container_uuid)
-        return
 
     reciprocal = 1.0 / float(contributing_vectors)
     mean_vector = [component * reciprocal for component in totals]
 
     metadata = MetaData()
-    embeddings_table = Table("container_embeddings", metadata, autoload_with=engine)
-    values = {"model": model_name, "vec": mean_vector}
+    embeddings_table = Table(f"{EMB_TBL_NAME_PREFIX_CONTAINER}_{ai.get_as_suffix()}", metadata, autoload_with=engine)
+    values = {"vec": mean_vector}
 
     with engine.begin() as conn:
         existing = conn.execute(
@@ -247,13 +260,15 @@ def search_items_by_embeddings(
     *,
     session: Optional[Session] = None,
     limit: Optional[int] = None,
-    embedding_table: str = "item_embeddings",
+    embedding_table: str = EMB_TBL_NAME_PREFIX_ITEMS,
 ) -> List[Mapping[str, Any]]:
     query_text = _extract_query_text(search_query_or_text)
     if not query_text:
         return []
 
     ai = EmbeddingAi()
+    ensure_embeddings_table_exists(tbl_prefix=EMB_TBL_NAME_PREFIX_ITEMS, ai=ai)
+    ensure_embeddings_table_exists(tbl_prefix=embedding_table, ai=ai)
     vector = _build_embedding_vector(ai, query_text)
 
     if session is None:
@@ -262,10 +277,13 @@ def search_items_by_embeddings(
     default_limit = DEFAULT_EMBEDDING_LIMIT if limit is None else max(int(limit), 1)
 
     # Validate the caller-supplied table so the dynamically constructed SQL remains safe.
-    if embedding_table not in {"item_embeddings", "container_embeddings"}:
+    if embedding_table not in {EMB_TBL_NAME_PREFIX_ITEMS, EMB_TBL_NAME_PREFIX_CONTAINER}:
         raise ValueError("Unsupported embedding table requested")
 
-    embedding_alias = "ie" if embedding_table == "item_embeddings" else "ce"
+    embedding_alias = "ie" if embedding_table == EMB_TBL_NAME_PREFIX_ITEMS else "ce"
+
+    ai = EmbeddingAi()
+    embedding_table = embedding_table + f"_{ai.get_as_suffix()}"
 
     table_name = "items"
     alias = "i"

@@ -18,7 +18,7 @@ from .db import (
     session_scope,
 )
 from .search_expression import SearchQuery, get_sql_order_and_limit
-from .embeddings import search_items_by_embeddings
+from .embeddings import search_items_by_embeddings, EMB_TBL_NAME_PREFIX_ITEMS, EMB_TBL_NAME_PREFIX_CONTAINER
 from .helpers import fuzzy_levenshtein_at_most, normalize_pg_uuid, to_bool
 from .items import augment_item_dict, get_item_thumbnails
 from .slugify import slugify
@@ -513,7 +513,7 @@ def _execute_text_search_query(
             search_query,
             session=session,
             limit=default_limit,
-            embedding_table="container_embeddings",
+            embedding_table=EMB_TBL_NAME_PREFIX_CONTAINER,
         )
     if smart_directive and normalized_query != "*":
         return search_items_by_embeddings(search_query, session=session, limit=default_limit)

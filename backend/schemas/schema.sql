@@ -48,20 +48,6 @@ COMMENT ON EXTENSION vector IS 'vector data type and ivfflat and hnsw access met
 
 
 --
--- Name: touch_container_embedding_updated(); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.touch_container_embedding_updated() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-BEGIN
-    NEW.date_updated := now();
-    RETURN NEW;
-END;
-$$;
-
-
---
 -- Name: touch_images_updated(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -85,20 +71,6 @@ CREATE FUNCTION public.touch_invoice_items_updated() RETURNS trigger
 BEGIN
   NEW.date_updated := now();
   RETURN NEW;
-END;
-$$;
-
-
---
--- Name: touch_item_embedding_updated(); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.touch_item_embedding_updated() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-BEGIN
-    NEW.date_updated := now();
-    RETURN NEW;
 END;
 $$;
 
@@ -148,17 +120,6 @@ $$;
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
-
---
--- Name: container_embeddings; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.container_embeddings (
-    item_id uuid NOT NULL,
-    model text NOT NULL,
-    vec public.vector(384) NOT NULL,
-    date_updated timestamp with time zone DEFAULT now() NOT NULL
-);
 
 
 --
@@ -215,18 +176,6 @@ CREATE TABLE public.invoices (
     snooze timestamp with time zone DEFAULT now() NOT NULL,
     is_deleted boolean DEFAULT false NOT NULL,
     pin_as_opened timestamp with time zone DEFAULT NULL
-);
-
-
---
--- Name: item_embeddings; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.item_embeddings (
-    item_id uuid NOT NULL,
-    model text NOT NULL,
-    vec public.vector(384) NOT NULL,
-    date_updated timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -357,14 +306,6 @@ CREATE TABLE history (
 
 
 --
--- Name: container_embeddings container_embeddings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.container_embeddings
-    ADD CONSTRAINT container_embeddings_pkey PRIMARY KEY (item_id);
-
-
---
 -- Name: images images_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -394,14 +335,6 @@ ALTER TABLE ONLY public.invoice_items
 
 ALTER TABLE ONLY public.invoices
     ADD CONSTRAINT invoices_pkey PRIMARY KEY (id);
-
-
---
--- Name: item_embeddings item_embeddings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.item_embeddings
-    ADD CONSTRAINT item_embeddings_pkey PRIMARY KEY (item_id);
 
 
 --
@@ -442,27 +375,6 @@ ALTER TABLE ONLY public.relationships
 
 ALTER TABLE ONLY public.test_table
     ADD CONSTRAINT test_table_pkey PRIMARY KEY (id);
-
-
---
--- Name: idx_container_embeddings_model; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_container_embeddings_model ON public.container_embeddings USING btree (model);
-
-
---
--- Name: idx_container_embeddings_vec; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_container_embeddings_vec ON public.container_embeddings USING ivfflat (vec public.vector_cosine_ops) WITH (lists='100');
-
-
---
--- Name: idx_item_embeddings_vec; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_item_embeddings_vec ON public.item_embeddings USING ivfflat (vec public.vector_cosine_ops) WITH (lists='100');
 
 
 --
@@ -543,13 +455,6 @@ CREATE TRIGGER set_date_last_modified BEFORE UPDATE ON public.items FOR EACH ROW
 
 
 --
--- Name: container_embeddings trg_touch_container_embedding_updated; Type: TRIGGER; Schema: public; Owner: -
---
-
-CREATE TRIGGER trg_touch_container_embedding_updated BEFORE UPDATE ON public.container_embeddings FOR EACH ROW EXECUTE FUNCTION public.touch_container_embedding_updated();
-
-
---
 -- Name: images trg_touch_images_updated; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -561,13 +466,6 @@ CREATE TRIGGER trg_touch_images_updated BEFORE UPDATE ON public.images FOR EACH 
 --
 
 CREATE TRIGGER trg_touch_invoice_items_updated BEFORE UPDATE ON public.invoice_items FOR EACH ROW EXECUTE FUNCTION public.touch_invoice_items_updated();
-
-
---
--- Name: item_embeddings trg_touch_item_embedding_updated; Type: TRIGGER; Schema: public; Owner: -
---
-
-CREATE TRIGGER trg_touch_item_embedding_updated BEFORE UPDATE ON public.item_embeddings FOR EACH ROW EXECUTE FUNCTION public.touch_item_embedding_updated();
 
 
 --
@@ -585,14 +483,6 @@ CREATE TRIGGER trg_touch_relationship_updated BEFORE UPDATE ON public.relationsh
 
 
 --
--- Name: container_embeddings container_embeddings_item_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.container_embeddings
-    ADD CONSTRAINT container_embeddings_item_id_fkey FOREIGN KEY (item_id) REFERENCES public.items(id) ON DELETE CASCADE;
-
-
---
 -- Name: invoice_items invoice_items_invoice_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -606,14 +496,6 @@ ALTER TABLE ONLY public.invoice_items
 
 ALTER TABLE ONLY public.invoice_items
     ADD CONSTRAINT invoice_items_item_id_fkey FOREIGN KEY (item_id) REFERENCES public.items(id) ON DELETE CASCADE;
-
-
---
--- Name: item_embeddings item_embeddings_item_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.item_embeddings
-    ADD CONSTRAINT item_embeddings_item_id_fkey FOREIGN KEY (item_id) REFERENCES public.items(id) ON DELETE CASCADE;
 
 
 --
