@@ -445,8 +445,8 @@ def save_item_api():
     before_item = None
     try:
         before_item = get_db_item_as_dict(engine, TABLE, item_uuid, id_col_name=ID_COL)
-    except:
-        pass
+    except Exception:
+        log.exception("for history logging, while calling get_db_item_as_dict for 'before_item'")
 
     try:
         # Fuzzy update: lets the helper map keys without hardcoding column names here
@@ -959,8 +959,8 @@ def delete_item_relationship(relationship_identifier: Any) -> Optional[Dict[str,
     before_row = None
     try:
         before_row = get_db_item_as_dict(engine, 'relationships', normalized_relationship_id, 'id')
-    except:
-        pass
+    except Exception:
+        log.exception("for history logging, while calling get_db_item_as_dict for 'before_row'")
 
     with engine.begin() as conn:
         existing = conn.execute(

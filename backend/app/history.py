@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, Mapping, Optional, Union
 
+import logging
+log = logging.getLogger(__name__)
+
 try:
     # Importing from Flask only when available ensures CLI utilities
     # can import this module without requiring a running Flask app.
@@ -70,39 +73,43 @@ def log_history(
     Passing ``None`` for a value omits that column from the insert payload, allowing
     PostgreSQL to apply its default (for example, ``event`` defaults to an empty string).
     """
-    active_engine = engine or get_engine()
+    try:
+        active_engine = engine or get_engine()
 
-    payload: Dict[str, Any] = {}
+        payload: Dict[str, Any] = {}
 
-    # Only include keys that received meaningful values.
-    if item_id_1 is not None:
-        payload["item_id_1"] = normalize_pg_uuid(item_id_1)
-    if item_id_2 is not None:
-        payload["item_id_2"] = normalize_pg_uuid(item_id_2)
-    if event is not None:
-        payload["event"] = event
+        # Only include keys that received meaningful values.
+        if item_id_1 is not None:
+            payload["item_id_1"] = normalize_pg_uuid(item_id_1)
+        if item_id_2 is not None:
+            payload["item_id_2"] = normalize_pg_uuid(item_id_2)
+        if event is not None:
+            payload["event"] = event
 
-    prepared_meta = _prepare_meta(meta)
-    if prepared_meta is not None:
-        payload["meta"] = prepared_meta
+        prepared_meta = _prepare_meta(meta)
+        if prepared_meta is not None:
+            payload["meta"] = prepared_meta
 
-    resolved_username = _resolve_username()
-    if resolved_username is not None:
-        # Persist the username when present so analysts can connect events
-        # to specific operators. Leaving the column out keeps database
-        # defaults intact for automated jobs that lack user context.
-        payload["username"] = resolved_username
+        resolved_username = _resolve_username()
+        if resolved_username is not None:
+            # Persist the username when present so analysts can connect events
+            # to specific operators. Leaving the column out keeps database
+            # defaults intact for automated jobs that lack user context.
+            payload["username"] = resolved_username
 
-    # Delegate the actual insert to the established helper so that error handling and
-    # RETURNING behaviour stay consistent with the rest of the codebase.
-    response, status_code = update_db_row_by_dict(
-        active_engine,
-        "history",
-        "new",
-        payload,
-        fuzzy=False,
-    )
+        # Delegate the actual insert to the established helper so that error handling and
+        # RETURNING behaviour stay consistent with the rest of the codebase.
+        response, status_code = update_db_row_by_dict(
+            active_engine,
+            "history",
+            "new",
+            payload,
+            fuzzy=False,
+        )
 
-    # The helper returns a tuple of the response payload and HTTP-style status code. We
-    # surface both so callers can inspect success/failure while reusing familiar shapes.
-    return {"response": response, "status_code": status_code}
+        # The helper returns a tuple of the response payload and HTTP-style status code. We
+        # surface both so callers can inspect success/failure while reusing familiar shapes.
+        return {"response": response, "status_code": status_code}
+    except Exception as ex:
+        log.exception("While calling log_history")
+        return {"response": {"ok": False, "error": ex}, "status_code": 500}

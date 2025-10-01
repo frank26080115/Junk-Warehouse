@@ -264,12 +264,12 @@ def set_item_relationship(first_identifier: Any, second_identifier: Any, assoc_t
         from .embeddings import update_embeddings_for_item
         try:
             update_embeddings_for_item(normalized_first)
-        except:
-            pass
+        except Exception:
+            log.exception(f"While calling update_embeddings_for_item from set_item_relationship for {str(normalized_first)}")
         try:
             update_embeddings_for_item(normalized_second)
         except:
-            pass
+            log.exception(f"While calling update_embeddings_for_item from set_item_relationship for {str(normalized_second)}")
 
     x = get_item_relationship(existing.get("item_id"), existing.get("assoc_id"))
     log_history(item_id_1=normalized_first, item_id_2=normalized_second, event="update relationship", meta={
