@@ -1,3 +1,9 @@
+"""
+This file helps with "associations" between items
+items can be related to other items, and these relationships can have an association type
+the `assoc_type` is an integer represented by bits
+"""
+
 from __future__ import annotations
 
 import logging
