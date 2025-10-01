@@ -23,6 +23,7 @@ from .assoc_helper import (
     get_item_relationship,
     set_item_relationship,
 )
+from .contaiment_path import fetch_containment_paths
 from .image_handler import (
     store_image_for_item,
     BadRequest as ImageBadRequest,
@@ -999,6 +1000,34 @@ def delete_item_relationship(relationship_identifier: Any) -> Optional[Dict[str,
         )
 
         return relationship_dict
+
+
+@bp.route("/containmentpaths", methods=["GET"])
+@login_required
+def containment_paths_api():
+    """Return every containment path leading away from the requested item."""
+
+    target_uuid = (
+        request.args.get("target_uuid")
+        or request.args.get("item_uuid")
+        or request.args.get("id")
+    )
+    if not target_uuid:
+        return jsonify({"ok": False, "error": "Missing target UUID."}), 400
+
+    try:
+        normalized_target = normalize_pg_uuid(str(target_uuid))
+    except Exception as exc:
+        log.debug("containment_paths_api: invalid target UUID %r: %s", target_uuid, exc)
+        return jsonify({"ok": False, "error": "Invalid target UUID."}), 400
+
+    try:
+        paths = fetch_containment_paths(normalized_target)
+    except Exception as exc:
+        log.exception("Failed to compute containment paths for %s", normalized_target)
+        return jsonify({"ok": False, "error": "Unable to compute containment paths."}), 500
+
+    return jsonify({"ok": True, "paths": paths, "target": normalized_target})
 
 
 @bp.route("/bulkassoc", methods=["POST"])
