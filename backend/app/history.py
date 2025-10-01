@@ -16,7 +16,7 @@ from .user_login import login_required
 
 log = logging.getLogger(__name__)
 
-bp = Blueprint("history", __name__, url_prefix="/api/history")
+bp = Blueprint("history", __name__, url_prefix="/api")
 PAGE_SIZE = 100
 
 
@@ -127,8 +127,8 @@ def _query_history_rows(limit_value: int, offset_value: int) -> List[RowMapping]
     return list(result.mappings())
 
 
-@bp.get("/")
-@bp.get("/<int:page>")
+@bp.get("/history")
+@bp.get("/history/<int:page>")
 @login_required
 def fetch_history(page: int = 1):
     """Return a page of history entries for display in the UI."""
