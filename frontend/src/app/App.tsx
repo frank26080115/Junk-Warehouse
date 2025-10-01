@@ -15,6 +15,7 @@ const HealthPage       = lazy(() => import("../pages/HealthPage"));
 const TestPage         = lazy(() => import("../pages/TestPage"));
 const NotFoundPage     = lazy(() => import("../pages/NotFoundPage"));
 const HelpPage         = lazy(() => import("../pages/HelpPage"));
+const HistoryLogView  = lazy(() => import("../pages/HistoryLogView"));
 
 const App: React.FC = () => {
   return (
@@ -49,6 +50,8 @@ const App: React.FC = () => {
           <Route path="/test/:xyz" element={<TestPage />} />
 
           {/* Utilities */}
+          <Route path="/history" element={<HistoryLogView />} />
+          <Route path="/history/:page" element={<HistoryLogView />} />
           <Route path="/help" element={<HelpPage />} />
 
           {/* 404 */}

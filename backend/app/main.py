@@ -16,6 +16,7 @@ from .image_handler import bp_image
 from .user_login import bp as bp_auth
 from .invoice_handlers import bp as bp_invoice, check_email_task
 from .items import bp as bp_items
+from .history import bp as bp_history
 from .maint import bp as bp_maint
 from .search import bp as bp_search
 from .job_manager import JobManager, RepeatableJob, bp as bp_jobs
@@ -62,6 +63,7 @@ def create_app():
     app.register_blueprint(bp_search)
     app.register_blueprint(bp_invoice)
     app.register_blueprint(bp_items)
+    app.register_blueprint(bp_history)
     app.register_blueprint(bp_maint)
     app.register_blueprint(bp_jobs)
     app.register_blueprint(bp_dbstatus)
