@@ -61,6 +61,8 @@ def fetch_containment_paths(item_identifier: Any) -> List[dict[str, Any]]:
     """
 
     normalized = normalize_pg_uuid(item_identifier)
+    # Ensure we have a consistently formatted UUID string for comparison.
+    target_uuid_str = str(uuid.UUID(str(normalized)))
 
     engine = get_engine()
     sql = text(
@@ -128,10 +130,19 @@ def fetch_containment_paths(item_identifier: Any) -> List[dict[str, Any]]:
             raw_names: Iterable[Any] = row.get("name_path") or []
             normalized_path = [str(uuid.UUID(str(value))) for value in raw_path]
             name_list = [str(value) if value is not None else "" for value in raw_names]
+            # The recursive query returns the target item at the start of the path.
+            # Remove that entry so callers only see the surrounding containment items.
+            start_index = 1 if normalized_path and normalized_path[0] == target_uuid_str else 0
+            trimmed_path = normalized_path[start_index:]
+            trimmed_names = name_list[start_index:]
+            if not trimmed_path:
+                # A path that only referenced the target itself conveys no useful
+                # containment information, so we skip returning it altogether.
+                continue
             results.append(
                 {
-                    "path": normalized_path,
-                    "names": name_list,
+                    "path": trimmed_path,
+                    "names": trimmed_names,
                     "terminal_is_fixed_location": bool(row.get("is_fixed_location")),
                     "terminal_is_dead_end": bool(row.get("is_dead_end")),
                 }
