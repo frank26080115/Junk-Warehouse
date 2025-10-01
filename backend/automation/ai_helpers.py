@@ -268,7 +268,7 @@ class EmbeddingAi(object):
             else:
                 self.st = SentenceTransformer(self.model)
 
-    def build_embedding_vector(self, text: str, *, dimensions: int = 3072) -> List[float]:
+    def build_embedding_vector(self, text: str, *, dimensions: int = 3072) -> List[List[float]]:
         if not text:
             return [[0.0] * dimensions]
         if self.is_online:
@@ -276,7 +276,7 @@ class EmbeddingAi(object):
         else:
             return self.build_embedding_vector_st(text, dimensions=dimensions)
 
-    def build_embedding_vector_openai(self, texts: str, *, dimensions: int = 3072) -> List[float]:
+    def build_embedding_vector_openai(self, texts: str, *, dimensions: int = 3072) -> List[List[float]]:
         resp = self.client.embeddings.create(model=self.model, input=texts)  # data[i].embedding
         out = [row.embedding for row in resp.data]
         # Some models have fixed dim; enforce/trim/pad to DB dim just in case
@@ -289,7 +289,7 @@ class EmbeddingAi(object):
             fixed.append(_emb_normalize(v))
         return fixed
 
-    def build_embedding_vector_st(self, texts: str, *, dimensions: int = 3072) -> List[float]:
+    def build_embedding_vector_st(self, texts: str, *, dimensions: int = 3072) -> List[List[float]]:
         vecs = self.st.encode(texts, batch_size=64, normalize_embeddings=True, convert_to_numpy=True)
         out = vecs.tolist()
         fixed = []
