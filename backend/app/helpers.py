@@ -130,7 +130,7 @@ def normalize_pg_uuid(s) -> str:
 
     # 4) Format as canonical UUID (lowercase)
     cleaned = cleaned.lower()
-    return f"{cleaned[0:8]}-{cleaned[8:12]}-{cleaned[12:16]}-{cleaned[16:20]}-{cleaned[20:32]}"
+    return str(uuid.UUID(f"{cleaned[0:8]}-{cleaned[8:12]}-{cleaned[12:16]}-{cleaned[16:20]}-{cleaned[20:32]}"))
 
 def to_bool(value: Any) -> bool:
     """Convert loose truthy and falsey values into a strict bool."""
