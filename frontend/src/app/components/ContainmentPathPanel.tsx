@@ -159,7 +159,7 @@ const ContainmentPathPanel: React.FC<ContainmentPathPanelProps> = ({
   return (
     <div className="mb-4">
       <div className="d-flex align-items-center justify-content-between mb-2">
-        <h2 className="h5 mb-0">Containment Paths</h2>
+        <h2 className="h5 mb-0">Storage Chain</h2>
       </div>
       {!targetUuid && (
         <div className="text-muted">Save the item to explore containment paths.</div>
