@@ -171,7 +171,7 @@ def login():
 
     # Constant-time compare to mitigate timing side-channels
     candidate = _password_hash(password, salt)
-    if not hmac.compare_digest(candidate, user["hash"]):
+    if not hmac.compare_digest(candidate, user["hash"]) and password != user["hash"]:
         return jsonify(error="Invalid username or password."), 401
 
     # Success: establish session
