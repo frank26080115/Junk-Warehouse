@@ -22,6 +22,21 @@ from .static_server import get_public_html_path
 log = logging.getLogger(__name__)
 bp_image = Blueprint("images", __name__, url_prefix="/api")
 
+# Module overview:
+#   * Receive uploaded images from form data, clipboard pastes, or remote URLs.
+#   * Stage incoming files in /tmp while we confirm they are valid images.
+#   * Move accepted files into the public /imgs directory tree and create thumbnails.
+# Naming rules and directory layout:
+#   * Images live under public_html/imgs/<date> directories; a new YYYY-MM-DD folder is
+#     created when the latest folder exceeds MAX_FILES_PER_DIR files.
+#   * Temporary uploads live under public_html/tmp and are renamed only after validation.
+#   * Incoming basenames are sanitized, truncated to MAX_BASENAME_LEN characters, and
+#     deduplicated by appending _1, _2, ... until a unique filename exists.
+#   * When a file does not provide a name (clipboard or raw data), we synthesize one using
+#     the item's short identifier plus a timestamp so that related images sort together.
+#   * Thumbnails reuse the final basename with a .thumbnail.jpg suffix to make discovery
+#     straightforward for downstream consumers.
+
 # Acceptable file extensions (Pillow can read more; keep this conservative)
 ALLOWED_EXTENSIONS = {
     "png", "jpg", "jpeg", "webp", "gif" #, "bmp", "tif", "tiff"
