@@ -582,22 +582,23 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
   }, []);
   const buildItemHref = useCallback(
     (row: SearchRow): string => {
-      const directHref = (row as any).href;
-      if (typeof directHref === "string" && !isBlank(directHref)) {
-        return directHref;
+      if (normalizedTable !== "items") {
+        // When the search panel is not focused on items, avoid generating misleading links.
+        return "#";
       }
-      const url = (row as any).url;
-      if (typeof url === "string" && !isBlank(url)) {
-        return url;
+
+      // Always direct users to the canonical internal item route rather than trusting arbitrary URLs from the data row.
+      const slugCandidate = typeof row.slug === "string" ? row.slug.trim() : "";
+      if (!isBlank(slugCandidate)) {
+        return `/item/${slugCandidate}`;
       }
-      if (normalizedTable === "items") {
-        if (typeof row.slug === "string" && !isBlank(row.slug)) {
-          return `/item/${row.slug}`;
-        }
-        if (typeof row.pk === "string" && !isBlank(row.pk)) {
-          return `/item/${row.pk}`;
-        }
+
+      const pkCandidate = typeof row.pk === "string" ? row.pk.trim() : "";
+      if (!isBlank(pkCandidate)) {
+        return `/item/${pkCandidate}`;
       }
+
+      // If neither slug nor primary key information is present, fall back to a safe placeholder anchor.
       return "#";
     },
     [normalizedTable],
