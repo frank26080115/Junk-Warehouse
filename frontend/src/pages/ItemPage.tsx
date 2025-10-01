@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 
 import ImageGallery from "../app/components/ImageGallery";
 import SearchPanel from "../app/components/SearchPanel";
+import ContainmentPathPanel from "../app/components/ContainmentPathPanel";
 import { PIN_OPEN_EXPIRY_MS } from "../app/config";
 
 import "../styles/forms.css";
@@ -155,6 +156,7 @@ const ItemPage: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string>("");
   const [refreshToken, setRefreshToken] = useState<number>(0); // signal panels to refresh
+  const [containmentRefreshToken, setContainmentRefreshToken] = useState<number>(0); // notify containment path panel about relationship changes
 
   // Determine initial mode: edit if url is new OR item.is_staging
   const [isReadOnly, setIsReadOnly] = useState<boolean>(() => !isNewFromUrl); // temp until fetch completes
@@ -217,6 +219,11 @@ const ItemPage: React.FC = () => {
     if (isReadOnly) return;
     setItem((prev) => ({ ...prev, [key]: !prev[key] } as ItemDto));
   }, [isReadOnly]);
+
+  // Increment a refresh token so dependent panels know containment data has changed.
+  const handleContainmentRelationshipsChanged = useCallback(() => {
+    setContainmentRefreshToken((value) => value + 1);
+  }, []);
 
   const commonSave = useCallback(async (endpoint: string, options?: { stripIdentifiers?: boolean; itemOverride?: ItemDto }) => {
     const sourceItem = options?.itemOverride ?? item;
@@ -291,6 +298,7 @@ const ItemPage: React.FC = () => {
       .filter((part) => part.length > 0);
   }, [item.url]);
   const hasExistingId = Boolean(item?.id);
+  const containmentTargetUuid = hasExistingId ? item.id ?? null : null;
   const insertEmoji = hasExistingId ? "👯" : "➕";
   const insertTitle = `Insert new item (${insertEmoji})`;
   const pinDetails = formatPinTimestamp(item.pin_as_opened);
@@ -668,8 +676,18 @@ const ItemPage: React.FC = () => {
         <div className="d-flex align-items-center justify-content-between mb-2">
           <h2 className="h5 mb-0">Relationships/Links</h2>
         </div>
-        <SearchPanel targetUuid={targetUuid} refreshToken={refreshToken} tableName="items" />
+        <SearchPanel
+          targetUuid={targetUuid}
+          refreshToken={refreshToken}
+          tableName="items"
+          onRelationshipsChanged={handleContainmentRelationshipsChanged}
+        />
       </div>
+
+      <ContainmentPathPanel
+        targetUuid={containmentTargetUuid}
+        refreshSignal={containmentRefreshToken}
+      />
 
       {/* Relevant Invoices */}
       <div className="mb-4">

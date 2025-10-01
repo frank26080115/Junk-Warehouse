@@ -40,6 +40,7 @@ interface SearchPanelProps {
   tableName?: TableName;
   smallMode?: boolean;
   allowDelete?: boolean;
+  onRelationshipsChanged?: () => void;
 }
 
 const API_ENDPOINTS: Record<
@@ -203,6 +204,7 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
   tableName = "items",
   smallMode = false,
   allowDelete = false,
+  onRelationshipsChanged,
 }) => {
   const normalizedTable: TableName = tableName ?? "items";
   const isInvoiceMode = normalizedTable === "invoices";
@@ -844,6 +846,10 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
 
       await runSearch(lastQueryRef.current || query);
 
+      if (onRelationshipsChanged) {
+        onRelationshipsChanged();
+      }
+
       setModalMessage({
         title: isInvoiceMode
           ? "Invoices linked"
@@ -864,7 +870,7 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
     } finally {
       setIsActionBusy(false);
     }
-  }, [associationBits, associationSummary, isInvoiceMode, normalizedTable, query, runSearch, selectedCount, selectedPks, targetUuid]);
+  }, [associationBits, associationSummary, isInvoiceMode, normalizedTable, query, runSearch, selectedCount, selectedPks, targetUuid, onRelationshipsChanged]);
 
   const handleUnlinkAssociation = useCallback(async () => {
     if (!targetUuid || selectedCount === 0) {
@@ -905,6 +911,10 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
 
       await runSearch(lastQueryRef.current || query);
 
+      if (onRelationshipsChanged) {
+        onRelationshipsChanged();
+      }
+
       setModalMessage({
         title: "Relationships removed",
         body:
@@ -920,7 +930,7 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
     } finally {
       setIsActionBusy(false);
     }
-  }, [normalizedTable, query, runSearch, selectedCount, selectedPks, targetUuid]);
+  }, [normalizedTable, query, runSearch, selectedCount, selectedPks, targetUuid, onRelationshipsChanged]);
 
   const resolveThumbnail = useCallback((row: SearchRow): string => {
     if (smallMode || normalizedTable !== "items") {
