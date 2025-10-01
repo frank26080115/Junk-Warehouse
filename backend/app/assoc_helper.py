@@ -8,7 +8,7 @@ from sqlalchemy import text
 from .db import get_engine
 from .helpers import normalize_pg_uuid
 from .history import log_history
-from .embeddings import update_embeddings_for_item
+# from .embeddings import update_embeddings_for_item # circular import if done here
 
 log = logging.getLogger(__name__)
 
@@ -260,7 +260,8 @@ def set_item_relationship(first_identifier: Any, second_identifier: Any, assoc_t
             },
         )
 
-    if int_has_containment(int(assoc_type)):
+    if True: # int_has_containment(int(assoc_type)):
+        from .embeddings import update_embeddings_for_item
         try:
             update_embeddings_for_item(normalized_first)
         except:
