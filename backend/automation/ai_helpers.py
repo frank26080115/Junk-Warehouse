@@ -377,9 +377,7 @@ class EmbeddingAi(object):
         for char in self.model:
             if char.isalnum():
                 cleaned_parts.append(char.lower())
-            else:
-                cleaned_parts.append("_")
-        cleaned = "".join(cleaned_parts).strip("_")
+        cleaned = "".join(cleaned_parts).strip("_").strip()
         return cleaned or "embedding_model"
 
     def get_dimensions(self) -> int:
