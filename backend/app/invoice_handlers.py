@@ -306,11 +306,21 @@ def check_email_task(_context: Dict[str, Any]) -> Dict[str, Any]:
     for summary in (gmail_summary, imap_summary):
         if isinstance(summary, dict) and not summary.get("ok", True):
             overall_ok = False
-    return {
+    gmail_ok = isinstance(gmail_summary, dict) and gmail_summary.get("ok", True)
+    imap_ok = isinstance(imap_summary, dict) and imap_summary.get("ok", True)
+    result_summary = {
         "ok": overall_ok,
         "gmail": gmail_summary,
         "imap": imap_summary,
     }
+    # Record a concise completion message so operators can confirm that inbox polling finished.
+    log.info(
+        "Mailbox check completed; gmail ok=%s, imap ok=%s, overall ok=%s",
+        gmail_ok,
+        imap_ok,
+        overall_ok,
+    )
+    return result_summary
 
 def _invoice_upload_task(context: Dict[str, Any]) -> Dict[str, Any]:
     files = context.get("files")
