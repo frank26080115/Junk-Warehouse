@@ -116,6 +116,7 @@ class McMasterCarrHandler(ShopHandler):
                     first_part, remaining = description_text.split(',', 1)
                     name = first_part.strip()
                     description = remaining.strip()
+                    # TODO, if `name` does not contain numbers but `description` does, then `name` = `description_text`, `description` still = remaining.strip()
 
                 item: Dict[str, str] = {
                     'name': name,
@@ -197,6 +198,7 @@ class McMasterCarrHandler(ShopHandler):
                 first_part, remaining = anchor_text_clean.split(',', 1)
                 name = first_part.strip()
                 description = remaining.strip()
+                # TODO, if `name` does not contain numbers but `description` does, then `name` = `anchor_text_clean`, `description` still = remaining.strip()
 
             item: Dict[str, str] = {
                 'name': name,
@@ -287,6 +289,7 @@ class McMasterCarrHandler(ShopHandler):
 
         name = _select_text(_match_xpath('h1', 'productdetailheaderprimary'))
         description = _select_text(_match_xpath('h3', 'productdetailheadersecondary'))
+        # TODO, if `name` does not contain numbers but `description` does, then `name` = `name` + `,` + `description`, `description` still = `description`
 
         image_url = ''
         image_containers = _match_xpath('div', 'imagecontainer')
