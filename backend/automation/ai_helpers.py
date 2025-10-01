@@ -254,6 +254,8 @@ def _ensure_vec(x, dimensions: int = 3072):
             # When a single string is encoded, SentenceTransformer returns a flat list of floats.
             # Wrap that flat vector so downstream processing always receives a list of vectors.
             out = [x]
+        else:
+            out = x
     else:
         # Fallback to wrapping any unexpected scalar-like result while preserving numeric values.
         out = [[float(value) for value in x]]
