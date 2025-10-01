@@ -3,7 +3,7 @@
     "llm_model_online": "gpt-5-nano",
     "llm_model_offline": "gpt-oss:20b",
     "emb_model_online": "text-embedding-3-large",
-    "emb_model_offline": "all-MiniLM-L6-v2",
+    "emb_model_offline": "all-mpnet-base-v2",
     "pin_open_expiry_hours": 36,
     "public_html_path": "<REPO_ROOT>/var/public_html"
 }

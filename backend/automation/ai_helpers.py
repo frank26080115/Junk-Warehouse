@@ -6,7 +6,7 @@ from pathlib import Path
 import json
 import requests
 import math
-from typing import List, Union
+from typing import List, Union, Optional
 
 # Guarantee that the repository root is discoverable on sys.path when this
 # module is invoked directly. This keeps imports such as app.config_loader
@@ -93,6 +93,7 @@ def list_ollama_models(host: str = OLLAMA_HOST_URL) -> list[str]:
         print(f"Error fetching models: {e}")
         return []
 
+
 def is_model_online(model: str) -> bool:
     """
     Heuristic:
@@ -119,6 +120,76 @@ def is_model_online(model: str) -> bool:
     if model in known_online or model.startswith("gpt-"):
         return True
     raise ValueError(f"Unknown AI model specified: {model}")
+
+
+# Hardcoded dimensions for common embedding models
+EMBEDDING_MODEL_DIMENSIONS = {
+    # SentenceTransformers MiniLM family
+    "sentence-transformers/all-MiniLM-L6-v2": 384,
+    "sentence-transformers/all-MiniLM-L12-v2": 384,
+    "sentence-transformers/paraphrase-MiniLM-L6-v2": 384,
+    "sentence-transformers/paraphrase-MiniLM-L12-v2": 384,
+
+    # DistilRoberta
+    "sentence-transformers/all-distilroberta-v1": 768,
+
+    # MPNet
+    "sentence-transformers/all-mpnet-base-v2": 768,
+
+    # Multilingual
+    "sentence-transformers/distiluse-base-multilingual-cased-v2": 512,
+    "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2": 384,
+    "sentence-transformers/LaBSE": 768,
+
+    # RoBERTa large
+    "sentence-transformers/all-roberta-large-v1": 1024,
+
+    # E5 family
+    "intfloat/e5-base-v2": 768,
+    "intfloat/e5-large-v2": 1024,
+
+    # BGE family
+    "BAAI/bge-small-en-v1.5": 384,
+    "BAAI/bge-base-en-v1.5": 768,
+    "BAAI/bge-large-en-v1.5": 1024,
+
+    # Misc ST classics
+    "sentence-transformers/multi-qa-MiniLM-L6-cos-v1": 384,
+    "sentence-transformers/multi-qa-mpnet-base-dot-v1": 768,
+    "sentence-transformers/msmarco-distilbert-base-tas-b": 768,
+    "sentence-transformers/multi-qa-distilbert-cos-v1": 768,
+
+    # OpenAI embeddings
+    "text-embedding-3-small": 1536,
+    "text-embedding-3-large": 3072,
+}
+
+def get_embedding_dim_for_model(model_name: str, fuzzy: bool = True) -> Optional[int]:
+    """
+    Return the embedding dimension for a known model.
+    
+    Args:
+        model_name: model name string (full or partial).
+        fuzzy: if True, allow substring matching and aliases.
+    
+    Returns:
+        Dimension as int if found, else None.
+    """
+    # Exact match first
+    if model_name in EMBEDDING_MODEL_DIMENSIONS:
+        return EMBEDDING_MODEL_DIMENSIONS[model_name]
+
+    if fuzzy:
+        # Try fuzzy/substring search
+        lowered = model_name.lower()
+        matches = [(k, v) for k, v in EMBEDDING_MODEL_DIMENSIONS.items() if lowered in k.lower()]
+        if matches:
+            # If multiple matches, prefer the shortest key (closer to base model)
+            best = min(matches, key=lambda kv: len(kv[0]))
+            return best[1]
+
+    return None
+
 
 def get_openai_client():
     secrets_path = CONFIG_DIR / "secrets.json"
@@ -246,7 +317,7 @@ def _emb_normalize(v: List[float]) -> List[float]:
     n = math.sqrt(sum(x*x for x in v)) or 1.0
     return [x / n for x in v]
 
-def _ensure_vec(x, dimensions: int = 3072):
+def _ensure_vec(x, dimensions: int):
     if isinstance(x, list):
         if not x:
             out = [[0.0] * dimensions]
@@ -284,42 +355,55 @@ class EmbeddingAi(object):
                 self.client = get_openai_client()
             else:
                 self.st = SentenceTransformer(self.model)
+        self.dimensions = get_embedding_dim_for_model(self.model)
 
-    def build_embedding_vector(self, text: str, *, dimensions: int = 3072) -> List[List[float]]:
+    def get_model_name(self) -> str:
+        return self.model
+
+    def get_model_name_cleaned(self) -> str:
+        return self.model.replace('-','').replace(':','').lower()
+
+    def get_dimensions(self) -> int:
+        return self.dimensions
+
+    def get_as_suffix(self) -> str:
+        return f"{self.get_model_name_cleaned}_{self.get_dimensions}"
+
+    def build_embedding_vector(self, text: str) -> List[List[float]]:
         if not text:
-            return [[0.0] * dimensions]
+            return [[0.0] * self.dimensions]
         if self.is_online:
-            out = self.build_embedding_vector_openai(text, dimensions=dimensions)
+            out = self.build_embedding_vector_openai(text)
         else:
-            out = self.build_embedding_vector_st(text, dimensions=dimensions)
-        out = _ensure_vec(out, dimensions = dimensions)
+            out = self.build_embedding_vector_st(text)
+        out = _ensure_vec(out, dimensions=self.dimensions)
         # Some models have fixed dim; enforce/trim/pad to DB dim just in case
         fixed = []
         for v in out:
-            if len(v) > dimensions:
-                v = v[:dimensions]
-            elif len(v) < dimensions:
-                v = v + [0.0]*(dimensions - len(v))
+            if len(v) > self.dimensions:
+                v = v[:self.dimensions]
+            elif len(v) < self.dimensions:
+                v = v + [0.0]*(self.dimensions - len(v))
             fixed.append(_emb_normalize(v))
         return fixed
 
 
-    def build_embedding_vector_openai(self, texts: str, *, dimensions: int = 3072) -> List[List[float]]:
+    def build_embedding_vector_openai(self, texts: str) -> List[List[float]]:
         resp = self.client.embeddings.create(model=self.model, input=texts)  # data[i].embedding
         return [row.embedding for row in resp.data]
 
-    def build_embedding_vector_st(self, texts: str, *, dimensions: int = 3072) -> List[List[float]]:
+    def build_embedding_vector_st(self, texts: str) -> List[List[float]]:
         vecs = self.st.encode(texts, batch_size=64, normalize_embeddings=True, convert_to_numpy=True)
         return vecs.tolist()
 
-    def _deterministic_embedding(self, text: str, *, dimensions: int = 3072) -> List[float]:
+    def _deterministic_embedding(self, text: str) -> List[float]:
         if not text:
-            return [0.0] * dimensions
+            return [0.0] * self.dimensions
         import hashlib, random
         digest = hashlib.sha512(text.encode("utf-8")).digest()
         seed = int.from_bytes(digest, "big")
         rng = random.Random(seed)
-        return _emb_normalize([rng.uniform(-1.0, 1.0) for _ in range(dimensions)])
+        return _emb_normalize([rng.uniform(-1.0, 1.0) for _ in range(self.dimensions)])
 
 
 def main() -> None:
