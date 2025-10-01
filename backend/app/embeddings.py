@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 EMB_TBL_NAME_PREFIX_ITEMS = "items_embeddings"
 EMB_TBL_NAME_PREFIX_CONTAINER = "container_embeddings"
 
-DEFAULT_EMBEDDING_LIMIT = 50
+DEFAULT_EMBEDDING_LIMIT = 50 # this is the number of results returned per search
 
 def _resolve_item_dict(item_or_identifier: Union[Mapping[str, Any], str, uuid.UUID]) -> Dict[str, Any]:
     """Return a dictionary representing the requested item with a normalized string id.
@@ -84,9 +84,14 @@ def _build_embedding_vector(ai: EmbeddingAi, text_input: str) -> List[float]:
     return unit_vect(ai.build_embedding_vector(text_input)[0])
 
 def unit_vect(vec: List[float]) -> List[float]:
-    """Normalize a vector to unit length (L2 norm = 1)."""
-    norm = math.sqrt(sum(x * x for x in vec))
-    return [x / norm for x in vec] if norm > 0 else vec
+    try:
+        import numpy as np
+        n = np.linalg.norm(vec)
+        return vec / n if n > 0 else vec
+    except ImportError:
+        """Normalize a vector to unit length (L2 norm = 1)."""
+        norm = math.sqrt(sum(x * x for x in vec))
+        return [x / norm for x in vec] if norm > 0 else vec
 
 def ensure_embeddings_table_exists(tbl_prefix: str = EMB_TBL_NAME_PREFIX_ITEMS, ai: EmbeddingAi = None) -> str:
     """Create the embedding table for the requested model if it does not already exist."""
