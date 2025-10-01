@@ -315,7 +315,7 @@ const ImageGallery: React.FC<ImageGalleryProps> = ({ targetUuid, refreshToken })
             width: isUploadTileSolo ? "100%" : "auto",
           }}
         >
-          <div className="mb-3 text-center fw-semibold">➕📸</div>
+          <div className="mb-3 text-center fw-semibold">➕📸Upload Photo</div>
           <div className="d-grid gap-2 mb-3">
             <button
               type="button"
@@ -323,7 +323,7 @@ const ImageGallery: React.FC<ImageGalleryProps> = ({ targetUuid, refreshToken })
               onClick={() => fileInputRef.current?.click()}
               disabled={uploading}
             >
-              🖇️⬆️☁️
+              🖇️From File
             </button>
             <input
               ref={fileInputRef}
@@ -342,7 +342,7 @@ const ImageGallery: React.FC<ImageGalleryProps> = ({ targetUuid, refreshToken })
                 onChange={(event) => setUrlInput(event.target.value)}
                 disabled={uploading}
               />
-              <button type="submit" className="btn btn-primary" disabled={uploading || !urlInput.trim()}>🔗</button>
+              <button type="submit" className="btn btn-primary" disabled={uploading || !urlInput.trim()}>🔗URL</button>
             </form>
           </div>
           <small className="text-muted text-center">📋 (Ctrl+V)</small>
