@@ -3,7 +3,8 @@ from __future__ import annotations
 import html as _html
 import re
 import unicodedata
-from typing import Any, Union
+from typing import Any, Union, Mapping
+import uuid
 
 from lxml import etree
 
@@ -88,7 +89,7 @@ def lxml_cell_text(node: etree._Element) -> str:
     normalized_text = DOM_WHITESPACE_NORMALIZATION_PATTERN.sub(" ", joined_text).strip()
     return normalized_text
 
-def normalize_pg_uuid(s: str) -> str:
+def normalize_pg_uuid(s) -> str:
     """
     Normalize an input string into a PostgreSQL UUID (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx).
 
@@ -101,6 +102,16 @@ def normalize_pg_uuid(s: str) -> str:
     Raises:
         ValueError: If length != 32 after cleaning, or if letters beyond 'F' are present.
     """
+    if isinstance(s, Mapping):
+        if "id" in s:
+            s = s["id"]
+        elif "uuid" in s:
+            s = s["uuid"]
+        elif "pk" in s:
+            s = s["pk"]
+    elif isinstance(s, uuid.UUID):
+        s = str(s)
+
     if not isinstance(s, str):
         raise TypeError("normalize_pg_uuid expects a string input.")
 

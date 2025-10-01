@@ -13,30 +13,6 @@ from .helpers import normalize_pg_uuid
 log = logging.getLogger(__name__)
 
 
-def _normalize_identifier(value: Any) -> str:
-    """Normalize arbitrary identifier inputs into a canonical UUID string.
-
-    This helper accepts UUID instances, dictionaries containing an ``id`` key,
-    and any other object that can be coerced into text for normalization.  A
-    ``ValueError`` is raised when the value cannot be interpreted as a UUID so
-    callers can provide a helpful error message upstream.
-    """
-
-    if isinstance(value, uuid.UUID):
-        return str(value)
-
-    if isinstance(value, Mapping):
-        if "id" in value:
-            return _normalize_identifier(value["id"])
-        if "uuid" in value:
-            return _normalize_identifier(value["uuid"])
-
-    if value is None:
-        raise ValueError("Identifier is required to resolve containment data.")
-
-    return normalize_pg_uuid(str(value))
-
-
 def get_all_containments(item_identifier: Any) -> List[str]:
     """Return UUIDs connected to the target item by containment relationships.
 
@@ -45,7 +21,7 @@ def get_all_containments(item_identifier: Any) -> List[str]:
     Duplicate entries are filtered out to keep the result clean for consumers.
     """
 
-    normalized = _normalize_identifier(item_identifier)
+    normalized = normalize_pg_uuid(item_identifier)
 
     engine = get_engine()
     with engine.begin() as conn:
@@ -84,7 +60,7 @@ def fetch_containment_paths(item_identifier: Any) -> List[dict[str, Any]]:
     present user-friendly breadcrumbs.
     """
 
-    normalized = _normalize_identifier(item_identifier)
+    normalized = normalize_pg_uuid(item_identifier)
 
     engine = get_engine()
     sql = text(
