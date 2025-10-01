@@ -16,6 +16,7 @@ from .assoc_helper import CONTAINMENT_BIT
 from .helpers import normalize_pg_uuid
 from .search_expression import SearchQuery, get_sql_order_and_limit
 from ..automation.ai_helpers import EmbeddingAi
+from .containment_path import get_all_containments
 
 log = logging.getLogger(__name__)
 
@@ -78,8 +79,23 @@ def _collect_item_text(item_row: Mapping[str, Any]) -> str:
 def _build_embedding_vector(ai: EmbeddingAi, text_input: str, *, dimensions: int = 384) -> List[float]:
     return ai.build_embedding_vector(text_input, dimensions = dimensions)[0]
 
+def get_embeddings_vector_for(uuid: Union[str, uuid.UUID]) -> dict:
+    uuid = normalize_pg_uuid(uuid)
+    engine = get_engine()
+    metadata = MetaData()
+    embeddings_table = Table("item_embeddings", metadata, autoload_with=engine)
+    with engine.begin() as conn:
+        existing = conn.execute(
+            select(embeddings_table.c.item_id).where(embeddings_table.c.item_id == item_uuid).limit(1)
+        ).first()
+        if not existing:
+            existing = update_embeddings_for_item(uuid)
+        if existing:
+            existing = dict(existing)
+            return {"model": existing["model"], "vector": existing["vec"]}
+    return None
 
-def update_embeddings_for_item(item_or_identifier: Union[Mapping[str, Any], str, uuid.UUID]) -> None:
+def update_embeddings_for_item(item_or_identifier: Union[Mapping[str, Any], str, uuid.UUID]) -> dict:
     try:
         item_dict = _resolve_item_dict(item_or_identifier)
     except Exception:
@@ -110,6 +126,9 @@ def update_embeddings_for_item(item_or_identifier: Union[Mapping[str, Any], str,
             values_with_id = dict(values)
             values_with_id["item_id"] = item_uuid
             conn.execute(embeddings_table.insert().values(**values_with_id))
+            existing = conn.execute(
+                select(embeddings_table.c.item_id).where(embeddings_table.c.item_id == item_uuid).limit(1)
+            ).first()
 
     # Containers and collections have an additional embedding that summarizes their contents.
     if item_dict.get("is_container") or item_dict.get("is_collection"):
@@ -117,6 +136,8 @@ def update_embeddings_for_item(item_or_identifier: Union[Mapping[str, Any], str,
             update_embeddings_for_container(item_dict)
         except Exception:
             log.exception("Failed to update container embeddings for item %s", item_uuid)
+
+    return dict(existing) if existing else None
 
 
 def update_embeddings_for_container(item_or_identifier: Union[Mapping[str, Any], str, uuid.UUID]) -> None:
@@ -128,63 +149,23 @@ def update_embeddings_for_container(item_or_identifier: Union[Mapping[str, Any],
         log.exception("Failed to resolve container for embedding update")
         raise
 
-    container_uuid = uuid.UUID(str(item_dict.get("id")))
+    container_uuid = uuid.UUID(normalize_pg_uuid(item_dict.get("id")))
     engine = get_engine()
 
-    # Start with the container's own descriptive text so the embedding reflects the container itself.
-    text_fragments: List[str] = []
-    base_text = _collect_item_text(item_dict)
-    if base_text:
-        text_fragments.append(base_text)
+    all_vectors = []
+    all_vectors.append(get_embeddings_vector_for(container_uuid))
+    all_containments = get_all_containments(container_uuid)
+    for child_uuid in all_containments:
+        all_vectors.append(get_embeddings_vector_for(child_uuid))
 
-    containment_sql = text(
-        """
-        SELECT assoc_id
-        FROM relationships
-        WHERE item_id = :container_id
-          AND (COALESCE(assoc_type, 0) & :containment_bit) <> 0
-        """
-    )
+    model_name = all_vectors[0]["model"] # assume the entire database uses the same model
 
-    related_ids: List[str] = []
-    seen_related: set[str] = set()
-    with engine.begin() as conn:
-        rows = conn.execute(
-            containment_sql,
-            {"container_id": container_uuid, "containment_bit": CONTAINMENT_BIT},
-        ).scalars().all()
-        for identifier in rows:
-            if not identifier:
-                continue
-            normalized = str(identifier)
-            if normalized == str(container_uuid):
-                continue
-            if normalized in seen_related:
-                continue
-            related_ids.append(normalized)
-            seen_related.add(normalized)
-
-    # Gather names and metatext for each contained item. Descriptions are intentionally ignored.
-    for related_id in related_ids:
-        try:
-            related_item = get_db_item_as_dict(engine, "items", related_id)
-        except (LookupError, ValueError):
-            continue
-        if related_item.get("is_deleted"):
-            continue
-        trimmed_item = dict(related_item)
-        trimmed_item["description"] = ""
-        fragment = _collect_item_text(trimmed_item)
-        if fragment:
-            text_fragments.append(fragment)
-
-    text_input = " ".join(fragment for fragment in text_fragments if fragment)
-    ai = EmbeddingAi()
-    vector = _build_embedding_vector(ai, text_input)
+    # TODO: calculate mean vector using all_vectors, hard code the math constants here
+    # mean_vector = ...
 
     metadata = MetaData()
     embeddings_table = Table("container_embeddings", metadata, autoload_with=engine)
-    values = {"model": ai.model, "vec": vector}
+    values = {"model": model_name, "vec": mean_vector}
 
     with engine.begin() as conn:
         existing = conn.execute(
