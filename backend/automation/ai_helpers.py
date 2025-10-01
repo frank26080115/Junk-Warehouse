@@ -106,7 +106,7 @@ def is_model_online(model: str) -> bool:
         return True
     raise ValueError(f"Unknown AI model specified: {model}")
 
-class AiInstance(object):
+class LlmAi(object):
     def __init__(self, model: str):
         self.model = model
         self.appconfig = load_app_config()
@@ -260,9 +260,9 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # Instantiate AiInstance with the requested model name; this handles
+    # Instantiate LlmAi with the requested model name; this handles
     # connecting to either Ollama or OpenAI based on configuration.
-    ai_instance = AiInstance(args.model_name)
+    ai_instance = LlmAi(args.model_name)
 
     # Measure the time it takes for the AI service to respond.
     start_time = time.perf_counter()

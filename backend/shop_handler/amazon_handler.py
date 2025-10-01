@@ -8,7 +8,7 @@ from lxml import html as lxml_html
 
 from shop_handler import ShopHandler
 from automation.web_get import fetch_with_requests, fetch_with_playwright
-from automation.ai_helpers import AiInstance
+from automation.ai_helpers import LlmAi
 
 log = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ class AmazonHandler(ShopHandler):
             )
 
             final_name = prod_name
-            ai = AiInstance("offline")
+            ai = LlmAi("offline")
 
             try:
                 ai_name = ai.query([prod_name], "You will be given the product name of an item available on Amazon, it will have some useless information that can be removed, reply with a concise name for the object without any SEO info or quantity information.")
