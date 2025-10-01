@@ -321,7 +321,7 @@ const InvoiceUploaderPanel: React.FC<InvoiceUploaderPanelProps> = ({
             ref={fileInputRef}
             type="file"
             className="form-control"
-            accept=".mht,.mhtm,.mhtml,.htm,.html"
+            accept=".mht,.mhtm,.mhtml,.eml,.htm,.html"
             multiple
             onChange={handleFileSelection}
             disabled={uploadBusy}
