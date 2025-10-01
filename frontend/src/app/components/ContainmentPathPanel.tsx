@@ -1,7 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
 
-import { API_BASE } from "../api";
-
 interface ContainmentPathEntry {
   path: string[];
   names: string[];
@@ -63,10 +61,13 @@ const ContainmentPathPanel: React.FC<ContainmentPathPanelProps> = ({
       setLoading(true);
       setErrorMessage(null);
       try {
-        const response = await fetch(
-          `${API_BASE}/api/containmentpaths?target_uuid=${encodeURIComponent(targetUuid)}`,
-          { signal: controller.signal, credentials: "include" }
-        );
+        const endpoint = `/api/containmentpaths?target_uuid=${encodeURIComponent(targetUuid)}`;
+        // Using a relative URL ensures we share the same origin as the login session,
+        // so authentication cookies are included consistently by the browser.
+        const response = await fetch(endpoint, {
+          signal: controller.signal,
+          credentials: "include",
+        });
         let payload: any = null;
         try {
           payload = await response.json();
