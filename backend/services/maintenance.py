@@ -17,12 +17,7 @@ from sqlalchemy.orm import Session
 from app.assoc_helper import MERGE_BIT
 from app.helpers import normalize_pg_uuid
 from app.db import get_engine, get_db_item_as_dict
-from app.embeddings import (
-    EMB_TBL_NAME_PREFIX_CONTAINER,
-    EMB_TBL_NAME_PREFIX_ITEMS,
-    EmbeddingAi,
-    ensure_embeddings_table_exists,
-)
+from app.embeddings import update_embeddings_for_item
 from services.merge_helpers import (
     _append_audit_note,
     _build_merge_audit_note,
@@ -37,7 +32,6 @@ from services.merge_helpers import (
     _merge_source,
     _merge_url,
     _reassign_relationships,
-    _transfer_embeddings,
     _transfer_invoice_links,
 )
 from app.logging_setup import start_log
@@ -440,27 +434,14 @@ def merge_two_items(
 
         engine = get_engine()
 
-        ai = EmbeddingAi()
-        # Resolve the concrete embedding table names for the active model so reflection uses
-        # the actual table identifiers rather than relying on bare prefixes.
-        items_embeddings_table_name = ensure_embeddings_table_exists(
-            tbl_prefix=EMB_TBL_NAME_PREFIX_ITEMS,
-            ai=ai,
-        )
-        container_embeddings_table_name = ensure_embeddings_table_exists(
-            tbl_prefix=EMB_TBL_NAME_PREFIX_CONTAINER,
-            ai=ai,
-        )
-
         tables = _load_tables(
             engine,
-            ("items", "item_images", "invoice_items", items_embeddings_table_name, container_embeddings_table_name),
+            ("items", "item_images", "invoice_items"),
         )
+        # Reflect the core tables needed for merge bookkeeping; embeddings will be rebuilt after the transaction.
         items_table = tables["items"]
         item_images_table = tables["item_images"]
         invoice_items_table = tables["invoice_items"]
-        item_embeddings_table = tables[items_embeddings_table_name]
-        container_embeddings_table = tables[container_embeddings_table_name]
 
         try:
             primary_item = get_db_item_as_dict(engine, "items", primary_uuid)
@@ -578,9 +559,8 @@ def merge_two_items(
         relationship_summary: Dict[str, int] = {}
         image_summary: Dict[str, int] = {}
         invoice_summary: Dict[str, int] = {}
-        item_embedding_summary: Dict[str, int] = {}
-        container_embedding_summary: Dict[str, int] = {}
         refresh_timestamp: Optional[datetime] = None
+        embeddings_refreshed = False  # Track whether we rebuilt the primary item's embedding vector.
 
         with transaction_ctx:
             if updates:
@@ -614,18 +594,6 @@ def merge_two_items(
                 primary_uuid,
                 secondary_uuid,
             )
-            item_embedding_summary = _transfer_embeddings(
-                executor,
-                item_embeddings_table,
-                primary_uuid,
-                secondary_uuid,
-            )
-            container_embedding_summary = _transfer_embeddings(
-                executor,
-                container_embeddings_table,
-                primary_uuid,
-                secondary_uuid,
-            )
             refresh_timestamp = _ensure_index_refresh(
                 executor,
                 items_table,
@@ -634,20 +602,29 @@ def merge_two_items(
             if refresh_timestamp is not None:
                 updates["date_last_modified"] = refresh_timestamp
 
+        # Refresh embeddings after transactional changes so the AI representation reflects the merged record.
+        try:
+            refreshed_embedding = update_embeddings_for_item(primary_uuid)
+            embeddings_refreshed = bool(refreshed_embedding)
+        except Exception:
+            log.exception(
+                "Failed to refresh embeddings for merged item %s",
+                primary_uuid,
+            )
+
         update_summary = {
             key: (value.isoformat() if isinstance(value, datetime) else value)
             for key, value in updates.items()
         }
         log.info(
-            "Merge completed for %s <- %s; updates=%s relationships=%s images=%s invoices=%s item_embeddings=%s container_embeddings=%s refreshed=%s audit_note=%s",
+            "Merge completed for %s <- %s; updates=%s relationships=%s images=%s invoices=%s embeddings_refreshed=%s refreshed=%s audit_note=%s",
             primary_uuid,
             secondary_uuid,
             update_summary,
             relationship_summary,
             image_summary,
             invoice_summary,
-            item_embedding_summary,
-            container_embedding_summary,
+            embeddings_refreshed,
             refresh_timestamp.isoformat() if refresh_timestamp else None,
             audit_note,
         )
