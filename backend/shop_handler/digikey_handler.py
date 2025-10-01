@@ -8,8 +8,14 @@ from urllib.parse import urlsplit, urlunsplit
 
 from lxml import html as lxml_html
 
+from digikey_api import (
+    DigiKeyAPIError,
+    DigiKeyConfigurationError,
+    get_all_items,
+    get_item_details,
+)
 from shop_handler import ShopHandler
-from automation.web_get import fetch_with_requests, fetch_with_playwright
+from automation.web_get import fetch_with_playwright
 
 log = logging.getLogger(__name__)
 
@@ -32,7 +38,95 @@ class DigiKeyHandler(ShopHandler):
     REQUEST_TIMEOUT = 15
 
     def guess_items(self) -> List[Dict[str, str]]:
-        """Attempt to extract item information from Digi-Key invoices."""
+        """Attempt all Digi-Key strategies in priority order."""
+
+        # Strategy 1: Contact the Digi-Key API when credentials are configured.
+        api_items = self._guess_items_via_api()
+        if api_items:
+            return api_items
+
+        # Strategy 2: Parse structured links in the email style invoice.
+        email_items = self._guess_items_from_email()
+        if email_items:
+            return email_items
+
+        # Strategy 3: Analyse the web invoice layout when the email provides no hints.
+        return self._guess_items_from_web_invoice()
+
+    def _guess_items_via_api(self) -> List[Dict[str, str]]:
+        """Use the Digi-Key REST API to retrieve detailed line item data."""
+
+        order_number = self.get_order_number()
+        if not order_number:
+            # Without an order number the API cannot be queried.
+            return []
+
+        try:
+            product_numbers = get_all_items(order_number)
+        except DigiKeyConfigurationError as config_error:
+            log.info(
+                "Digi-Key API configuration is incomplete, skipping API strategy: %s",
+                config_error,
+            )
+            return []
+        except DigiKeyAPIError as api_error:
+            log.info(
+                "Digi-Key API rejected the sales order lookup for %s: %s",
+                order_number,
+                api_error,
+            )
+            return []
+
+        if not product_numbers:
+            return []
+
+        detailed_items: List[Dict[str, str]] = []
+        seen_codes: set[str] = set()
+
+        for product_number in product_numbers:
+            normalized_number = self._clean_code(product_number)
+            if not normalized_number or normalized_number in seen_codes:
+                continue
+
+            try:
+                details = get_item_details(normalized_number)
+            except DigiKeyAPIError as detail_error:
+                log.info(
+                    "Digi-Key API could not return details for %s: %s",
+                    normalized_number,
+                    detail_error,
+                )
+                continue
+
+            if not isinstance(details, dict):
+                continue
+
+            product_name = self._normalize_whitespace(details.get('name'))
+            product_description = self._normalize_whitespace(details.get('description'))
+            product_url = (details.get('url') or '').strip()
+            product_code = self._clean_code(details.get('product_code')) or normalized_number
+
+            item: Dict[str, str] = {
+                'name': product_name or normalized_number,
+                'url': product_url,
+                'product_code': product_code,
+                'source': self.POSSIBLE_NAMES[0],
+            }
+
+            if product_description:
+                item['description'] = product_description
+
+            image_url = (details.get('img_url') or '').strip()
+            if image_url:
+                item['img_url'] = image_url
+
+            detailed_items.append(item)
+            seen_codes.add(normalized_number)
+
+        return detailed_items
+
+    def _guess_items_from_email(self) -> List[Dict[str, str]]:
+        """Parse structured hyperlinks embedded in the email style invoice."""
         items: List[Dict[str, str]] = []
         seen_codes: set[str] = set()
 
@@ -90,12 +184,9 @@ class DigiKeyHandler(ShopHandler):
             items.append(item)
             seen_codes.add(product_identifier)
 
-        if items:
-            return items
+        return items
 
-        return self._guess_items_2()
-
-    def _guess_items_2(self) -> List[Dict[str, str]]:
+    def _guess_items_from_web_invoice(self) -> List[Dict[str, str]]:
         """Fallback parser that scans Digi-Key's product detail cells."""
 
         # Collect candidate cells that hold structured product details in MudBlazor tables.
