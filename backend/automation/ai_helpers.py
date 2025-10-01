@@ -241,9 +241,24 @@ class LlmAi(object):
             )
             return res.choices[0].message.content
 
+
 def _emb_normalize(v: List[float]) -> List[float]:
     n = math.sqrt(sum(x*x for x in v)) or 1.0
     return [x / n for x in v]
+
+def _ensure_vec(x, dimensions: int = 3072):
+    if isinstance(x, list):
+        if not x:
+            out = [[0.0] * dimensions]
+        elif isinstance(x[0], float):
+            # When a single string is encoded, SentenceTransformer returns a flat list of floats.
+            # Wrap that flat vector so downstream processing always receives a list of vectors.
+            out = [x]
+    else:
+        # Fallback to wrapping any unexpected scalar-like result while preserving numeric values.
+        out = [[float(value) for value in x]]
+    return out
+
 
 class EmbeddingAi(object):
     def __init__(self, model: str = "offline"):
@@ -272,13 +287,10 @@ class EmbeddingAi(object):
         if not text:
             return [[0.0] * dimensions]
         if self.is_online:
-            return self.build_embedding_vector_openai(text, dimensions=dimensions)
+            out = self.build_embedding_vector_openai(text, dimensions=dimensions)
         else:
-            return self.build_embedding_vector_st(text, dimensions=dimensions)
-
-    def build_embedding_vector_openai(self, texts: str, *, dimensions: int = 3072) -> List[List[float]]:
-        resp = self.client.embeddings.create(model=self.model, input=texts)  # data[i].embedding
-        out = [row.embedding for row in resp.data]
+            out = self.build_embedding_vector_st(text, dimensions=dimensions)
+        out = _ensure_vec(out, dimensions = dimensions)
         # Some models have fixed dim; enforce/trim/pad to DB dim just in case
         fixed = []
         for v in out:
@@ -289,17 +301,14 @@ class EmbeddingAi(object):
             fixed.append(_emb_normalize(v))
         return fixed
 
+
+    def build_embedding_vector_openai(self, texts: str, *, dimensions: int = 3072) -> List[List[float]]:
+        resp = self.client.embeddings.create(model=self.model, input=texts)  # data[i].embedding
+        return [row.embedding for row in resp.data]
+
     def build_embedding_vector_st(self, texts: str, *, dimensions: int = 3072) -> List[List[float]]:
         vecs = self.st.encode(texts, batch_size=64, normalize_embeddings=True, convert_to_numpy=True)
-        out = vecs.tolist()
-        fixed = []
-        for v in out:
-            if len(v) > dimensions:
-                v = v[:dimensions]
-            elif len(v) < dimensions:
-                v = v + [0.0]*(dimensions - len(v))
-            fixed.append(_emb_normalize(v))
-        return fixed
+        return vecs.tolist()
 
     def _deterministic_embedding(self, text: str, *, dimensions: int = 3072) -> List[float]:
         if not text:
@@ -309,6 +318,7 @@ class EmbeddingAi(object):
         seed = int.from_bytes(digest, "big")
         rng = random.Random(seed)
         return _emb_normalize([rng.uniform(-1.0, 1.0) for _ in range(dimensions)])
+
 
 def main() -> None:
     import argparse
