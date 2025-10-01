@@ -623,7 +623,8 @@ const ItemPage: React.FC = () => {
 
       {/* Pin management controls */}
       <div className="mb-4">
-        <div className="d-flex flex-column flex-md-row align-items-start align-items-md-center gap-3">
+        {/* Center the pin management status row so related controls stay grouped together regardless of viewport size. */}
+        <div className="d-flex flex-column flex-md-row align-items-center justify-content-center text-center gap-3">
           {pinDetails.instant && (
             <div className="fw-semibold">
               {/* Only display the opened timestamp when a pin exists so operators do not see placeholder text */}
@@ -633,7 +634,7 @@ const ItemPage: React.FC = () => {
               )}
             </div>
           )}
-          <div className="d-flex flex-wrap gap-2">
+          <div className="d-flex flex-wrap justify-content-center gap-2">
             {!isPinCurrentlyActive && (
               <button
                 type="button"
