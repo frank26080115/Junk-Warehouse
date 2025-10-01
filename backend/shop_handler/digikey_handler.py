@@ -8,7 +8,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from lxml import html as lxml_html
 
-from digikey_api import (
+from .digikey_api import (
     DigiKeyAPIError,
     DigiKeyConfigurationError,
     get_all_items,
