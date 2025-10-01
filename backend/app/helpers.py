@@ -19,6 +19,103 @@ DOM_WHITESPACE_NORMALIZATION_PATTERN = re.compile(r"\s+")
 DOM_NON_BREAKING_SPACE_CHARACTERS = ("\u00A0", "\u202F")
 
 
+# Canonical list of hyphen characters that appear in scraped or user provided
+# data. They should behave the same as an ASCII hyphen when splitting words,
+# so we normalize them before performing any downstream token operations.
+WORD_SPLIT_HYPHEN_EQUIVALENTS = (
+    '-',
+    '‐',  # Hyphen
+    '‑',  # Non-breaking hyphen
+    '‒',  # Figure dash
+    '–',  # En dash
+    '—',  # Em dash
+    '―',  # Horizontal bar
+    '−',  # Minus sign often used in PDF text
+    '﹘',  # Small em dash found in East Asian typography
+    '﹣',  # Small hyphen-minus
+    '－',  # Fullwidth hyphen-minus
+)
+
+
+def split_words(value: str | None) -> list[str]:
+    """Return normalized, lowercase word fragments extracted from ``value``.
+
+    The splitter treats whitespace and most punctuation as token boundaries
+    while preserving apostrophes along with the assorted hyphen characters in
+    :data:`WORD_SPLIT_HYPHEN_EQUIVALENTS`. Underscores are rewritten as
+    hyphens, and any run of multiple hyphens is collapsed to a single hyphen
+    so the caller never receives values containing ``--``.
+    """
+
+    if value is None:
+        return []
+
+    if not isinstance(value, str):
+        # Fall back to the string representation when non-string types are
+        # provided. This mirrors typical logging and serialization helpers
+        # throughout the codebase and keeps the function broadly usable.
+        value = str(value)
+
+    terms: list[str] = []
+    active_characters: list[str] = []
+
+    def _emit_active_token() -> None:
+        """Finalize the active characters into a cleaned token."""
+        if not active_characters:
+            return
+
+        raw_token = ''.join(active_characters).lower()
+        active_characters.clear()
+
+        # Ensure underscores are converted to hyphens and remove any
+        # accidental double hyphen sequences that could have resulted from
+        # consecutive separator characters in the source text.
+        normalized_token = raw_token.replace('_', '-')
+        normalized_token = re.sub(r'-{2,}', '-', normalized_token)
+
+        if normalized_token:
+            terms.append(normalized_token)
+
+    for character in value:
+        if character.isspace():
+            _emit_active_token()
+            continue
+
+        unicode_category = unicodedata.category(character)
+
+        if unicode_category.startswith('P'):
+            if character == "'":
+                active_characters.append(character)
+                continue
+
+            if character == '_':
+                active_characters.append('-')
+                continue
+
+            if character in WORD_SPLIT_HYPHEN_EQUIVALENTS:
+                # Normalize all supported hyphen variants so downstream
+                # callers do not need to handle every Unicode code point.
+                active_characters.append('-')
+                continue
+
+            _emit_active_token()
+            continue
+
+        if unicode_category.startswith('S'):
+            # Symbol characters (currency marks, math operators, etc.) are
+            # treated as hard boundaries because they rarely participate in
+            # semantic word tokens.
+            _emit_active_token()
+            continue
+
+        active_characters.append(character)
+
+    _emit_active_token()
+
+    return terms
+
+
+
 def clean_dom_text_fragment(fragment: str) -> str:
     """Return a whitespace-normalized version of a raw DOM text fragment.
 
