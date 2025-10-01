@@ -23,8 +23,15 @@ EMBEDDING_MODEL_NAME = "hash-embed-v1"
 DEFAULT_EMBEDDING_LIMIT = 50
 
 def _resolve_item_dict(item_or_identifier: Union[Mapping[str, Any], str, uuid.UUID]) -> Dict[str, Any]:
+    """Return a dictionary representing the requested item with a normalized string id.
+
+    Callers may supply a fully populated mapping, a UUID instance, or any identifier that
+    can be coerced into a UUID string. This helper hides the retrieval and normalization
+    details so that downstream embedding logic can depend on a predictable structure.
+    """
     engine = get_engine()
     if isinstance(item_or_identifier, Mapping):
+        # Copy the mapping so we can safely adjust fields without mutating caller data.
         item_dict = dict(item_or_identifier)
         raw_id = item_dict.get("id")
         if raw_id is None:
@@ -33,6 +40,7 @@ def _resolve_item_dict(item_or_identifier: Union[Mapping[str, Any], str, uuid.UU
             item_uuid = raw_id
         else:
             item_uuid = uuid.UUID(normalize_pg_uuid(str(raw_id)))
+        # Ensure the identifier uses the canonical string form understood by PostgreSQL.
         item_dict["id"] = str(item_uuid)
         return item_dict
 
@@ -40,12 +48,20 @@ def _resolve_item_dict(item_or_identifier: Union[Mapping[str, Any], str, uuid.UU
         item_uuid = item_or_identifier
     else:
         item_uuid = uuid.UUID(normalize_pg_uuid(str(item_or_identifier)))
+    # Fetch the latest database row for the item so embeddings always reflect persisted data.
     item_dict = get_db_item_as_dict(engine, "items", item_uuid)
     item_dict["id"] = str(item_uuid)
     return item_dict
 
 
 def _collect_item_text(item_row: Mapping[str, Any]) -> str:
+    """Concatenate the key descriptive fields for an item into a single text blob.
+
+    Embeddings work better when multiple descriptive attributes are fed into the
+    generator. This helper gathers the name, description, and metatext in a predictable
+    order, trimming whitespace and ignoring missing values so the resulting text is
+    stable and free from accidental gaps.
+    """
     parts: List[str] = []
     for column in ("name", "description", "metatext"):
         value = item_row.get(column)
@@ -61,11 +77,32 @@ def _collect_item_text(item_row: Mapping[str, Any]) -> str:
 
 
 def _build_embedding_vector(text_input: str, *, dimensions: int = EMBEDDING_DIMENSIONS) -> List[float]:
+    """Build a deterministic pseudo-random embedding vector for the provided text.
+
+    The application does not depend on a true machine-learned embedding model. Instead,
+    it creates a stable stand-in vector so that items can still be indexed and searched.
+    The hash of the text is used as a seed for Python's pseudo-random number generator,
+    which guarantees that the same input text always yields the same output vector while
+    still distributing the values in a manner that mimics an embedding.
+    """
     if not text_input:
+        # Without any textual content we return a zero vector so searches do not produce
+        # random noise for empty descriptions and callers can depend on consistent data.
         return [0.0] * dimensions
+
+    # Convert the text into a SHA-512 digest. This digest acts as an easy-to-compute
+    # fingerprint that is extremely unlikely to collide for different texts.
     digest = hashlib.sha512(text_input.encode("utf-8")).digest()
+    # Interpret the digest bytes as a large integer to seed the random number generator.
+    # Because the digest is derived solely from the text, the resulting sequence of
+    # pseudo-random numbers will be repeatable for the same textual input.
     seed = int.from_bytes(digest, "big")
+    # Create a dedicated random generator instance so that other code using the global
+    # random module state remains unaffected by the deterministic seeding performed here.
     rng = random.Random(seed)
+    # Draw floating-point values in the range [-1.0, 1.0]. The distribution is uniform,
+    # which is sufficient for this synthetic embedding because downstream consumers only
+    # rely on relative distances rather than trained semantic meaning.
     return [rng.uniform(-1.0, 1.0) for _ in range(dimensions)]
 
 
