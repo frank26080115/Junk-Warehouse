@@ -295,13 +295,13 @@ const TagListView: React.FC = () => {
             {mode === "page" && (
                 <div className="d-flex justify-content-center align-items-center gap-3 mt-4">
                     <Button variant="outline-secondary" onClick={() => navigateToPage(pageNumber - 1)} disabled={!hasPrevious}>
-                        Previous
+                        ⬅️
                     </Button>
                     <span className="text-muted">
                         Page {pageNumber} (showing up to {PAGE_SIZE} entries)
                     </span>
                     <Button variant="outline-secondary" onClick={() => navigateToPage(pageNumber + 1)} disabled={!hasNext}>
-                        Next
+                        ➡️
                     </Button>
                 </div>
             )}
@@ -317,7 +317,7 @@ const TagListView: React.FC = () => {
                         disabled={isSubmitting}
                     />
                     <Button type="submit" variant="primary" disabled={isSubmitting}>
-                        {isSubmitting ? "Adding…" : "Submit"}
+                        {isSubmitting ? "⏳" : "🏷️"}
                     </Button>
                 </Form>
             </div>
