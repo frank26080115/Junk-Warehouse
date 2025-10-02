@@ -11,7 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine, RowMapping
 
 from app.db import get_engine, get_or_create_session, update_db_row_by_dict
-from app.helpers import normalize_pg_uuid
+from app.helpers import normalize_pg_uuid, coerce_identifier_to_uuid
 from .user_login import login_required
 
 log = logging.getLogger(__name__)
@@ -57,16 +57,6 @@ def _resolve_username() -> Optional[str]:
     return None
 
 
-def _coerce_uuid(value: Any) -> Optional[str]:
-    """Normalize UUID-like objects into strings for JSON serialization."""
-    if value is None:
-        return None
-    try:
-        return str(value)
-    except Exception:
-        return None
-
-
 def _summarize_item_name(raw_name: Optional[str]) -> Optional[str]:
     """Produce a concise preview of an item's name for the list view."""
     if not raw_name:
@@ -90,11 +80,11 @@ def _serialize_row(row: Mapping[str, Any]) -> Dict[str, Any]:
     else:
         date_text = str(date_value or "")
     return {
-        "id": _coerce_uuid(mapped.get("id")),
+        "id": coerce_identifier_to_uuid(mapped.get("id")),
         "date": date_text,
         "username": str(mapped.get("username") or ""),
-        "itemId1": _coerce_uuid(mapped.get("item_id_1")),
-        "itemId2": _coerce_uuid(mapped.get("item_id_2")),
+        "itemId1": coerce_identifier_to_uuid(mapped.get("item_id_1")),
+        "itemId2": coerce_identifier_to_uuid(mapped.get("item_id_2")),
         "event": str(mapped.get("event") or ""),
         "meta": str(mapped.get("meta") or ""),
         "itemNamePreview": _summarize_item_name(item_name),

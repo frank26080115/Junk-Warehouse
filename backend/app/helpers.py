@@ -3,9 +3,10 @@ from __future__ import annotations
 import html as _html
 import re
 import unicodedata
+from collections import deque
 from collections.abc import Hashable
 
-from typing import Any, Union, Mapping
+from typing import Any, Union, Mapping, Deque
 import uuid
 
 from lxml import etree
@@ -593,6 +594,70 @@ def _from_epoch_numeric(x: Union[int, float, Decimal]) -> datetime:
         # seconds (handles fractional seconds too)
         seconds = val
     return datetime.fromtimestamp(seconds, tz=timezone.utc)
+
+
+def coerce_identifier_to_uuid(candidate: Any) -> str | None:
+    """Attempt to coerce ``candidate`` into a normalized UUID string."""
+    # We queue up values so we can gradually inspect nested structures without recursion.
+    prioritized_attribute_names = (
+        "id",
+        "uuid",
+        "item_id",
+        "itemId",
+        "identifier",
+        "pk",
+        "primary_key",
+    )
+
+    queue: Deque[Any] = deque([candidate])
+    seen_identifiers: set[int] = set()
+    while queue:
+        current = queue.popleft()
+        identifier = id(current)
+        if identifier in seen_identifiers:
+            # Avoid looping forever when the structure contains repeated references.
+            continue
+        seen_identifiers.add(identifier)
+
+        if current is None:
+            # Nothing useful to extract.
+            continue
+
+        if isinstance(current, (str, uuid.UUID)):
+            try:
+                return normalize_pg_uuid(current)
+            except (TypeError, ValueError):
+                # The value looked promising but was not a valid UUID.
+                continue
+
+        if isinstance(current, Mapping):
+            # Explore mapping entries with priority given to common identifier keys.
+            for key in prioritized_attribute_names:
+                if key in current and current[key]:
+                    queue.append(current[key])
+            for value in current.values():
+                queue.append(value)
+            continue
+
+        if hasattr(current, "__dict__"):
+            # Many ORM objects expose their identifiers as attributes.
+            for attribute_name in prioritized_attribute_names:
+                if hasattr(current, attribute_name):
+                    queue.append(getattr(current, attribute_name))
+            continue
+
+        if isinstance(current, Sequence) and not isinstance(current, (str, bytes, bytearray)):
+            # Gracefully scan through tuples, lists, and other iterables.
+            queue.extend(list(current))
+            continue
+
+        try:
+            # As a last resort, try converting to a string and normalizing that value.
+            return normalize_pg_uuid(str(current))
+        except (TypeError, ValueError):
+            continue
+
+    return None
 
 
 def to_timestamptz(
