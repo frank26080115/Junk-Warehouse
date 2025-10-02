@@ -52,18 +52,32 @@ def deduplicate_preserving_order(value: list, lev_limit: int = -1) -> Any:
         elif isinstance(item, Hashable):
             key = item
         else:
+            # Fall back to a deterministic representation so that
+            # repeated objects compare predictably even when they are
+            # unhashable (for example, dictionaries or lists).
             key = repr(item)
 
+        duplicate_found = False
         if lev_limit < 0:
-            if any(existing_key == key for existing_key in seen_keys):
-                continue
+            duplicate_found = any(existing_key == key for existing_key in seen_keys)
         else:
-            # user can specify deduplication while removing typos
-            if any(levenshtein_match(existing_key, key, limit = lev_limit) for existing_key in seen_keys):
-                continue
+            for existing_key in seen_keys:
+                if isinstance(existing_key, str) and isinstance(key, str):
+                    if levenshtein_match(existing_key, key, limit=lev_limit):
+                        duplicate_found = True
+                        break
+                elif existing_key == key:
+                    duplicate_found = True
+                    break
+
+        if duplicate_found:
+            continue
 
         seen_keys.append(key)
-        ordered_items.append(item.lower())
+        if isinstance(item, str):
+            ordered_items.append(item.lower())
+        else:
+            ordered_items.append(item)
 
     return ordered_items
 
@@ -181,12 +195,40 @@ def clean_dom_text_fragment(fragment: str) -> str:
     return "".join(sanitized_characters)
 
 
-def clean_item_name(input:str) -> str:
-    x = clean_dom_text_fragment(input)
-    x = x.replace("?", " ").replace("\t", " ").replace("\\", " ").replace(">", "]").replace("<", "[")
-    while "  " in x:
-        x = x.replace("  ", " ")
-    return x.strip()
+def clean_item_name(input: str | None) -> str:
+    """Return a cleaned item name suitable for display and storage."""
+
+    if input is None:
+        return ""
+
+    # Convert the incoming value to text so that callers can pass objects
+    # such as ``lxml`` nodes without needing to coerce them manually.
+    text_value = str(input)
+
+    # Reuse the DOM fragment cleaner so that invisible characters and
+    # high-order Unicode spacing are normalized consistently with other
+    # scraping utilities in the codebase.
+    cleaned = clean_dom_text_fragment(text_value)
+
+    # Replace characters that frequently appear in scraped headings but
+    # should not show up in the normalized item name. Angle brackets are
+    # rewritten to square brackets to avoid implying HTML tags.
+    substitutions = {
+        "?": " ",
+        "\t": " ",
+        "\\": " ",
+        ">": "]",
+        "<": "[",
+    }
+    for needle, replacement in substitutions.items():
+        cleaned = cleaned.replace(needle, replacement)
+
+    # Collapse repeated whitespace so that the result renders cleanly in
+    # UIs and database exports without surprising gaps.
+    while "  " in cleaned:
+        cleaned = cleaned.replace("  ", " ")
+
+    return cleaned.strip()
 
 
 def lxml_cell_text(node: etree._Element) -> str:
