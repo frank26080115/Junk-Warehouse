@@ -469,7 +469,7 @@ def build_greedy_chain(word: str, limit: int = 50) -> list[dict]:
     return ordered_result
 
 
-bp = Blueprint("metatext", __name__, url_prefix="/api/metatext")
+bp = Blueprint("metatext", __name__, url_prefix="/api")
 PAGE_SIZE = 100
 
 
@@ -604,7 +604,7 @@ def fetch_tag_list(selector: str):
     }
     return jsonify(payload)
 
-@bp.delete("/tag/<uuid_value>")
+@bp.delete("/metatag/<uuid_value>")
 def delete_tag(uuid_value: str):
     """Remove a tag from the active metatext table."""
 

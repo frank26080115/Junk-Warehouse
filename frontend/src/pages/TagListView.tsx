@@ -109,7 +109,7 @@ const TagListView: React.FC = () => {
             setLoading(true);
             setErrorMessage(null);
             try {
-                const response = await fetch(`/api/metatext/taglist/${encodeURIComponent(selector)}`, {
+                const response = await fetch(`/api/taglist/${encodeURIComponent(selector)}`, {
                     method: "GET",
                     credentials: "include",
                     signal: controller.signal,
@@ -181,7 +181,7 @@ const TagListView: React.FC = () => {
         setPendingDeleteId(entry.id);
         setErrorMessage(null);
         try {
-            const response = await fetch(`/api/metatext/tag/${encodeURIComponent(entry.id)}`, {
+            const response = await fetch(`/api/metatag/${encodeURIComponent(entry.id)}`, {
                 method: "DELETE",
                 credentials: "include",
             });
@@ -212,7 +212,7 @@ const TagListView: React.FC = () => {
         setIsSubmitting(true);
         setErrorMessage(null);
         try {
-            const response = await fetch("/api/metatext/taglist", {
+            const response = await fetch("/api/taglist", {
                 method: "POST",
                 credentials: "include",
                 headers: {
