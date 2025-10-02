@@ -222,6 +222,13 @@ def _coerce_vector_to_list(raw_vector: Sequence[float] | Any) -> list[float]:
             return []
 
 
+def _format_vector_literal(values: Sequence[float]) -> str:
+    """Return a textual pgvector literal so PostgreSQL can cast to a vector."""
+
+    formatted_numbers = ", ".join(f"{float(entry):.15g}" for entry in values)
+    return f"[{formatted_numbers}]"
+
+
 def _fetch_nearest_tag_words(
     conn: Connection,
     table_name: str,
@@ -235,9 +242,12 @@ def _fetch_nearest_tag_words(
     if not vector_list:
         return []
 
+    vector_literal = _format_vector_literal(vector_list)
+    # Cast the literal in SQL so both sides of the operator are explicit vectors and avoid the array versus vector mismatch.
+
     sql = text(
         f"""
-SELECT word, vec, (vec <=> :needle_vec) AS embedding_distance
+SELECT word, vec, (vec <=> :needle_vec::vector) AS embedding_distance
 FROM public.{table_name}
 WHERE vec IS NOT NULL
 ORDER BY embedding_distance ASC
@@ -247,7 +257,7 @@ LIMIT :limit
 
     rows = conn.execute(
         sql,
-        {"needle_vec": vector_list, "limit": limit_value},
+        {"needle_vec": vector_literal, "limit": limit_value},
     ).mappings().all()
 
     return list(rows)
@@ -412,17 +422,20 @@ def update_metatext(input: str, check_closest_n: int = 3) -> str:
             if not vector:
                 continue
 
+            vector_literal = _format_vector_literal(vector)
+            # Cast the stored literal so the pgvector column receives the correct type and avoids the array versus vector mismatch.
+
             conn.execute(
                 text(
                     f"""
 INSERT INTO public.{table_name} (word, vec)
-VALUES (:word, :vec)
+VALUES (:word, :vec::vector)
 ON CONFLICT (word) DO UPDATE
 SET vec = EXCLUDED.vec,
     date_updated = now();
 """
                 ),
-                {"word": word, "vec": vector},
+                {"word": word, "vec": vector_literal},
             )
 
     results = deduplicate_preserving_order(results, lev_limit=1)
