@@ -1,12 +1,24 @@
 from __future__ import annotations
 
 import sys, argparse
-
+import hashlib
+import logging
+import random
+import uuid
+import math
 from collections import deque
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
+from sqlalchemy import MetaData, Table, select, text, inspect
+from sqlalchemy.orm import Session
+from sqlalchemy.engine import Engine, Connection
 from nltk.corpus import wordnet
 
-from .helpers import deduplicate_preserving_order, split_words
+from .db import get_engine, get_db_item_as_dict, get_or_create_session
+from .helpers import deduplicate_preserving_order, split_words, normalize_pg_uuid, levenshtein_match
+from ..automation.ai_helpers import EmbeddingAi
+
+TAG_WORDS_TABLE_NAME = "tag_words"
 
 """Utility helpers that expand words into synonym and variant lists."""
 
@@ -241,6 +253,117 @@ def get_synonyms_for_words(words: Union[list[str], str]) -> list[str]:
         expanded.extend(get_word_synonyms(word))
 
     return deduplicate_preserving_order(expanded)
+
+
+def ensure_tag_words_table_exists(ai: EmbeddingAi = None, engine: Engine = None) -> str:
+    if not ai:
+        ai = EmbeddingAi()
+    if not engine:
+        engine = get_engine()
+    inspector = inspect(engine)
+    suffix = ai.get_as_suffix()
+    table_name = f"{TAG_WORDS_TABLE_NAME}_{suffix}"
+    if inspector.has_table(table_name, schema="public"):
+        return table_name
+    dimensions = ai.get_dimensions()
+    if not isinstance(dimensions, int) or dimensions <= 0:
+        raise RuntimeError("Embedding dimensions must be a positive integer before creating tables")
+
+    statements = [
+        f"""CREATE TABLE public.{table_name} (
+    id   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    word text UNIQUE NOT NULL,
+    vec public.vector({dimensions}),
+    date_updated timestamp with time zone DEFAULT now() NOT NULL
+);""",
+        f"CREATE INDEX idx_{table_name}_vec ON public.{table_name} USING hnsw (vec public.vector_cosine_ops) WITH (lists='100');",
+        f"""CREATE FUNCTION public.touch_{table_name}_updated() RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    NEW.date_updated := now();
+    RETURN NEW;
+END;
+$$;""",
+        f"CREATE TRIGGER trg_touch_{table_name}_updated BEFORE UPDATE ON public.{table_name} FOR EACH ROW EXECUTE FUNCTION public.touch_{table_name}_updated();",
+    ]
+
+    with engine.begin() as conn:
+        for statement in statements:
+            conn.exec_driver_sql(statement)
+    return table_name
+
+
+def update_metatext(input: str, check_closest_n: int = 3) -> str:
+    ai = EmbeddingAi()
+    engine = get_engine()
+    table_name = ensure_tag_words_table_exists(ai = ai, engine = engine)
+    whitelist = # TODO split_words on appconfig.json key "meta_whitelist"
+    words = deduplicate_preserving_order(split_words(input), lev_limit=1)
+    results: list[str] = []
+    new_inserts: list[str] = []
+    for w in words:
+        is_whitelisted = False
+        # check if in whitelist, ignore word if it is
+        for wlw in whitelist:
+            if levenshtein_match(w, wlw):
+                is_whitelisted = True
+                results.append(wlw)
+                break
+        if is_whitelisted:
+            continue
+        needle_vec = ai.build_embedding_vector(w)[0]
+        matches = # TODO, find the 3 (or check_closest_n) best matches (to needle_vec) from the table `table_name`, sorted best match first
+        is_matched = False
+        for m in matches:
+            if levenshtein_match(w, m):
+                results.append(wlw)
+                is_matched = True
+                break
+        if is_matched:
+            continue
+        # nothing done? then keep the word
+        results.append(w)
+        new_inserts.append(w)
+
+    new_inserts = deduplicate_preserving_order(new_inserts, lev_limit=1)
+    for ni in new_inserts:
+        vec = ai.build_embedding_vector(ni)[0]
+        # TODO: insert into table `table_name`
+
+    results = deduplicate_preserving_order(results, lev_limit=1)
+
+    # TODO return results as a string, delimited by comma then space
+
+
+def build_greedy_chain(word: str, limit: int = 50) -> list[dict]:
+    ai = EmbeddingAi()
+    engine = get_engine()
+    table_name = ensure_tag_words_table_exists(ai = ai, engine = engine)
+
+    ordered_result: list[dict] = []
+    seen: set[str] = set()
+    current_word = word
+    current_vec = ai.build_embedding_vector(current_word)[0]
+    while len(seen) < limit:
+        matches = # TODO get top <limit> matches from table, sorted best match first
+        has_added = False
+        for mat in matches:
+            next_word = mat["word"]
+            # ignore something we've already seen
+            if next_word in seen:
+                continue
+            seen.add(next_word)
+            ordered_result.append(mat)
+            current_word = next_word
+            current_vec = mat["vec"]
+            has_added = True
+            break
+        # if nothing has been added to the list, it could mean we've seen all the words but have not hit the limit
+        # so we are done
+        if not has_added:
+            break
+    return ordered_result
 
 
 if __name__ == "__main__":
