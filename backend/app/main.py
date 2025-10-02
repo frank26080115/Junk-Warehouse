@@ -18,6 +18,7 @@ from .invoice_handlers import bp as bp_invoice, check_email_task
 from .items import bp as bp_items
 from .history import bp as bp_history
 from .maint import bp as bp_maint
+from .metatext import bp as bp_metatext
 from .search import bp as bp_search
 from .job_manager import JobManager, RepeatableJob, bp as bp_jobs
 import app.helpers as helpers
@@ -82,6 +83,7 @@ def create_app():
     app.register_blueprint(bp_maint)
     app.register_blueprint(bp_jobs)
     app.register_blueprint(bp_dbstatus)
+    app.register_blueprint(bp_metatext)
 
     # Delegate configuration loading so the logic stays in one place.
     initialize_app_config(app)
