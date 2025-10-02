@@ -22,6 +22,7 @@ from .static_server import get_public_html_path
 from .assoc_helper import (
     CONTAINMENT_BIT,
     get_item_relationship,
+    move_item,
     set_item_relationship,
 )
 from .containment_path import fetch_containment_paths
@@ -1150,6 +1151,50 @@ def bulk_remove_item_associations_api():
         removed.append(str(relationship.get("id")))
 
     return jsonify({"ok": True, "removed": len(removed), "relationships": removed})
+
+
+@bp.route("/moveitem", methods=["POST"])
+@login_required
+def move_item_api():
+    """Move an item into a different container using the helper that keeps history tidy."""
+
+    payload = request.get_json(silent=True) or {}
+    item_uuid = payload.get("item_uuid")
+    target_uuid = payload.get("target_uuid")
+
+    if not item_uuid or not target_uuid:
+        return jsonify({"ok": False, "error": "Both item_uuid and target_uuid are required."}), 400
+
+    try:
+        normalized_item = normalize_pg_uuid(str(item_uuid))
+        normalized_target = normalize_pg_uuid(str(target_uuid))
+    except Exception as exc:
+        log.debug(
+            "move_item_api: invalid identifiers %r and %r: %s",
+            item_uuid,
+            target_uuid,
+            exc,
+        )
+        return jsonify({"ok": False, "error": "Invalid item or target UUID."}), 400
+
+    if normalized_item == normalized_target:
+        return jsonify({"ok": False, "error": "Item and target UUID must be different."}), 400
+
+    try:
+        result = move_item(normalized_item, normalized_target)
+    except Exception:
+        log.exception("move_item_api: move_item helper failed for %s -> %s", normalized_item, normalized_target)
+        return jsonify({"ok": False, "error": "Move operation failed unexpectedly."}), 500
+
+    if not isinstance(result, dict):
+        return jsonify({"ok": False, "error": "Move operation returned an unexpected payload."}), 500
+
+    if not result.get("ok"):
+        error_message = str(result.get("error") or "Unable to move the item.")
+        return jsonify({"ok": False, "error": error_message}), 400
+
+    response_payload = {"ok": True, "result": result}
+    return jsonify(response_payload)
 
 
 @bp.route("/bulkdelete", methods=["POST"])

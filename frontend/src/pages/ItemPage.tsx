@@ -679,6 +679,7 @@ const ItemPage: React.FC = () => {
         </div>
         <SearchPanel
           targetUuid={targetUuid}
+          targetSlug={item.slug ?? null}
           refreshToken={refreshToken}
           tableName="items"
           onRelationshipsChanged={handleContainmentRelationshipsChanged}
@@ -695,7 +696,7 @@ const ItemPage: React.FC = () => {
         <div className="d-flex align-items-center justify-content-between mb-2">
           <h2 className="h5 mb-0">Relevant Invoices</h2>
         </div>
-        <SearchPanel targetUuid={targetUuid} refreshToken={refreshToken} tableName="invoices" />
+        <SearchPanel targetUuid={targetUuid} targetSlug={item.slug ?? null} refreshToken={refreshToken} tableName="invoices" />
       </div>
 
       {/* Footer meta */}
