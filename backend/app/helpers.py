@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+import base64
+import difflib
 import html as _html
+import logging
 import re
 import unicodedata
-from collections import deque
-from collections.abc import Hashable
-
-from typing import Any, Union, Mapping, Deque
 import uuid
+from collections import deque
+from collections.abc import Deque, Hashable, Mapping, Sequence
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
+from typing import Any, Optional, Tuple, Union
 
 from lxml import etree
+
+# Use a single module-level logger so helper routines can emit consistent, testable messages.
+log = logging.getLogger(__name__)
 
 # Regular expression used to collapse any run of whitespace characters into a single
 # standard space so that human readable spacing is preserved even after stripping
@@ -409,9 +416,6 @@ def sanitize_html_for_pg(
         return "'" + text.replace("'", "''") + "'"
 
 
-import base64
-from typing import Union, Tuple
-
 def html_to_base64_datauri(
     html: Union[str, bytes, bytearray, memoryview],
     *,
@@ -447,8 +451,6 @@ try:
 except Exception:  # pragma: no cover
     def flask_return_wrap(payload: dict, code: int):
         return payload, code
-
-import re
 
 def fuzzy_norm_key(s: str) -> str:
     """lowercase and remove non-alphanumerics so 'User-Name' ~ 'username'."""
@@ -490,9 +492,6 @@ def levenshtein_match(a: str, b: str, limit: int = 2) -> bool:
 
 
 def fuzzy_apply_fuzzy_keys(data: dict[str, Any], columns: set[str], table_name: str, limit: int = 2) -> dict[str, Any]:
-    import logging
-    log = logging.getLogger(__name__)
-
     """
     For each key in data, find best column match by edit distance (<= limit).
     Rename key if it doesn't cause a duplicate and hasn’t already been claimed.
@@ -538,10 +537,6 @@ def fuzzy_apply_fuzzy_keys(data: dict[str, Any], columns: set[str], table_name: 
 
     return out
 
-
-from datetime import datetime, date, timezone, timedelta
-from decimal import Decimal
-from typing import Any, Optional, Union
 
 try:
     # Python 3.9+ stdlib timezones
@@ -766,8 +761,6 @@ def to_timestamptz(
         iso = iso[:-6] + "Z"
     return iso
 
-
-import difflib
 
 def fuzzy_word_list_match(words, user_input):
     """
