@@ -705,8 +705,7 @@ def _execute_metatext_search(
     if offset_value:
         sql_lines.append("OFFSET :offset")
 
-    base_sql = text("
-".join(sql_lines))
+    base_sql = text("".join(sql_lines))
 
     sql_params: Dict[str, Any] = dict(criteria.get("params", {}))
     if limit_value is not None:
