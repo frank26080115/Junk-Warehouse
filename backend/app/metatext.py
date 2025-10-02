@@ -7,15 +7,16 @@ import random
 import uuid
 import math
 from collections import deque
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Mapping, Optional, Sequence, Union
 
-from sqlalchemy import MetaData, Table, select, text, inspect
+from sqlalchemy import text, inspect
 from sqlalchemy.orm import Session
 from sqlalchemy.engine import Engine, Connection
 from nltk.corpus import wordnet
 
 from .db import get_engine, get_db_item_as_dict, get_or_create_session
 from .helpers import deduplicate_preserving_order, split_words, normalize_pg_uuid, levenshtein_match
+from .config_loader import load_app_config
 from ..automation.ai_helpers import EmbeddingAi
 
 TAG_WORDS_TABLE_NAME = "tag_words"
@@ -200,6 +201,77 @@ def _generate_desuffixed_variants(word: str) -> set[str]:
     return candidates
 
 
+def _coerce_vector_to_list(raw_vector: Sequence[float] | Any) -> list[float]:
+    """Return ``raw_vector`` as a plain list of floats."""
+
+    if raw_vector is None:
+        return []
+
+    candidate = raw_vector
+    if hasattr(candidate, "tolist"):
+        candidate = candidate.tolist()
+
+    try:
+        return [float(value) for value in list(candidate)]
+    except (TypeError, ValueError):
+        try:
+            return list(candidate)
+        except TypeError:
+            return []
+
+
+def _fetch_nearest_tag_words(
+    conn: Connection,
+    table_name: str,
+    vector: Sequence[float],
+    limit: int,
+) -> list[Mapping[str, Any]]:
+    """Return the ``limit`` closest tag words for ``vector``."""
+
+    limit_value = max(int(limit), 1)
+    vector_list = _coerce_vector_to_list(vector)
+    if not vector_list:
+        return []
+
+    sql = text(
+        f"""
+SELECT word, vec, (vec <=> :needle_vec) AS embedding_distance
+FROM public.{table_name}
+WHERE vec IS NOT NULL
+ORDER BY embedding_distance ASC
+LIMIT :limit
+"""
+    )
+
+    rows = conn.execute(
+        sql,
+        {"needle_vec": vector_list, "limit": limit_value},
+    ).mappings().all()
+
+    return list(rows)
+
+
+def _load_whitelist_words() -> list[str]:
+    """Return the configured whitelist of meta text terms."""
+
+    cfg = load_app_config()
+    if not isinstance(cfg, Mapping):
+        return []
+
+    raw_whitelist = cfg.get("meta_whitelist", "")
+    extracted: list[str] = []
+
+    if isinstance(raw_whitelist, str):
+        extracted.extend(split_words(raw_whitelist))
+    elif isinstance(raw_whitelist, Sequence):
+        for entry in raw_whitelist:
+            extracted.extend(split_words(str(entry)))
+    elif raw_whitelist is not None:
+        extracted.extend(split_words(str(raw_whitelist)))
+
+    return deduplicate_preserving_order(extracted, lev_limit=1)
+
+
 def _collect_direct_variants(word: str) -> set[str]:
     """Collect one-hop variants that feed the recursive synonym expansion."""
 
@@ -297,72 +369,102 @@ $$;""",
 def update_metatext(input: str, check_closest_n: int = 3) -> str:
     ai = EmbeddingAi()
     engine = get_engine()
-    table_name = ensure_tag_words_table_exists(ai = ai, engine = engine)
-    whitelist = # TODO split_words on appconfig.json key "meta_whitelist"
+    table_name = ensure_tag_words_table_exists(ai=ai, engine=engine)
+    whitelist = _load_whitelist_words()
     words = deduplicate_preserving_order(split_words(input), lev_limit=1)
     results: list[str] = []
     new_inserts: list[str] = []
-    for w in words:
-        is_whitelisted = False
-        # check if in whitelist, ignore word if it is
-        for wlw in whitelist:
-            if levenshtein_match(w, wlw):
-                is_whitelisted = True
-                results.append(wlw)
-                break
-        if is_whitelisted:
-            continue
-        needle_vec = ai.build_embedding_vector(w)[0]
-        matches = # TODO, find the 3 (or check_closest_n) best matches (to needle_vec) from the table `table_name`, sorted best match first
-        is_matched = False
-        for m in matches:
-            if levenshtein_match(w, m):
-                results.append(wlw)
-                is_matched = True
-                break
-        if is_matched:
-            continue
-        # nothing done? then keep the word
-        results.append(w)
-        new_inserts.append(w)
+    vector_cache: dict[str, list[float]] = {}
 
-    new_inserts = deduplicate_preserving_order(new_inserts, lev_limit=1)
-    for ni in new_inserts:
-        vec = ai.build_embedding_vector(ni)[0]
-        # TODO: insert into table `table_name`
+    with engine.begin() as conn:
+        for word in words:
+            whitelist_match = next(
+                (candidate for candidate in whitelist if levenshtein_match(word, candidate)),
+                None,
+            )
+            if whitelist_match:
+                results.append(whitelist_match)
+                continue
+
+            needle_vec = ai.build_embedding_vector(word)[0]
+            vector_cache[word] = _coerce_vector_to_list(needle_vec)
+            matches = _fetch_nearest_tag_words(conn, table_name, needle_vec, check_closest_n)
+
+            matched_entry: Optional[Mapping[str, Any]] = None
+            for candidate in matches:
+                candidate_word = candidate.get("word")
+                if isinstance(candidate_word, str) and levenshtein_match(word, candidate_word):
+                    matched_entry = candidate
+                    break
+
+            if matched_entry:
+                results.append(str(matched_entry["word"]))
+                continue
+
+            results.append(word)
+            new_inserts.append(word)
+
+        new_inserts = deduplicate_preserving_order(new_inserts, lev_limit=1)
+        for word in new_inserts:
+            vector = vector_cache.get(word) or _coerce_vector_to_list(ai.build_embedding_vector(word)[0])
+            if not vector:
+                continue
+
+            conn.execute(
+                text(
+                    f"""
+INSERT INTO public.{table_name} (word, vec)
+VALUES (:word, :vec)
+ON CONFLICT (word) DO UPDATE
+SET vec = EXCLUDED.vec,
+    date_updated = now();
+"""
+                ),
+                {"word": word, "vec": vector},
+            )
 
     results = deduplicate_preserving_order(results, lev_limit=1)
 
-    # TODO return results as a string, delimited by comma then space
+    return ", ".join(results)
 
 
 def build_greedy_chain(word: str, limit: int = 50) -> list[dict]:
     ai = EmbeddingAi()
     engine = get_engine()
-    table_name = ensure_tag_words_table_exists(ai = ai, engine = engine)
+    table_name = ensure_tag_words_table_exists(ai=ai, engine=engine)
+
+    if limit <= 0:
+        return []
 
     ordered_result: list[dict] = []
-    seen: set[str] = set()
-    current_word = word
-    current_vec = ai.build_embedding_vector(current_word)[0]
-    while len(seen) < limit:
-        matches = # TODO get top <limit> matches from table, sorted best match first
-        has_added = False
-        for mat in matches:
-            next_word = mat["word"]
-            # ignore something we've already seen
-            if next_word in seen:
-                continue
-            seen.add(next_word)
-            ordered_result.append(mat)
-            current_word = next_word
-            current_vec = mat["vec"]
-            has_added = True
-            break
-        # if nothing has been added to the list, it could mean we've seen all the words but have not hit the limit
-        # so we are done
-        if not has_added:
-            break
+    seen: set[str] = {word}
+    current_vec = ai.build_embedding_vector(word)[0]
+
+    with engine.begin() as conn:
+        while len(ordered_result) < limit:
+            matches = _fetch_nearest_tag_words(conn, table_name, current_vec, limit)
+            has_added = False
+            for candidate in matches:
+                next_word = candidate.get("word")
+                if not isinstance(next_word, str) or next_word in seen:
+                    continue
+
+                vec_value = _coerce_vector_to_list(candidate.get("vec"))
+                result_entry = {
+                    "word": next_word,
+                    "vec": vec_value,
+                    "embedding_distance": candidate.get("embedding_distance"),
+                }
+                ordered_result.append(result_entry)
+                seen.add(next_word)
+                if vec_value:
+                    current_vec = vec_value
+                has_added = True
+                break
+
+            if not has_added:
+                break
+
     return ordered_result
 
 
