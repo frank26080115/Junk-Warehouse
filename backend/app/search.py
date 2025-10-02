@@ -670,9 +670,6 @@ def _finalize_invoice_rows(rows: Iterable[Mapping[str, Any]]) -> List[Dict[str, 
     return deduplicate_rows(normalized, key="pk")
 
 
-
-
-
 def search_items(
     raw_query: str,
     target_uuid: Optional[str] = None,
