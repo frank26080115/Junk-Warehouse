@@ -884,7 +884,6 @@ def search_items(
         The raw query string (as typed by the user).
     target_uuid : Optional[str]
         If provided, future enhancement: bias/filter results related to this item.
-        NOTE: The base text search always runs regardless.
     context : Any
         Optional execution context; may contain request/session info later.
     primary_key_column : str
