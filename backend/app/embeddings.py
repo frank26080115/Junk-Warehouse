@@ -120,7 +120,7 @@ def ensure_embeddings_table_exists(tbl_prefix: str = EMB_TBL_NAME_PREFIX_ITEMS, 
     vec public.vector({dimensions}),
     date_updated timestamp with time zone DEFAULT now() NOT NULL
 );""",
-        f"CREATE INDEX idx_{table_name}_vec ON public.{table_name} USING hnsw (vec public.vector_cosine_ops) WITH (lists='100');",
+        f"CREATE INDEX idx_{table_name}_vec ON public.{table_name} USING hnsw (vec public.vector_cosine_ops);",
         f"""ALTER TABLE ONLY public.{table_name}
     ADD CONSTRAINT {table_name}_pkey PRIMARY KEY (item_id);""",
         f"""ALTER TABLE ONLY public.{table_name}

@@ -350,7 +350,7 @@ def ensure_tag_words_table_exists(ai: EmbeddingAi = None, engine: Engine = None)
     vec public.vector({dimensions}),
     date_updated timestamp with time zone DEFAULT now() NOT NULL
 );""",
-        f"CREATE INDEX idx_{table_name}_vec ON public.{table_name} USING hnsw (vec public.vector_cosine_ops) WITH (lists='100');",
+        f"CREATE INDEX idx_{table_name}_vec ON public.{table_name} USING hnsw (vec public.vector_cosine_ops);",
         f"""CREATE FUNCTION public.touch_{table_name}_updated() RETURNS trigger
 LANGUAGE plpgsql
 AS $$
