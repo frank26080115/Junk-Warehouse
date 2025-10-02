@@ -36,6 +36,7 @@ interface SearchPanelProps {
   prefilledQuery?: string | null;
   hideTextBox?: boolean;
   targetUuid?: string | null;
+  targetSlug?: string | null;
   refreshToken?: number;
   tableName?: TableName;
   smallMode?: boolean;
@@ -58,6 +59,8 @@ const API_ENDPOINTS: Record<
     relate: "/api/invoicesassociations",
   },
 };
+
+const MOVE_ITEM_ENDPOINT = "/api/moveitem";
 
 const ITEM_NAME_MAX_LENGTH = 30;
 const INVOICE_LINE_MAX_LENGTH = 40;
@@ -200,6 +203,7 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
   prefilledQuery,
   hideTextBox = false,
   targetUuid,
+  targetSlug,
   refreshToken,
   tableName = "items",
   smallMode = false,
@@ -255,6 +259,15 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
 
   const isBusy = isSearching || isActionBusy;
   const selectedCount = selectedPks.size;
+  // Convert the set of selected identifiers into a simple array so downstream helpers can reference a stable ordering.
+  const selectedPkArray = useMemo(() => Array.from(selectedPks), [selectedPks]);
+  const normalizedTargetSlug = useMemo(() => {
+    if (!targetSlug) {
+      return "";
+    }
+    // Normalizing trims whitespace so the footer text renders cleanly and avoids awkward spacing.
+    return targetSlug.trim();
+  }, [targetSlug]);
 
   useEffect(() => {
     const styleId = "search-panel-blink-style";
@@ -493,6 +506,38 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
 
     return base.concat(appended);
   }, [rawResults, selectedPks]);
+
+  const singleSelectedRow = useMemo(() => {
+    if (selectedPkArray.length !== 1) {
+      return null;
+    }
+    const pk = selectedPkArray[0];
+    if (!pk) {
+      return null;
+    }
+    let row = displayRows.find((entry) => entry.pk === pk) || null;
+    if (!row) {
+      row = pinnedRef.current.get(pk) || null;
+    }
+    if (!row) {
+      return null;
+    }
+    const slugCandidate = typeof row.slug === "string" ? row.slug.trim() : "";
+    const fallbackSlug = slugCandidate || (typeof row.pk === "string" ? row.pk.trim() : "");
+    return { pk, row, slug: fallbackSlug };
+  }, [displayRows, selectedPkArray]);
+
+  const targetDisplaySlug = useMemo(() => {
+    if (!targetUuid) {
+      return "";
+    }
+    if (normalizedTargetSlug) {
+      return normalizedTargetSlug;
+    }
+    return targetUuid;
+  }, [normalizedTargetSlug, targetUuid]);
+
+  const selectedDisplaySlug = singleSelectedRow?.slug || singleSelectedRow?.pk || "";
 
   const hasTitle = !isBlank(displayedTitle);
   const hasResults = displayRows.length > 0;
@@ -805,6 +850,95 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
     }
   }, [allowDelete, normalizedTable, query, runSearch, selectedCount, selectedPks, targetUuid]);
 
+  // Allow the user to move items between containers without leaving the search panel when exactly one match is selected.
+  const handleMoveBetweenItems = useCallback(
+    async (direction: "target-into-selected" | "selected-into-target") => {
+      if (
+        !targetUuid ||
+        normalizedTable !== "items" ||
+        selectedPkArray.length !== 1 ||
+        !singleSelectedRow
+      ) {
+        return;
+      }
+
+      const selectedPk = selectedPkArray[0];
+      const movingItemUuid =
+        direction === "target-into-selected" ? targetUuid : selectedPk;
+      const destinationUuid =
+        direction === "target-into-selected" ? selectedPk : targetUuid;
+
+      setIsActionBusy(true);
+      try {
+        const response = await fetch(MOVE_ITEM_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            item_uuid: movingItemUuid,
+            target_uuid: destinationUuid,
+          }),
+        });
+        let payload: any = null;
+        try {
+          payload = await response.json();
+        } catch {
+          payload = null;
+        }
+        if (!response.ok) {
+          const message =
+            payload && typeof payload === "object" && "error" in payload
+              ? String(payload.error)
+              : `Move failed (${response.status})`;
+          throw new Error(message);
+        }
+        if (payload && typeof payload === "object" && "ok" in payload && !payload.ok) {
+          throw new Error(payload.error ? String(payload.error) : "Move failed");
+        }
+
+        pinnedRef.current.clear();
+        setSelectedPks(() => new Set());
+
+        await runSearch(lastQueryRef.current || query);
+
+        if (onRelationshipsChanged) {
+          onRelationshipsChanged();
+        }
+
+        const sourceLabel =
+          direction === "target-into-selected"
+            ? targetDisplaySlug || targetUuid
+            : selectedDisplaySlug || selectedPk;
+        const destinationLabel =
+          direction === "target-into-selected"
+            ? selectedDisplaySlug || selectedPk
+            : targetDisplaySlug || targetUuid;
+
+        setModalMessage({
+          title: "Move complete",
+          body: `Moved ${sourceLabel} into ${destinationLabel}.`,
+        });
+      } catch (error: any) {
+        setModalMessage({
+          title: "Move failed",
+          body: error?.message || "Unable to move the selected items.",
+        });
+      } finally {
+        setIsActionBusy(false);
+      }
+    },
+    [
+      normalizedTable,
+      onRelationshipsChanged,
+      query,
+      runSearch,
+      selectedDisplaySlug,
+      selectedPkArray,
+      singleSelectedRow,
+      targetDisplaySlug,
+      targetUuid,
+    ],
+  );
+
   const handleSetAssociation = useCallback(async () => {
     if (!targetUuid || selectedCount === 0) {
       return;
@@ -1110,6 +1244,32 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
           </table>
         </div>
       </div>
+
+      {targetUuid && normalizedTable === "items" && singleSelectedRow && (
+        <div
+          className="d-flex flex-wrap justify-content-end align-items-center gap-3 px-3 py-2 mb-2 rounded-3"
+          style={{ backgroundColor: "rgba(0, 0, 0, 0.06)" }}
+        >
+          {/* Provide quick containment move shortcuts when exactly one item is selected. */}
+          <span className="small text-muted">Move items between containers:</span>
+          <button
+            type="button"
+            className="btn btn-link btn-sm text-decoration-none"
+            disabled={isBusy}
+            onClick={() => handleMoveBetweenItems("target-into-selected")}
+          >
+            Move {targetDisplaySlug || targetUuid} into {selectedDisplaySlug || singleSelectedRow.pk}
+          </button>
+          <button
+            type="button"
+            className="btn btn-link btn-sm text-decoration-none"
+            disabled={isBusy}
+            onClick={() => handleMoveBetweenItems("selected-into-target")}
+          >
+            Move {selectedDisplaySlug || singleSelectedRow.pk} into {targetDisplaySlug || targetUuid}
+          </button>
+        </div>
+      )}
 
       <div
         className="d-flex flex-wrap justify-content-between align-items-center gap-3 px-3 py-2 rounded-3"
