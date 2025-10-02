@@ -9,6 +9,7 @@ import math
 from collections import deque
 from typing import Any, Mapping, Optional, Sequence, Union
 
+from flask import Blueprint, jsonify, request
 from sqlalchemy import text, inspect
 from sqlalchemy.orm import Session
 from sqlalchemy.engine import Engine, Connection
@@ -466,6 +467,179 @@ def build_greedy_chain(word: str, limit: int = 50) -> list[dict]:
                 break
 
     return ordered_result
+
+
+bp = Blueprint("metatext", __name__, url_prefix="/api/metatext")
+PAGE_SIZE = 100
+
+
+def _serialize_tag_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Convert a raw database row into a JSON-friendly dictionary."""
+
+    serialized: dict[str, Any] = dict(row)
+    identifier = serialized.get("id")
+    if identifier is not None:
+        try:
+            serialized["id"] = str(identifier)
+        except Exception:
+            serialized["id"] = identifier
+
+    vec_value = serialized.get("vec")
+    serialized["vec"] = _coerce_vector_to_list(vec_value)
+
+    date_value = serialized.get("date_updated")
+    if hasattr(date_value, "isoformat"):
+        serialized["date_updated"] = date_value.isoformat()
+    elif date_value is not None:
+        serialized["date_updated"] = str(date_value)
+
+    return serialized
+
+
+def _load_rows_by_page(conn: Connection, table_name: str, page_number: int) -> tuple[list[dict[str, Any]], bool]:
+    """Fetch a page of tag rows sorted from most recent to oldest."""
+
+    offset_value = (page_number - 1) * PAGE_SIZE
+    statement = text(
+        f"""
+SELECT id, word, vec, date_updated
+FROM public.{table_name}
+ORDER BY date_updated DESC, id DESC
+LIMIT :limit_value
+OFFSET :offset_value
+"""
+    )
+    rows = list(
+        conn.execute(
+            statement,
+            {"limit_value": PAGE_SIZE + 1, "offset_value": offset_value},
+        ).mappings()
+    )
+
+    has_next = len(rows) > PAGE_SIZE
+    visible_rows = rows[:PAGE_SIZE]
+    serialized_rows = [_serialize_tag_row(row) for row in visible_rows]
+    return serialized_rows, has_next
+
+
+def _load_row_for_word(conn: Connection, table_name: str, word: str) -> Optional[dict[str, Any]]:
+    """Retrieve a single row for the provided word if it exists."""
+
+    statement = text(
+        f"""
+SELECT id, word, vec, date_updated
+FROM public.{table_name}
+WHERE word = :word
+LIMIT 1
+"""
+    )
+    result = conn.execute(statement, {"word": word}).mappings().first()
+    if not result:
+        return None
+    return _serialize_tag_row(result)
+
+
+@bp.get("/taglist/<selector>")
+def fetch_tag_list(selector: str):
+    """Return either a paginated list of tags or a greedy similarity chain."""
+
+    ai = EmbeddingAi()
+    engine = get_engine()
+    table_name = ensure_tag_words_table_exists(ai=ai, engine=engine)
+
+    is_page_request = selector.isdigit()
+    page_number = max(int(selector), 1) if is_page_request else 1
+
+    if is_page_request:
+        with engine.begin() as conn:
+            rows, has_next = _load_rows_by_page(conn, table_name, page_number)
+        payload = {
+            "ok": True,
+            "mode": "page",
+            "page": page_number,
+            "pageSize": PAGE_SIZE,
+            "hasNext": has_next,
+            "hasPrevious": page_number > 1,
+            "entries": rows,
+        }
+        return jsonify(payload)
+
+    chain_entries = build_greedy_chain(selector)
+    serialized_entries: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    with engine.begin() as conn:
+        origin_row = _load_row_for_word(conn, table_name, selector)
+        if origin_row:
+            serialized_entries.append(origin_row)
+            identifier = origin_row.get("id")
+            if isinstance(identifier, str):
+                seen_ids.add(identifier)
+
+        for candidate in chain_entries:
+            candidate_word = str(candidate.get("word") or "").strip()
+            if not candidate_word:
+                continue
+
+            row = _load_row_for_word(conn, table_name, candidate_word)
+            if not row:
+                continue
+
+            identifier = row.get("id")
+            if isinstance(identifier, str):
+                if identifier in seen_ids:
+                    continue
+                seen_ids.add(identifier)
+
+            if "embedding_distance" in candidate:
+                row["embedding_distance"] = candidate.get("embedding_distance")
+
+            serialized_entries.append(row)
+
+    payload = {
+        "ok": True,
+        "mode": "chain",
+        "seed": selector,
+        "entries": serialized_entries,
+    }
+    return jsonify(payload)
+
+@bp.delete("/tag/<uuid_value>")
+def delete_tag(uuid_value: str):
+    """Remove a tag from the active metatext table."""
+
+    ai = EmbeddingAi()
+    engine = get_engine()
+    table_name = ensure_tag_words_table_exists(ai=ai, engine=engine)
+    normalized_id = normalize_pg_uuid(uuid_value)
+
+    with engine.begin() as conn:
+        statement = text(f"DELETE FROM public.{table_name} WHERE id = :identifier RETURNING id")
+        result = conn.execute(statement, {"identifier": normalized_id})
+        deleted_row = result.first()
+
+    if not deleted_row:
+        return jsonify({"ok": False, "error": "Tag not found."}), 404
+
+    return jsonify({"ok": True, "id": normalized_id})
+
+
+@bp.post("/taglist")
+def add_tags():
+    """Insert or update metatext entries using the shared helper."""
+
+    payload = request.get_json(silent=True) or {}
+    text_value = payload.get("text") or payload.get("input") or payload.get("value")
+    if not isinstance(text_value, str) or not text_value.strip():
+        return jsonify({"ok": False, "error": "Please provide tag text to insert."}), 400
+
+    try:
+        result_text = update_metatext(text_value)
+    except Exception as exc:
+        logging.getLogger(__name__).exception("Failed to update metatext tags")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    return jsonify({"ok": True, "result": result_text})
 
 
 if __name__ == "__main__":

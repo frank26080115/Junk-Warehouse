@@ -18,6 +18,7 @@ const TestPage         = lazy(() => import("../pages/TestPage"));
 const NotFoundPage     = lazy(() => import("../pages/NotFoundPage"));
 const HelpPage         = lazy(() => import("../pages/HelpPage"));
 const HistoryLogView  = lazy(() => import("../pages/HistoryLogView"));
+const TagListView    = lazy(() => import("../pages/TagListView"));
 
 const App: React.FC = () => {
   return (
@@ -60,6 +61,11 @@ const App: React.FC = () => {
           {/* Historical records */}
           <Route path="/history" element={<HistoryLogView />} />
           <Route path="/history/:page" element={<HistoryLogView />} />
+
+          {/* Metatext tags */}
+          <Route path="/taglist" element={<TagListView />} />
+          <Route path="/taglist/:selector" element={<TagListView />} />
+
           <Route path="/help" element={<HelpPage />} />
 
           {/* 404 */}
