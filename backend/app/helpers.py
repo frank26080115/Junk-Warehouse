@@ -38,46 +38,34 @@ WORD_SPLIT_HYPHEN_EQUIVALENTS = (
 )
 
 
-def deduplicate_preserving_order(value: Any) -> Any:
+def deduplicate_preserving_order(value: list, lev_limit: int = -1) -> Any:
     """Return ``value`` with duplicates removed while preserving the first occurrence."""
 
-    if isinstance(value, str):
-        seen_characters: set[str] = set()
-        ordered_characters: list[str] = []
+    ordered_items: list[Any] = []
+    seen_keys: list[Any] = []
 
-        for character in value:
-            canonical_character = character.lower()
-            if canonical_character in seen_characters:
-                continue
+    # Maintain a parallel list of canonical keys so that unhashable
+    # objects can still be compared without raising ``TypeError``.
+    for item in value:
+        if isinstance(item, str):
+            key: Any = item.lower()
+        elif isinstance(item, Hashable):
+            key = item
+        else:
+            key = repr(item)
 
-            seen_characters.add(canonical_character)
-            ordered_characters.append(character)
-
-        return ''.join(ordered_characters)
-
-    if isinstance(value, list):
-        ordered_items: list[Any] = []
-        seen_keys: list[Any] = []
-
-        # Maintain a parallel list of canonical keys so that unhashable
-        # objects can still be compared without raising ``TypeError``.
-        for item in value:
-            if isinstance(item, str):
-                key: Any = item.lower()
-            elif isinstance(item, Hashable):
-                key = item
-            else:
-                key = repr(item)
-
+        if lev_limit < 0:
             if any(existing_key == key for existing_key in seen_keys):
                 continue
+        else:
+            # user can specify deduplication while removing typos
+            if any(levenshtein_match(existing_key, key, limit = lev_limit) for existing_key in seen_keys):
+                continue
 
-            seen_keys.append(key)
-            ordered_items.append(item.lower())
+        seen_keys.append(key)
+        ordered_items.append(item.lower())
 
-        return ordered_items
-
-    return value
+    return ordered_items
 
 
 def split_words(value: str | None) -> list[str]:
@@ -191,6 +179,14 @@ def clean_dom_text_fragment(fragment: str) -> str:
         sanitized_characters.append(character)
 
     return "".join(sanitized_characters)
+
+
+def clean_item_name(input:str) -> str:
+    x = clean_dom_text_fragment(input)
+    x = x.replace("?", " ").replace("\t", " ").replace("\\", " ").replace(">", "]").replace("<", "[")
+    while "  " in x:
+        x = x.replace("  ", " ")
+    return x.strip()
 
 
 def lxml_cell_text(node: etree._Element) -> str:
@@ -443,6 +439,11 @@ def fuzzy_levenshtein_at_most(a: str, b: str, limit: int = 2) -> int:
             return limit + 1
         prev = cur
     return prev[-1]
+
+
+def levenshtein_match(a: str, b: str, limit: int = 2) -> bool:
+    x = fuzzy_levenshtein_at_most(a, b, limit=limit)
+    return x <= limit
 
 
 def fuzzy_apply_fuzzy_keys(data: dict[str, Any], columns: set[str], table_name: str, limit: int = 2) -> dict[str, Any]:
