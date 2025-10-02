@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any, Iterable, List, Mapping, Sequence
+from collections import deque
+from typing import Any, Deque, Iterable, List, Mapping, Sequence
 
 from sqlalchemy import text
 
@@ -149,3 +150,92 @@ def fetch_containment_paths(item_identifier: Any) -> List[dict[str, Any]]:
             )
 
     return results
+
+
+def _coerce_identifier_to_uuid(candidate: Any) -> str | None:
+    """Attempt to coerce ``candidate`` into a normalized UUID string."""
+    # We queue up values so we can gradually inspect nested structures without recursion.
+    prioritized_attribute_names = (
+        "id",
+        "uuid",
+        "item_id",
+        "itemId",
+        "identifier",
+        "pk",
+        "primary_key",
+    )
+
+    queue: Deque[Any] = deque([candidate])
+    seen_identifiers: set[int] = set()
+    while queue:
+        current = queue.popleft()
+        identifier = id(current)
+        if identifier in seen_identifiers:
+            # Avoid looping forever when the structure contains repeated references.
+            continue
+        seen_identifiers.add(identifier)
+
+        if current is None:
+            # Nothing useful to extract.
+            continue
+
+        if isinstance(current, (str, uuid.UUID)):
+            try:
+                return normalize_pg_uuid(current)
+            except (TypeError, ValueError):
+                # The value looked promising but was not a valid UUID.
+                continue
+
+        if isinstance(current, Mapping):
+            # Explore mapping entries with priority given to common identifier keys.
+            for key in prioritized_attribute_names:
+                if key in current and current[key]:
+                    queue.append(current[key])
+            for value in current.values():
+                queue.append(value)
+            continue
+
+        if hasattr(current, "__dict__"):
+            # Many ORM objects expose their identifiers as attributes.
+            for attribute_name in prioritized_attribute_names:
+                if hasattr(current, attribute_name):
+                    queue.append(getattr(current, attribute_name))
+            continue
+
+        if isinstance(current, Sequence) and not isinstance(current, (str, bytes, bytearray)):
+            # Gracefully scan through tuples, lists, and other iterables.
+            queue.extend(list(current))
+            continue
+
+        try:
+            # As a last resort, try converting to a string and normalizing that value.
+            return normalize_pg_uuid(str(current))
+        except (TypeError, ValueError):
+            continue
+
+    return None
+
+
+def are_items_contaiment_chained(first_item: Any, second_item: Any) -> bool:
+    """Return True when ``second_item`` appears in a containment path from ``first_item``."""
+    normalized_first = _coerce_identifier_to_uuid(first_item)
+    if not normalized_first:
+        log.debug("Unable to determine a UUID for the first item; containment chain lookup skipped.")
+        return False
+
+    normalized_second = _coerce_identifier_to_uuid(second_item)
+    if not normalized_second:
+        log.debug("Unable to determine a UUID for the second item; containment chain lookup skipped.")
+        return False
+
+    if normalized_first == normalized_second:
+        # A containment path is only meaningful when referencing two distinct items.
+        return False
+
+    for path_details in fetch_containment_paths(normalized_first):
+        path_candidates = path_details.get("path") or []
+        if normalized_second in path_candidates:
+            return True
+
+    return False
+
