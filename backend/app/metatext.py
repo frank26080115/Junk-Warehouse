@@ -6,10 +6,7 @@ from collections import deque
 
 from nltk.corpus import wordnet
 
-try:
-    from .helpers import deduplicate_preserving_order, split_words
-except ImportError:
-    from helpers import deduplicate_preserving_order, split_words
+from .helpers import deduplicate_preserving_order, split_words
 
 """Utility helpers that expand words into synonym and variant lists."""
 
@@ -216,14 +213,14 @@ def get_word_synonyms(word: str) -> list[str]:
     synonyms.add(word)
     synonyms.update(_generate_wordnet_candidates(word))
     variants.update(synonyms)
-    #variants.update(_generate_plural_candidates(word))
+    variants.update(_generate_plural_candidates(word))
     variants.update(_generate_british_variants(word))
-    #variants.update(_generate_hyphenated_variants(word))
+    variants.update(_generate_hyphenated_variants(word))
     variants.update(_generate_desuffixed_variants(word))
     for s in synonyms:
-        #variants.update(_generate_plural_candidates(s))
+        variants.update(_generate_plural_candidates(s))
         variants.update(_generate_british_variants(s))
-        #variants.update(_generate_hyphenated_variants(s))
+        variants.update(_generate_hyphenated_variants(s))
         variants.update(_generate_desuffixed_variants(s))
     ordered_results: list[str] = deduplicate_preserving_order(list(variants))
     for i in range(len(ordered_results)):
