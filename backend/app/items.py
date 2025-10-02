@@ -16,7 +16,8 @@ from .user_login import login_required
 from .db import get_engine, get_db_item_as_dict, update_db_row_by_dict, unwrap_db_result, get_or_create_session
 from .embeddings import update_embeddings_for_item
 from .slugify import slugify
-from .helpers import normalize_pg_uuid, parse_tagged_text_to_dict
+from .helpers import normalize_pg_uuid, parse_tagged_text_to_dict, clean_item_name
+from .metatext import update_metatext
 from .static_server import get_public_html_path
 from .assoc_helper import (
     CONTAINMENT_BIT,
@@ -455,6 +456,9 @@ def save_item_api():
     except Exception:
         log.exception("for history logging, while calling get_db_item_as_dict for 'before_item'")
 
+    payload["name"] = clean_item_name(payload["name"])
+    payload["metatext"] = update_metatext(payload["metatext"])
+
     try:
         # Fuzzy update: lets the helper map keys without hardcoding column names here
         update_result = update_db_row_by_dict(
@@ -611,6 +615,9 @@ def insert_item(
     for col in list(data):
         if col in DEFAULTABLE_COLUMNS:
             data.pop(col)
+
+    data["name"] = clean_item_name(data["name"])
+    data["metatext"] = update_metatext(data["metatext"])
 
     result = update_db_row_by_dict(
         engine=engine,
