@@ -386,18 +386,46 @@ def move_item(item_identifier: Any, target_container_identifier: Any) -> Dict[st
                     selected_path, existing_container_id, _ = large_candidates[0]
                     deletion_reason = "large_container_path"
 
-    removed_relationship: Optional[Dict[str, Any]] = None
     previous_container: Optional[Dict[str, Any]] = None
+    relationship_snapshot: Optional[Dict[str, Any]] = None
+    relationship_update_result: Optional[Dict[str, Any]] = None
+    unnecessary_move = False
     if selected_path and existing_container_id:
         previous_container = _load_item_dict(existing_container_id)
         relationship = get_item_relationship(normalized_item_id, existing_container_id)
         if relationship and int(relationship.get("assoc_type") or 0) & CONTAINMENT_BIT:
-            try:
-                from .items import delete_item_relationship
-
-                removed_relationship = delete_item_relationship(relationship.get("id"))
-            except Exception:
-                log.exception("move_item: failed to delete containment relationship %s", relationship.get("id"))
+            # Preserve the original relationship details so we can describe what changed.
+            relationship_snapshot = dict(relationship)
+            if existing_container_id == normalized_target_id:
+                # The item is already in the target container, so we note the unnecessary request
+                # but keep the relationship intact.
+                unnecessary_move = True
+                log.debug(
+                    "move_item: attempted to move %s into %s but containment already existed",
+                    normalized_item_id,
+                    normalized_target_id,
+                )
+            else:
+                current_assoc_type = int(relationship.get("assoc_type") or 0)
+                updated_assoc_type = current_assoc_type & ~CONTAINMENT_BIT
+                if updated_assoc_type == current_assoc_type:
+                    # This scenario occurs when the containment bit was not truly present even though
+                    # we reached this branch; we still record the snapshot for completeness.
+                    relationship_update_result = dict(relationship)
+                else:
+                    try:
+                        # Update the relationship so it no longer implies containment, while retaining any
+                        # other association flags that might be present.
+                        relationship_update_result = set_item_relationship(
+                            normalized_item_id,
+                            existing_container_id,
+                            updated_assoc_type,
+                        )
+                    except Exception:
+                        log.exception(
+                            "move_item: failed to clear containment bit for relationship %s",
+                            relationship.get("id"),
+                        )
         else:
             log.debug(
                 "move_item: no containment relationship found between %s and %s",
@@ -435,7 +463,11 @@ def move_item(item_identifier: Any, target_container_identifier: Any) -> Dict[st
     to_descriptor = _format_descriptor(target_container)
     item_descriptor = _format_descriptor(moving_item)
 
-    if removed_relationship:
+    if unnecessary_move:
+        remarks_line = (
+            f"[{timestamp_text}] move to {to_descriptor} requested, but the item was already contained there."
+        )
+    elif relationship_snapshot:
         remarks_line = f"[{timestamp_text}] moved item from {from_descriptor} to {to_descriptor}."
     else:
         remarks_line = f"[{timestamp_text}] moved item to {to_descriptor}."
@@ -458,9 +490,13 @@ def move_item(item_identifier: Any, target_container_identifier: Any) -> Dict[st
 
     history_meta = {
         "item": _extract_slug(moving_item),
-        "from": _extract_slug(previous_container) if removed_relationship else None,
+        "from": _extract_slug(previous_container) if (relationship_snapshot and not unnecessary_move) else None,
         "to": _extract_slug(target_container),
     }
+    if unnecessary_move:
+        history_meta["note"] = "Move request was unnecessary because the item was already in the target container."
+    elif relationship_snapshot:
+        history_meta["note"] = "Cleared containment flag from previous container relationship."
     log_history(
         item_id_1=normalized_item_id,
         item_id_2=normalized_target_id,
@@ -489,7 +525,9 @@ def move_item(item_identifier: Any, target_container_identifier: Any) -> Dict[st
 
     return {
         "ok": True,
-        "deleted_relationship": removed_relationship,
+        "deleted_relationship": relationship_snapshot,
+        "updated_relationship": relationship_update_result,
         "created_relationship": created_relationship,
         "deletion_reason": deletion_reason,
+        "unnecessary_move": unnecessary_move,
     }
