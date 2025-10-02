@@ -782,6 +782,27 @@ def _finalize_invoice_rows(rows: Iterable[Mapping[str, Any]]) -> List[Dict[str, 
     return deduplicate_rows(normalized, key="pk")
 
 
+def search_items_in_items(
+    raw_query: str,
+    target_uuid: Optional[str] = None,
+    context: Any = None,
+    primary_key_column: str = "id",
+    db_session: Optional[Any] = None,
+) -> List[Dict[str, Any]]:
+    raw_query_1, raw_query_2 = raw_query.split("\\\\\\", 1)
+    raw_query_1 = raw_query_1.strip()
+    raw_query_2 = raw_query_2.strip()
+    results_1 = search_items(raw_query_1, target_uuid=target_uuid, context=context, primary_key_column=primary_key_column, db_session=db_session)
+    results_2 = search_items(raw_query_2, target_uuid=target_uuid, context=context, primary_key_column=primary_key_column, db_session=db_session)
+    final_results = []
+    for r1 in results_1:
+        for r2 in results_2:
+            # TODO: fix this call below, import it correctly
+            if are_items_contaiment_chained(r1, r2):
+                final_results.append(r1)
+    return final_results
+
+
 def search_items(
     raw_query: str,
     target_uuid: Optional[str] = None,
@@ -815,6 +836,9 @@ def search_items(
         entry includes a ``pk`` (mirroring ``id``) and a ``slug`` computed via
         :func:`backend.app.slugify.slugify`.
     """
+
+    if "\\\\\\" in raw_query:
+        return search_items_in_items(raw_query, target_uuid=target_uuid, context=context, primary_key_column=primary_key_column, db_session=db_session)
 
     if not (raw_query and raw_query.strip()):
         log.info("search_items: empty query -> returning empty list")
