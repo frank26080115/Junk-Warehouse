@@ -18,7 +18,8 @@ from nltk.corpus import wordnet
 from .db import get_engine, get_db_item_as_dict, get_or_create_session
 from .helpers import deduplicate_preserving_order, split_words, normalize_pg_uuid, levenshtein_match
 from .config_loader import load_app_config
-from ..automation.ai_helpers import EmbeddingAi
+# Use an absolute import because the Flask launcher treats "app" as the root package.
+from automation.ai_helpers import EmbeddingAi
 
 TAG_WORDS_TABLE_NAME = "tag_words"
 
