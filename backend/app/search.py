@@ -21,6 +21,7 @@ from .search_expression import SearchQuery, get_sql_order_and_limit
 from .embeddings import search_items_by_embeddings, EMB_TBL_NAME_PREFIX_ITEMS, EMB_TBL_NAME_PREFIX_CONTAINER
 from .helpers import fuzzy_levenshtein_at_most, normalize_pg_uuid, split_words, to_bool
 from .items import augment_item_dict, get_item_thumbnails
+from .containment_path import are_items_contaiment_chained
 from .metatext import get_word_synonyms
 from .slugify import slugify
 
@@ -32,6 +33,8 @@ from .assoc_helper import MERGE_BIT
 log = logging.getLogger(__name__)
 
 DEFAULT_LIMIT = 50
+
+CONTAINMENT_QUERY_DELIMITER = "\\" * 3
 
 
 def _pin_open_window_hours() -> int:
@@ -782,6 +785,7 @@ def _finalize_invoice_rows(rows: Iterable[Mapping[str, Any]]) -> List[Dict[str, 
     return deduplicate_rows(normalized, key="pk")
 
 
+
 def search_items_in_items(
     raw_query: str,
     target_uuid: Optional[str] = None,
@@ -789,17 +793,78 @@ def search_items_in_items(
     primary_key_column: str = "id",
     db_session: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
-    raw_query_1, raw_query_2 = raw_query.split("\\\\\\", 1)
-    raw_query_1 = raw_query_1.strip()
-    raw_query_2 = raw_query_2.strip()
-    results_1 = search_items(raw_query_1, target_uuid=target_uuid, context=context, primary_key_column=primary_key_column, db_session=db_session)
-    results_2 = search_items(raw_query_2, target_uuid=target_uuid, context=context, primary_key_column=primary_key_column, db_session=db_session)
-    final_results = []
-    for r1 in results_1:
-        for r2 in results_2:
-            # TODO: fix this call below, import it correctly
-            if are_items_contaiment_chained(r1, r2):
-                final_results.append(r1)
+    """Interpret a multi-part query describing items contained within other items."""
+    delimiter = CONTAINMENT_QUERY_DELIMITER
+    normalized_query = (raw_query or "").strip()
+
+    if delimiter not in normalized_query:
+        log.debug(
+            "search_items_in_items: delimiter %r missing; delegating to regular search.",
+            delimiter,
+        )
+        return search_items(
+            normalized_query,
+            target_uuid=target_uuid,
+            context=context,
+            primary_key_column=primary_key_column,
+            db_session=db_session,
+        )
+
+    first_raw, second_raw = normalized_query.split(delimiter, 1)
+    first_query = first_raw.strip()
+    second_query = second_raw.strip()
+
+    if not first_query or not second_query:
+        # Without two meaningful segments there is no containment relationship to evaluate.
+        fallback_query = first_query or second_query
+        if not fallback_query:
+            return _finalize_item_rows([])
+        return search_items(
+            fallback_query,
+            target_uuid=target_uuid,
+            context=context,
+            primary_key_column=primary_key_column,
+            db_session=db_session,
+        )
+
+    # Run the regular item search for each half of the query so we can reuse the
+    # existing ranking, filtering, and augmentation logic.
+    results_1 = search_items(
+        first_query,
+        target_uuid=target_uuid,
+        context=context,
+        primary_key_column=primary_key_column,
+        db_session=db_session,
+    )
+    results_2 = search_items(
+        second_query,
+        target_uuid=target_uuid,
+        context=context,
+        primary_key_column=primary_key_column,
+        db_session=db_session,
+    )
+
+    if not results_1 or not results_2:
+        return []
+
+    final_results: List[Dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    for candidate in results_1:
+        candidate_identifier = str(candidate.get("id") or candidate.get("pk") or "").strip()
+        if not candidate_identifier or candidate_identifier in seen_ids:
+            continue
+
+        for container_candidate in results_2:
+            if not (container_candidate.get("id") or container_candidate.get("pk")):
+                continue
+
+            # Confirm the containment relationship before surfacing the candidate item.
+            if are_items_contaiment_chained(container_candidate, candidate):
+                final_results.append(candidate)
+                seen_ids.add(candidate_identifier)
+                break
+
     return final_results
 
 
