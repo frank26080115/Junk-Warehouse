@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import sys, argparse
+
 from collections import deque
 
 from nltk.corpus import wordnet
 
-from .helpers import deduplicate_preserving_order
+try:
+    from .helpers import deduplicate_preserving_order, split_words
+except ImportError:
+    from helpers import deduplicate_preserving_order, split_words
 
 """Utility helpers that expand words into synonym and variant lists."""
 
@@ -93,7 +98,8 @@ def _generate_wordnet_candidates(word: str) -> set[str]:
 
     try:
         synsets = wordnet.synsets(word)
-    except LookupError:
+    except LookupError as ex:
+        print(f"LookupError {ex!r}")
         # When the WordNet corpus is unavailable the helper gracefully
         # degrades to morphological transformations only.
         return candidates
@@ -166,14 +172,34 @@ def _generate_hyphenated_variants(word: str) -> set[str]:
     return candidates
 
 
+def _generate_desuffixed_variants(word: str) -> set[str]:
+    """Create hyphenated and de-hyphenated variants for the supplied word."""
+
+    lower_word = word.lower()
+    candidates: set[str] = set()
+
+    if "-" in lower_word:
+        candidates.add(lower_word.replace("-", ""))
+    for suffix in HYPHENATABLE_SUFFIXES:
+        if lower_word.endswith(suffix) and len(lower_word) > len(suffix) + 1:
+            prefix = lower_word[: -len(suffix)]
+            candidates.add(prefix)
+            if prefix.endswith('s'):
+                prefix = prefix[0:-1]
+                candidates.add(prefix)
+
+    return candidates
+
+
 def _collect_direct_variants(word: str) -> set[str]:
     """Collect one-hop variants that feed the recursive synonym expansion."""
 
     variants: set[str] = set()
     variants.update(_generate_wordnet_candidates(word))
-    variants.update(_generate_plural_candidates(word))
+    #variants.update(_generate_plural_candidates(word))
     variants.update(_generate_british_variants(word))
-    variants.update(_generate_hyphenated_variants(word))
+    #variants.update(_generate_hyphenated_variants(word))
+    variants.update(_generate_desuffixed_variants(word))
 
     return {variant for variant in variants if variant}
 
@@ -185,33 +211,32 @@ def get_word_synonyms(word: str) -> list[str]:
     if not cleaned:
         return []
 
-    queue = deque([cleaned])
-    seen: set[str] = set()
-    ordered_results: list[str] = []
-
-    # Breadth-first traversal keeps the results ordered by discovery while still
-    # allowing synonym-of-synonym relationships to be explored.
-
-    while queue:
-        current = queue.popleft()
-        canonical = current.lower()
-        if canonical in seen:
-            continue
-
-        seen.add(canonical)
-        ordered_results.append(current)
-
-        for candidate in _collect_direct_variants(current):
-            # Queue up fresh candidates so the while loop can recursively explore
-            # their neighbours on subsequent iterations.
-            if candidate.lower() not in seen:
-                queue.append(candidate)
+    synonyms: set[str] = set()
+    variants: set[str] = set()
+    synonyms.add(word)
+    synonyms.update(_generate_wordnet_candidates(word))
+    variants.update(synonyms)
+    #variants.update(_generate_plural_candidates(word))
+    variants.update(_generate_british_variants(word))
+    #variants.update(_generate_hyphenated_variants(word))
+    variants.update(_generate_desuffixed_variants(word))
+    for s in synonyms:
+        #variants.update(_generate_plural_candidates(s))
+        variants.update(_generate_british_variants(s))
+        #variants.update(_generate_hyphenated_variants(s))
+        variants.update(_generate_desuffixed_variants(s))
+    ordered_results: list[str] = deduplicate_preserving_order(list(variants))
+    for i in range(len(ordered_results)):
+        ordered_results[i] = ordered_results[i].replace(' ', '-')
 
     return deduplicate_preserving_order(ordered_results)
 
 
-def get_synonyms_for_words(words: list[str]) -> list[str]:
+def get_synonyms_for_words(words: Union[list[str], str]) -> list[str]:
     """Expand each word in ``words`` and return a combined de-duplicated list."""
+
+    if isinstance(words, str):
+        words = split_words(words)
 
     expanded: list[str] = []
     for word in words:
@@ -219,3 +244,15 @@ def get_synonyms_for_words(words: list[str]) -> list[str]:
         expanded.extend(get_word_synonyms(word))
 
     return deduplicate_preserving_order(expanded)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Test the word synonym exploder")
+    parser.add_argument("string")
+    args = parser.parse_args()
+    lst = split_words(args.string)
+    for i in lst:
+        print(f"WORD: {i}")
+        s = get_word_synonyms(i)
+        for j in s:
+            print(f"\t{j}")

@@ -73,7 +73,7 @@ def deduplicate_preserving_order(value: Any) -> Any:
                 continue
 
             seen_keys.append(key)
-            ordered_items.append(item)
+            ordered_items.append(item.lower())
 
         return ordered_items
 
