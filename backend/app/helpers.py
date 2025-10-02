@@ -3,6 +3,8 @@ from __future__ import annotations
 import html as _html
 import re
 import unicodedata
+from collections.abc import Hashable
+
 from typing import Any, Union, Mapping
 import uuid
 
@@ -17,7 +19,6 @@ DOM_WHITESPACE_NORMALIZATION_PATTERN = re.compile(r"\s+")
 # invoice text. We normalize these to ordinary spaces to avoid accidental word
 # concatenation when the sanitized text is consumed downstream.
 DOM_NON_BREAKING_SPACE_CHARACTERS = ("\u00A0", "\u202F")
-
 
 # Canonical list of hyphen characters that appear in scraped or user provided
 # data. They should behave the same as an ASCII hyphen when splitting words,
@@ -35,6 +36,48 @@ WORD_SPLIT_HYPHEN_EQUIVALENTS = (
     '﹣',  # Small hyphen-minus
     '－',  # Fullwidth hyphen-minus
 )
+
+
+def deduplicate_preserving_order(value: Any) -> Any:
+    """Return ``value`` with duplicates removed while preserving the first occurrence."""
+
+    if isinstance(value, str):
+        seen_characters: set[str] = set()
+        ordered_characters: list[str] = []
+
+        for character in value:
+            canonical_character = character.lower()
+            if canonical_character in seen_characters:
+                continue
+
+            seen_characters.add(canonical_character)
+            ordered_characters.append(character)
+
+        return ''.join(ordered_characters)
+
+    if isinstance(value, list):
+        ordered_items: list[Any] = []
+        seen_keys: list[Any] = []
+
+        # Maintain a parallel list of canonical keys so that unhashable
+        # objects can still be compared without raising ``TypeError``.
+        for item in value:
+            if isinstance(item, str):
+                key: Any = item.lower()
+            elif isinstance(item, Hashable):
+                key = item
+            else:
+                key = repr(item)
+
+            if any(existing_key == key for existing_key in seen_keys):
+                continue
+
+            seen_keys.append(key)
+            ordered_items.append(item.lower())
+
+        return ordered_items
+
+    return value
 
 
 def split_words(value: str | None) -> list[str]:
@@ -115,7 +158,6 @@ def split_words(value: str | None) -> list[str]:
     return terms
 
 
-
 def clean_dom_text_fragment(fragment: str) -> str:
     """Return a whitespace-normalized version of a raw DOM text fragment.
 
@@ -186,6 +228,7 @@ def lxml_cell_text(node: etree._Element) -> str:
     normalized_text = DOM_WHITESPACE_NORMALIZATION_PATTERN.sub(" ", joined_text).strip()
     return normalized_text
 
+
 def normalize_pg_uuid(s) -> str:
     """
     Normalize an input string into a PostgreSQL UUID (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx).
@@ -229,6 +272,7 @@ def normalize_pg_uuid(s) -> str:
     cleaned = cleaned.lower()
     return str(uuid.UUID(f"{cleaned[0:8]}-{cleaned[8:12]}-{cleaned[12:16]}-{cleaned[16:20]}-{cleaned[20:32]}"))
 
+
 def to_bool(value: Any) -> bool:
     """Convert loose truthy and falsey values into a strict bool."""
     # Strings get special handling so user-supplied query parameters behave predictably.
@@ -242,6 +286,7 @@ def to_bool(value: Any) -> bool:
             return False
     # Fallback to Python's general truthiness rules for everything else.
     return bool(value)
+
 
 def sanitize_html_for_pg(
     value: Union[str, bytes, Any],
@@ -323,6 +368,7 @@ def sanitize_html_for_pg(
         # Return a single-quoted SQL literal with proper escaping for Postgres.
         # Standard-conforming strings are on by default; double single quotes.
         return "'" + text.replace("'", "''") + "'"
+
 
 import base64
 from typing import Union, Tuple
@@ -612,6 +658,7 @@ def to_timestamptz(
         iso = iso[:-6] + "Z"
     return iso
 
+
 import difflib
 
 def fuzzy_word_list_match(words, user_input):
@@ -635,6 +682,7 @@ def fuzzy_word_list_match(words, user_input):
     best_match = matches[0]
     index = words.index(best_match)
     return best_match, index
+
 
 def parse_tagged_text_to_dict(text: str, required_key: str = "name", def_req_val: str = "(no name)", acceptable_keys: list[str] | None = None) -> dict[str, str]:
     """
@@ -719,6 +767,7 @@ def parse_tagged_text_to_dict(text: str, required_key: str = "name", def_req_val
 
     return result
 
+
 def dict_to_tagged_text(
     d: dict[str, str],
     inline_threshold: int = 30,
@@ -785,4 +834,3 @@ def dict_to_tagged_text(
             # Preserve the original value text (including intentional spaces or newlines)
             parts.append(value_text)
     return chr(10).join(parts)  # Emit consistent LF separators so the parser can reliably split sections
-
