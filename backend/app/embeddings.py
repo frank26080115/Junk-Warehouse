@@ -16,7 +16,8 @@ from .db import get_engine, get_db_item_as_dict, get_or_create_session
 from .assoc_helper import CONTAINMENT_BIT
 from .helpers import normalize_pg_uuid
 from .search_expression import SearchQuery, get_sql_order_and_limit
-from ..automation.ai_helpers import EmbeddingAi
+# Use an absolute import because the Flask launcher treats "app" as the root package.
+from automation.ai_helpers import EmbeddingAi
 from .containment_path import get_all_containments
 
 log = logging.getLogger(__name__)
@@ -119,7 +120,7 @@ def ensure_embeddings_table_exists(tbl_prefix: str = EMB_TBL_NAME_PREFIX_ITEMS, 
     vec public.vector({dimensions}),
     date_updated timestamp with time zone DEFAULT now() NOT NULL
 );""",
-        f"CREATE INDEX idx_{table_name}_vec ON public.{table_name} USING ivfflat (vec public.vector_cosine_ops) WITH (lists='100');",
+        f"CREATE INDEX idx_{table_name}_vec ON public.{table_name} USING hnsw (vec public.vector_cosine_ops);",
         f"""ALTER TABLE ONLY public.{table_name}
     ADD CONSTRAINT {table_name}_pkey PRIMARY KEY (item_id);""",
         f"""ALTER TABLE ONLY public.{table_name}

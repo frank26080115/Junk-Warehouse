@@ -19,8 +19,9 @@ from .db import (
 )
 from .search_expression import SearchQuery, get_sql_order_and_limit
 from .embeddings import search_items_by_embeddings, EMB_TBL_NAME_PREFIX_ITEMS, EMB_TBL_NAME_PREFIX_CONTAINER
-from .helpers import fuzzy_levenshtein_at_most, normalize_pg_uuid, to_bool
+from .helpers import fuzzy_levenshtein_at_most, normalize_pg_uuid, split_words, to_bool
 from .items import augment_item_dict, get_item_thumbnails
+from .metatext import get_word_synonyms
 from .slugify import slugify
 
 from sqlalchemy import bindparam, text
@@ -606,6 +607,117 @@ def _execute_text_search_query(
     return session.execute(base_sql, sql_params).mappings().all()
 
 
+def _execute_metatext_search(
+    session: Any,
+    search_query: SearchQuery,
+    query_text: str,
+    *,
+    default_table: str,
+    default_alias: str,
+    select_template: Optional[str] = None,
+    default_order_templates: Optional[Iterable[str]] = None,
+    default_limit: int = DEFAULT_LIMIT,
+) -> List[Mapping[str, Any]]:
+    """Execute a metatext search that requires synonym matches for every word."""
+
+    # Prepare a normalized set of words while preserving their original intent.
+    normalized_query = (query_text or "").strip()
+    words = split_words(normalized_query)
+    if not words:
+        # Without any searchable words the metatext clause would become meaningless.
+        return []
+
+    criteria = search_query.get_sql_conditionals()
+    table_name = criteria.get("table", default_table)
+    alias = criteria.get("table_alias") or default_alias
+    select_clause = (select_template or "{alias}.*").format(alias=alias)
+
+    where_clauses: List[str] = []
+    touched_columns = criteria.get("touched_columns") or set()
+    if "is_deleted" not in touched_columns:
+        # Ensure soft-deleted rows stay hidden unless an upstream filter already did so.
+        where_clauses.append(f"NOT {alias}.is_deleted")
+    for condition in criteria.get("where", []):
+        if condition:
+            where_clauses.append(condition)
+
+    meta_params: Dict[str, Any] = {}
+    matched_groups = 0
+    for word_index, word in enumerate(words):
+        # Expand each word into a carefully de-duplicated synonym list.
+        seen_variants: set[str] = set()
+        variants: List[str] = []
+        for candidate in get_word_synonyms(word):
+            candidate_text = candidate.strip()
+            if not candidate_text:
+                continue
+            dedup_key = candidate_text.casefold()
+            if dedup_key in seen_variants:
+                continue
+            seen_variants.add(dedup_key)
+            variants.append(candidate_text)
+
+        if not variants:
+            # If no variants survived the cleanup phase we cannot guarantee a match.
+            continue
+
+        clause_parts: List[str] = []
+        for variant_index, variant in enumerate(variants):
+            param_name = f"meta_word_{word_index}_{variant_index}"
+            clause_parts.append(f"{alias}.metatext ILIKE :{param_name}")
+            meta_params[param_name] = f"%{variant}%"
+
+        if clause_parts:
+            or_clause = " OR ".join(clause_parts)
+            where_clauses.append(f"({or_clause})")
+            matched_groups += 1
+
+    if matched_groups == 0:
+        # No usable clauses were generated, so return early to avoid a cartesian search.
+        return []
+
+    order_by_clauses, limit_value, offset_value = get_sql_order_and_limit(
+        criteria,
+        alias=alias,
+        use_textsearch=False,
+        rank_expression=None,
+        default_order_templates=default_order_templates,
+        default_limit=default_limit,
+    )
+
+    sql_lines = [
+        "SELECT",
+        f"    {select_clause}",
+        f"FROM {table_name} AS {alias}",
+    ]
+    if where_clauses:
+        sql_lines.append("WHERE")
+        sql_lines.append(f"    {where_clauses[0]}")
+        for condition in where_clauses[1:]:
+            sql_lines.append(f"    AND {condition}")
+    if order_by_clauses:
+        sql_lines.append("ORDER BY")
+        for idx, clause in enumerate(order_by_clauses):
+            prefix = "    " if idx == 0 else "    , "
+            sql_lines.append(f"{prefix}{clause}")
+    if limit_value is not None:
+        sql_lines.append("LIMIT :limit")
+    if offset_value:
+        sql_lines.append("OFFSET :offset")
+
+    base_sql = text("".join(sql_lines))
+
+    sql_params: Dict[str, Any] = dict(criteria.get("params", {}))
+    if limit_value is not None:
+        sql_params["limit"] = limit_value
+    if offset_value:
+        sql_params["offset"] = offset_value
+    sql_params.update(meta_params)
+
+    # Run the composed SQL and return a mapping-based result set just like other search helpers.
+    return session.execute(base_sql, sql_params).mappings().all()
+
+
 def _finalize_item_rows(rows: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
     """Normalize search results with required metadata.
 
@@ -668,9 +780,6 @@ def _finalize_invoice_rows(rows: Iterable[Mapping[str, Any]]) -> List[Dict[str, 
         return normalized
 
     return deduplicate_rows(normalized, key="pk")
-
-
-
 
 
 def search_items(
@@ -824,14 +933,25 @@ def search_items(
             # standard text-search results without complicating the SQL builder.
             merge_ready_ids = _collect_merge_ready_item_ids(session)
 
-        rows = _execute_text_search_query(
-            session,
-            sq,
-            query_text,
-            default_table="items",
-            default_alias="i",
-            default_order_templates=["{alias}.date_last_modified {direction}"],
-        )
+        if sq.has_directive("meta"):
+            # Perform a synonym-aware metatext search that insists on matching each word.
+            rows = _execute_metatext_search(
+                session,
+                sq,
+                query_text,
+                default_table="items",
+                default_alias="i",
+                default_order_templates=["{alias}.date_last_modified {direction}"],
+            )
+        else:
+            rows = _execute_text_search_query(
+                session,
+                sq,
+                query_text,
+                default_table="items",
+                default_alias="i",
+                default_order_templates=["{alias}.date_last_modified {direction}"],
+            )
 
         for row in rows:
             row_dict = dict(row)

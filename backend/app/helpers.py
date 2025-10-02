@@ -3,6 +3,8 @@ from __future__ import annotations
 import html as _html
 import re
 import unicodedata
+from collections.abc import Hashable
+
 from typing import Any, Union, Mapping
 import uuid
 
@@ -17,6 +19,145 @@ DOM_WHITESPACE_NORMALIZATION_PATTERN = re.compile(r"\s+")
 # invoice text. We normalize these to ordinary spaces to avoid accidental word
 # concatenation when the sanitized text is consumed downstream.
 DOM_NON_BREAKING_SPACE_CHARACTERS = ("\u00A0", "\u202F")
+
+# Canonical list of hyphen characters that appear in scraped or user provided
+# data. They should behave the same as an ASCII hyphen when splitting words,
+# so we normalize them before performing any downstream token operations.
+WORD_SPLIT_HYPHEN_EQUIVALENTS = (
+    '-',
+    '‐',  # Hyphen
+    '‑',  # Non-breaking hyphen
+    '‒',  # Figure dash
+    '–',  # En dash
+    '—',  # Em dash
+    '―',  # Horizontal bar
+    '−',  # Minus sign often used in PDF text
+    '﹘',  # Small em dash found in East Asian typography
+    '﹣',  # Small hyphen-minus
+    '－',  # Fullwidth hyphen-minus
+)
+
+
+def deduplicate_preserving_order(value: list, lev_limit: int = -1) -> Any:
+    """Return ``value`` with duplicates removed while preserving the first occurrence."""
+
+    ordered_items: list[Any] = []
+    seen_keys: list[Any] = []
+
+    # Maintain a parallel list of canonical keys so that unhashable
+    # objects can still be compared without raising ``TypeError``.
+    for item in value:
+        if isinstance(item, str):
+            key: Any = item.lower()
+        elif isinstance(item, Hashable):
+            key = item
+        else:
+            # Fall back to a deterministic representation so that
+            # repeated objects compare predictably even when they are
+            # unhashable (for example, dictionaries or lists).
+            key = repr(item)
+
+        duplicate_found = False
+        if lev_limit < 0:
+            duplicate_found = any(existing_key == key for existing_key in seen_keys)
+        else:
+            for existing_key in seen_keys:
+                if isinstance(existing_key, str) and isinstance(key, str):
+                    if levenshtein_match(existing_key, key, limit=lev_limit):
+                        duplicate_found = True
+                        break
+                elif existing_key == key:
+                    duplicate_found = True
+                    break
+
+        if duplicate_found:
+            continue
+
+        seen_keys.append(key)
+        if isinstance(item, str):
+            ordered_items.append(item.lower())
+        else:
+            ordered_items.append(item)
+
+    return ordered_items
+
+
+def split_words(value: str | None) -> list[str]:
+    """Return normalized, lowercase word fragments extracted from ``value``.
+
+    The splitter treats whitespace and most punctuation as token boundaries
+    while preserving apostrophes along with the assorted hyphen characters in
+    :data:`WORD_SPLIT_HYPHEN_EQUIVALENTS`. Underscores are rewritten as
+    hyphens, and any run of multiple hyphens is collapsed to a single hyphen
+    so the caller never receives values containing ``--``.
+    """
+
+    if value is None:
+        return []
+
+    if not isinstance(value, str):
+        # Fall back to the string representation when non-string types are
+        # provided. This mirrors typical logging and serialization helpers
+        # throughout the codebase and keeps the function broadly usable.
+        value = str(value)
+
+    terms: list[str] = []
+    active_characters: list[str] = []
+
+    def _emit_active_token() -> None:
+        """Finalize the active characters into a cleaned token."""
+        if not active_characters:
+            return
+
+        raw_token = ''.join(active_characters).lower()
+        active_characters.clear()
+
+        # Ensure underscores are converted to hyphens and remove any
+        # accidental double hyphen sequences that could have resulted from
+        # consecutive separator characters in the source text.
+        normalized_token = raw_token.replace('_', '-')
+        normalized_token = re.sub(r'-{2,}', '-', normalized_token)
+
+        if normalized_token:
+            terms.append(normalized_token)
+
+    for character in value:
+        if character.isspace():
+            _emit_active_token()
+            continue
+
+        unicode_category = unicodedata.category(character)
+
+        if unicode_category.startswith('P'):
+            if character == "'":
+                active_characters.append(character)
+                continue
+
+            if character == '_':
+                active_characters.append('-')
+                continue
+
+            if character in WORD_SPLIT_HYPHEN_EQUIVALENTS:
+                # Normalize all supported hyphen variants so downstream
+                # callers do not need to handle every Unicode code point.
+                active_characters.append('-')
+                continue
+
+            _emit_active_token()
+            continue
+
+        if unicode_category.startswith('S'):
+            # Symbol characters (currency marks, math operators, etc.) are
+            # treated as hard boundaries because they rarely participate in
+            # semantic word tokens.
+            _emit_active_token()
+            continue
+
+        active_characters.append(character)
+
+    _emit_active_token()
+
+    return terms
 
 
 def clean_dom_text_fragment(fragment: str) -> str:
@@ -54,6 +195,42 @@ def clean_dom_text_fragment(fragment: str) -> str:
     return "".join(sanitized_characters)
 
 
+def clean_item_name(input: str | None) -> str:
+    """Return a cleaned item name suitable for display and storage."""
+
+    if input is None:
+        return ""
+
+    # Convert the incoming value to text so that callers can pass objects
+    # such as ``lxml`` nodes without needing to coerce them manually.
+    text_value = str(input)
+
+    # Reuse the DOM fragment cleaner so that invisible characters and
+    # high-order Unicode spacing are normalized consistently with other
+    # scraping utilities in the codebase.
+    cleaned = clean_dom_text_fragment(text_value)
+
+    # Replace characters that frequently appear in scraped headings but
+    # should not show up in the normalized item name. Angle brackets are
+    # rewritten to square brackets to avoid implying HTML tags.
+    substitutions = {
+        "?": " ",
+        "\t": " ",
+        "\\": " ",
+        ">": "]",
+        "<": "[",
+    }
+    for needle, replacement in substitutions.items():
+        cleaned = cleaned.replace(needle, replacement)
+
+    # Collapse repeated whitespace so that the result renders cleanly in
+    # UIs and database exports without surprising gaps.
+    while "  " in cleaned:
+        cleaned = cleaned.replace("  ", " ")
+
+    return cleaned.strip()
+
+
 def lxml_cell_text(node: etree._Element) -> str:
     """Produce human-friendly text content for the provided lxml element.
 
@@ -88,6 +265,7 @@ def lxml_cell_text(node: etree._Element) -> str:
     joined_text = " ".join(text_segments)
     normalized_text = DOM_WHITESPACE_NORMALIZATION_PATTERN.sub(" ", joined_text).strip()
     return normalized_text
+
 
 def normalize_pg_uuid(s) -> str:
     """
@@ -132,6 +310,7 @@ def normalize_pg_uuid(s) -> str:
     cleaned = cleaned.lower()
     return str(uuid.UUID(f"{cleaned[0:8]}-{cleaned[8:12]}-{cleaned[12:16]}-{cleaned[16:20]}-{cleaned[20:32]}"))
 
+
 def to_bool(value: Any) -> bool:
     """Convert loose truthy and falsey values into a strict bool."""
     # Strings get special handling so user-supplied query parameters behave predictably.
@@ -145,6 +324,7 @@ def to_bool(value: Any) -> bool:
             return False
     # Fallback to Python's general truthiness rules for everything else.
     return bool(value)
+
 
 def sanitize_html_for_pg(
     value: Union[str, bytes, Any],
@@ -227,6 +407,7 @@ def sanitize_html_for_pg(
         # Standard-conforming strings are on by default; double single quotes.
         return "'" + text.replace("'", "''") + "'"
 
+
 import base64
 from typing import Union, Tuple
 
@@ -300,6 +481,11 @@ def fuzzy_levenshtein_at_most(a: str, b: str, limit: int = 2) -> int:
             return limit + 1
         prev = cur
     return prev[-1]
+
+
+def levenshtein_match(a: str, b: str, limit: int = 2) -> bool:
+    x = fuzzy_levenshtein_at_most(a, b, limit=limit)
+    return x <= limit
 
 
 def fuzzy_apply_fuzzy_keys(data: dict[str, Any], columns: set[str], table_name: str, limit: int = 2) -> dict[str, Any]:
@@ -515,6 +701,7 @@ def to_timestamptz(
         iso = iso[:-6] + "Z"
     return iso
 
+
 import difflib
 
 def fuzzy_word_list_match(words, user_input):
@@ -538,6 +725,7 @@ def fuzzy_word_list_match(words, user_input):
     best_match = matches[0]
     index = words.index(best_match)
     return best_match, index
+
 
 def parse_tagged_text_to_dict(text: str, required_key: str = "name", def_req_val: str = "(no name)", acceptable_keys: list[str] | None = None) -> dict[str, str]:
     """
@@ -622,6 +810,7 @@ def parse_tagged_text_to_dict(text: str, required_key: str = "name", def_req_val
 
     return result
 
+
 def dict_to_tagged_text(
     d: dict[str, str],
     inline_threshold: int = 30,
@@ -688,4 +877,3 @@ def dict_to_tagged_text(
             # Preserve the original value text (including intentional spaces or newlines)
             parts.append(value_text)
     return chr(10).join(parts)  # Emit consistent LF separators so the parser can reliably split sections
-
