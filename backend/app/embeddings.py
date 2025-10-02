@@ -16,7 +16,8 @@ from .db import get_engine, get_db_item_as_dict, get_or_create_session
 from .assoc_helper import CONTAINMENT_BIT
 from .helpers import normalize_pg_uuid
 from .search_expression import SearchQuery, get_sql_order_and_limit
-from ..automation.ai_helpers import EmbeddingAi
+# Use an absolute import because the Flask launcher treats "app" as the root package.
+from automation.ai_helpers import EmbeddingAi
 from .containment_path import get_all_containments
 
 log = logging.getLogger(__name__)
