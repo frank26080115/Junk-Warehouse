@@ -208,6 +208,7 @@ def get_openai_client():
         )
     return OpenAI(api_key=api_key)
 
+
 class LlmAi(object):
     def __init__(self, model: str):
         self.model = model
@@ -333,8 +334,11 @@ def _ensure_vec(x, dimensions: int):
     return out
 
 
+loaded_st = {} # contains loaded models so they are not reloaded all the time
+
 class EmbeddingAi(object):
     def __init__(self, model: str = "offline"):
+        global loaded_st
         self.model = model
         self.appconfig = load_app_config()
 
@@ -346,7 +350,11 @@ class EmbeddingAi(object):
         elif self.model == "offline":
             self.is_online = False
             self.model = self.appconfig["emb_model_offline"]
-            self.st = SentenceTransformer(self.model)
+            if self.model in loaded_st:
+                self.st = loaded_st[self.model]
+            else:
+                self.st = SentenceTransformer(self.model)
+                loaded_st[self.model] = self.st
         else:
             # When a concrete model name is supplied, infer whether it is an online or offline option
             # and initialize the appropriate client lazily so downstream calls operate consistently.
@@ -354,7 +362,11 @@ class EmbeddingAi(object):
             if self.is_online:
                 self.client = get_openai_client()
             else:
-                self.st = SentenceTransformer(self.model)
+                if self.model in loaded_st:
+                    self.st = loaded_st[self.model]
+                else:
+                    self.st = SentenceTransformer(self.model)
+                    loaded_st[self.model] = self.st
 
         self.dimensions = get_embedding_dim_for_model(self.model)
         if self.dimensions is None and not self.is_online:
