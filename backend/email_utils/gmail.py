@@ -6,10 +6,18 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import sys
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
+
+# We need the project root on sys.path so that absolute imports work when the
+# file is executed directly from different directories.
+_CURRENT_FILE = Path(__file__).resolve()
+_PROJECT_ROOT = _CURRENT_FILE.parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 from sqlalchemy import text
 
@@ -20,6 +28,7 @@ from app.helpers import normalize_pg_uuid
 from .email_helper import EmailChecker
 
 log = logging.getLogger(__name__)
+log.setLevel(logging.DEBUG)
 
 
 class GmailChecker(EmailChecker):
@@ -28,16 +37,22 @@ class GmailChecker(EmailChecker):
     @staticmethod
     def _gmail_token_path() -> Path:
         """Resolve the Gmail OAuth token cache location."""
+        log.debug("Attempting to determine Gmail token path using private directory preference.")
         private_dir = get_private_dir_path()
         if private_dir is not None:
-            return Path(private_dir) / "gmail_token.json"
-        return EmailChecker.secrets_path().with_name("gmail_token.json")
+            token_path = Path(private_dir) / "gmail_token.json"
+            log.debug("Using private directory for Gmail token path: %s", token_path)
+            return token_path
+        fallback = EmailChecker.secrets_path().with_name("gmail_token.json")
+        log.debug("Falling back to secrets directory for Gmail token path: %s", fallback)
+        return fallback
 
     @staticmethod
     def _load_gmail_token() -> Optional[Dict[str, Any]]:
         """Load cached Gmail OAuth details from disk or secrets.json."""
         token_path = GmailChecker._gmail_token_path()
         if token_path.exists():
+            log.debug("Loading Gmail OAuth token information from %s", token_path)
             raw_token = token_path.read_text(encoding="utf-8")
             try:
                 token_data = json.loads(raw_token)
@@ -48,10 +63,13 @@ class GmailChecker(EmailChecker):
             if not isinstance(token_data, dict):
                 raise ValueError("gmail_token.json must contain a JSON object with OAuth credentials")
             return token_data
+        log.debug("Gmail token file missing; attempting to load token from secrets.json")
         secrets = EmailChecker.load_secrets()
         token = secrets.get("gmail_api_token")
         if isinstance(token, dict):
+            log.debug("Loaded Gmail OAuth token information from secrets configuration.")
             return token
+        log.debug("Gmail OAuth token was not present in configuration.")
         return None
 
     @staticmethod
@@ -60,9 +78,11 @@ class GmailChecker(EmailChecker):
         try:
             token_path = GmailChecker._gmail_token_path()
             if token_path.exists():
+                log.debug("Gmail token file %s found; Gmail is configured.", token_path)
                 return True
             secrets = EmailChecker.load_secrets()
             token = secrets.get("gmail_api_token")
+            log.debug("Gmail token file missing; checking secrets configuration presence: %s", bool(token))
             return isinstance(token, dict) and bool(token)
         except Exception:
             log.exception("Error while checking Gmail configuration; assuming Gmail is unavailable.")
@@ -75,6 +95,7 @@ class GmailChecker(EmailChecker):
         if not token_info:
             raise RuntimeError("Gmail credentials are not configured.")
         token_path = GmailChecker._gmail_token_path()
+        log.debug("Building Gmail API client using token information. Persist path: %s", token_path)
         try:
             from google.auth.transport.requests import Request
             from google.oauth2.credentials import Credentials
@@ -85,12 +106,15 @@ class GmailChecker(EmailChecker):
         creds = Credentials.from_authorized_user_info(token_info, scopes=scopes)
         persist_token = not token_path.exists()
         if not creds.valid:
+            log.debug("Gmail credentials invalid; attempting refresh. Expired=%s", creds.expired)
             if creds.expired and creds.refresh_token:
                 creds.refresh(Request())
             persist_token = True
         if persist_token:
             token_path.parent.mkdir(parents=True, exist_ok=True)
             token_path.write_text(creds.to_json(), encoding="utf-8")
+            log.debug("Persisted refreshed Gmail credentials to %s", token_path)
+        log.debug("Successfully built Gmail API client.")
         return build("gmail", "v1", credentials=creds)
 
     @staticmethod
@@ -100,7 +124,9 @@ class GmailChecker(EmailChecker):
         try:
             with engine.connect() as conn:
                 result = conn.execute(text("SELECT email_uuid FROM gmail_seen"))
-                return [str(row[0]) for row in result if row[0] is not None]
+                seen_ids = [str(row[0]) for row in result if row[0] is not None]
+                log.debug("Loaded %d previously seen Gmail message identifiers.", len(seen_ids))
+                return seen_ids
         except Exception:
             log.exception("Failed to load gmail_seen entries; treating as empty set")
             return []
@@ -108,6 +134,7 @@ class GmailChecker(EmailChecker):
     @staticmethod
     def _normalize_gmail_id(message_id: Optional[str]) -> Optional[str]:
         """Convert Gmail message identifiers into canonical UUID format when possible."""
+        log.debug("Normalizing Gmail message id: %s", message_id)
         if not message_id:
             return message_id
         cleaned = message_id.strip()
@@ -131,7 +158,9 @@ class GmailChecker(EmailChecker):
         query_parts.append("in:inbox")
         query_parts.append(f"newer_than:{days}d")
         query_parts.append(f"after:{after_date}")
-        return " ".join(query_parts)
+        query = " ".join(query_parts)
+        log.debug("Constructed Gmail query for %d day lookback: %s", days, query)
+        return query
 
     @staticmethod
     def list_message_ids(service: Any, query: str, max_page: int = 10) -> List[str]:
@@ -139,6 +168,7 @@ class GmailChecker(EmailChecker):
         message_ids: List[str] = []
         request = service.users().messages().list(userId="me", q=query, maxResults=100)
         page_count = 0
+        log.debug("Starting Gmail message listing for query %s with max_page=%d", query, max_page)
         while request is not None and page_count < max_page:
             response = request.execute()
             message_ids.extend([
@@ -151,11 +181,14 @@ class GmailChecker(EmailChecker):
                 previous_response=response,
             )
             page_count += 1
+            log.debug("Processed Gmail message page %d; cumulative ids=%d", page_count, len(message_ids))
+        log.debug("Completed Gmail message listing; total ids collected=%d", len(message_ids))
         return message_ids
 
     @staticmethod
     def get_full_message(service: Any, message_id: str) -> Dict[str, Any]:
         """Fetch the full Gmail message resource for downstream processing."""
+        log.debug("Fetching full Gmail message for id %s", message_id)
         return service.users().messages().get(userId="me", id=message_id, format="full").execute()
 
     @staticmethod
@@ -163,6 +196,7 @@ class GmailChecker(EmailChecker):
         """Decode a MIME part body using the Gmail base64 encoding."""
         data = part.get("body", {}).get("data")
         if not data:
+            log.debug("Encountered MIME part without data; returning empty string.")
             return ""
         try:
             raw_bytes = base64.urlsafe_b64decode(data.encode("utf-8"))
@@ -177,6 +211,7 @@ class GmailChecker(EmailChecker):
     @staticmethod
     def _extract_text_content(payload: Dict[str, Any]) -> Dict[str, str]:
         """Extract plain text and HTML content from the Gmail payload structure."""
+        log.debug("Extracting text content from payload with mimeType=%s", payload.get("mimeType"))
         if not payload:
             return {"text": "", "html": ""}
         mime_type = payload.get("mimeType", "")
@@ -200,12 +235,14 @@ class GmailChecker(EmailChecker):
                     text_content = nested.get("text", "")
                 if not html_content:
                     html_content = nested.get("html", "")
+        log.debug("Extracted text length=%d html length=%d", len(text_content), len(html_content))
         return {"text": text_content, "html": html_content}
 
 
     @staticmethod
     def _handle_gmail_message(msg: Dict[str, Any]) -> Dict[str, Any]:
         """Process a Gmail API message and create or update invoice rows."""
+        log.debug("Handling Gmail message with id %s", msg.get("id"))
         headers = {
             h.get("name", "").lower(): h.get("value", "")
             for h in msg.get("payload", {}).get("headers", [])
@@ -251,7 +288,19 @@ class GmailChecker(EmailChecker):
                 message_id,
                 gmail_message,
             )
+        else:
+            log.debug(
+                "Inserted gmail_seen row for message %s with status %s",
+                message_id,
+                gmail_status,
+            )
         invoice_id = ingestion.get("invoice_id")
+        log.debug(
+            "Finished handling Gmail message %s: normalized=%s, invoice_id=%s",
+            message_id,
+            normalized_id,
+            invoice_id,
+        )
         return {
             "message_id": message_id,
             "normalized_id": normalized_id,
@@ -266,7 +315,9 @@ class GmailChecker(EmailChecker):
     @staticmethod
     def check_email() -> Dict[str, Any]:
         """Poll Gmail for new messages and build a processing summary."""
+        log.debug("Starting Gmail email check routine.")
         if not GmailChecker.is_configured():
+            log.debug("Gmail is not configured; returning skipped summary.")
             return EmailChecker.build_summary(
                 "gmail",
                 0,
@@ -278,6 +329,7 @@ class GmailChecker(EmailChecker):
                 reason="Gmail credentials are not configured.",
             )
         lookback_days = EmailChecker.determine_lookback_days("gmail_seen")
+        log.debug("Lookback window determined as %d days", lookback_days)
         query = GmailChecker.gmail_date_x_days_query(lookback_days)
         try:
             service = GmailChecker._build_gmail_service()
@@ -311,12 +363,22 @@ class GmailChecker(EmailChecker):
         seen_normalized = {
             GmailChecker._normalize_gmail_id(value) for value in seen_ids if value
         }
+        log.debug(
+            "Identified %d total Gmail ids (%d normalized) already processed.",
+            len(seen_ids),
+            len(seen_normalized),
+        )
         new_ids: List[str] = []
         for mid in message_ids:
             normalized = GmailChecker._normalize_gmail_id(mid)
             if mid in seen_ids or (normalized and normalized in seen_normalized):
                 continue
             new_ids.append(mid)
+        log.debug(
+            "Found %d new Gmail messages out of %d retrieved.",
+            len(new_ids),
+            len(message_ids),
+        )
         processed: List[Dict[str, Any]] = []
         for mid in new_ids:
             try:
@@ -334,6 +396,11 @@ class GmailChecker(EmailChecker):
             try:
                 result = GmailChecker._handle_gmail_message(msg)
                 processed.append(result)
+                log.debug(
+                    "Successfully processed Gmail message %s with status %s",
+                    mid,
+                    result.get("status"),
+                )
             except Exception as exc:
                 log.exception("Failed to process Gmail message %s", mid)
                 processed.append(
@@ -343,6 +410,10 @@ class GmailChecker(EmailChecker):
                         "error": str(exc),
                     }
                 )
+        log.debug(
+            "Gmail processing completed. Total processed entries: %d",
+            len(processed),
+        )
         return EmailChecker.build_summary(
             "gmail",
             lookback_days,
@@ -351,3 +422,30 @@ class GmailChecker(EmailChecker):
             len(new_ids),
             processed,
         )
+
+
+def _configure_cli_logging(level: int = logging.DEBUG) -> None:
+    """Configure logging for command line execution with a debug focus."""
+    root_logger = logging.getLogger()
+    if not root_logger.handlers:
+        logging.basicConfig(
+            level=level,
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        )
+    else:
+        root_logger.setLevel(level)
+    log.debug("CLI logging configured at level %s", logging.getLevelName(level))
+
+
+def main() -> int:
+    """Run the Gmail email check routine and print a JSON summary."""
+    _configure_cli_logging()
+    log.debug("Invoking GmailChecker.check_email from __main__ entry point.")
+    summary = GmailChecker.check_email()
+    print(json.dumps(summary, indent=2, default=str))
+    log.debug("Gmail email check completed with ok=%s", summary.get("ok"))
+    return 0 if summary.get("ok", True) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
