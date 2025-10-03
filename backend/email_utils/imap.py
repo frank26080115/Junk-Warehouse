@@ -4,11 +4,21 @@
 from __future__ import annotations
 
 import imaplib
+import json
 import logging
+import sys
 from datetime import datetime, timedelta, timezone
 from email import message_from_bytes
 from email.header import decode_header, make_header
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+# Ensure repository imports function when executing the file directly.
+from pathlib import Path
+
+_CURRENT_FILE = Path(__file__).resolve()
+_PROJECT_ROOT = _CURRENT_FILE.parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 from sqlalchemy import text
 
@@ -17,6 +27,7 @@ from app.db import get_engine, update_db_row_by_dict, unwrap_db_result
 from .email_helper import EmailChecker
 
 log = logging.getLogger(__name__)
+log.setLevel(logging.DEBUG)
 
 
 class ImapChecker(EmailChecker):
@@ -27,9 +38,11 @@ class ImapChecker(EmailChecker):
     @staticmethod
     def _load_settings() -> Optional[Dict[str, Any]]:
         """Load IMAP connection details from secrets.json."""
+        log.debug("Loading IMAP configuration from secrets store.")
         secrets = EmailChecker.load_secrets()
         config = secrets.get(ImapChecker._CONFIG_KEY)
         if not isinstance(config, dict):
+            log.debug("IMAP configuration missing or not a dictionary: %s", type(config))
             return None
         required_keys = ("host", "username", "password")
         for key in required_keys:
@@ -37,16 +50,21 @@ class ImapChecker(EmailChecker):
             if not isinstance(value, str) or not value.strip():
                 log.warning("IMAP configuration missing required key %s", key)
                 return None
+        log.debug("IMAP configuration successfully loaded for host %s", config.get("host"))
         return config
 
     @staticmethod
     def is_configured() -> bool:
         """Indicate whether IMAP credentials are available."""
-        return ImapChecker._load_settings() is not None
+        settings = ImapChecker._load_settings()
+        configured = settings is not None
+        log.debug("IMAP configuration check result: %s", configured)
+        return configured
 
     @staticmethod
     def _bool_setting(value: Any, default: bool = True) -> bool:
         """Convert loosely-typed configuration values into booleans."""
+        log.debug("Converting configuration value %r to boolean with default %s", value, default)
         if isinstance(value, bool):
             return value
         if value is None:
@@ -64,6 +82,9 @@ class ImapChecker(EmailChecker):
         host = settings.get("host")
         port = settings.get("port")
         use_ssl = ImapChecker._bool_setting(settings.get("use_ssl"), True)
+        log.debug(
+            "Preparing IMAP connection to host=%s port=%s use_ssl=%s", host, port, use_ssl
+        )
         if isinstance(port, str) and port.strip():
             try:
                 port_value = int(port)
@@ -80,6 +101,7 @@ class ImapChecker(EmailChecker):
         client.login(settings.get("username"), settings.get("password"))
         mailbox = settings.get("mailbox") or "INBOX"
         client.select(mailbox)
+        log.debug("Connected to IMAP mailbox %s on host %s", mailbox, host)
         return client
 
     @staticmethod
@@ -98,6 +120,7 @@ class ImapChecker(EmailChecker):
                         seen.append(value.decode("utf-8", errors="ignore"))
                     elif value is not None:
                         seen.append(str(value))
+                log.debug("Loaded %d previously seen IMAP message identifiers.", len(seen))
                 return seen
         except Exception:
             log.exception("Failed to load imail_seen entries; treating as empty set")
@@ -118,6 +141,7 @@ class ImapChecker(EmailChecker):
     @staticmethod
     def _extract_bodies(msg) -> Tuple[str, str]:
         """Extract text and HTML parts from an email message."""
+        log.debug("Extracting bodies from IMAP message; multipart=%s", msg.is_multipart())
         html_body = ""
         text_body = ""
         if msg.is_multipart():
@@ -152,11 +176,17 @@ class ImapChecker(EmailChecker):
                     html_body = decoded
                 else:
                     text_body = decoded
+        log.debug(
+            "Extracted IMAP body lengths: text=%d html=%d",
+            len(text_body),
+            len(html_body),
+        )
         return html_body, text_body
 
     @staticmethod
     def _handle_imap_message(uid: str, msg_bytes: bytes) -> Dict[str, Any]:
         """Process a raw IMAP message payload."""
+        log.debug("Handling IMAP message with UID %s", uid)
         msg = message_from_bytes(msg_bytes)
         subject = ImapChecker._decode_header_value(msg.get("Subject"))
         message_id = ImapChecker._decode_header_value(msg.get("Message-ID")) or uid
@@ -192,6 +222,11 @@ class ImapChecker(EmailChecker):
         )
         if imap_failed:
             log.error("Failed to insert imail_seen row for UID %s: %s", uid, imap_message)
+        else:
+            log.debug("Inserted imail_seen row for UID %s with status %s", uid, imap_status)
+        log.debug(
+            "Finished handling IMAP UID %s with invoice id %s", uid, invoice_id
+        )
         return {
             "uid": uid,
             "message_id": message_id,
@@ -206,8 +241,10 @@ class ImapChecker(EmailChecker):
     @staticmethod
     def check_email() -> Dict[str, Any]:
         """Poll the configured IMAP mailbox for new emails."""
+        log.debug("Starting IMAP email check routine.")
         settings = ImapChecker._load_settings()
         if not settings:
+            log.debug("IMAP not configured; returning skipped summary.")
             return EmailChecker.build_summary(
                 "imap",
                 0,
@@ -221,6 +258,9 @@ class ImapChecker(EmailChecker):
         lookback_days = EmailChecker.determine_lookback_days("imail_seen")
         since_date = datetime.now(timezone.utc) - timedelta(days=lookback_days)
         query = f"(SINCE {since_date.strftime('%d-%b-%Y')})"
+        log.debug(
+            "IMAP lookback days=%d resulting in SINCE date %s", lookback_days, since_date
+        )
         try:
             client = ImapChecker._connect(settings)
         except Exception as exc:
@@ -241,6 +281,9 @@ class ImapChecker(EmailChecker):
                 raise RuntimeError(f"IMAP search failed with status {status}")
             raw_ids = data[0].split() if data and data[0] else []
             uids = [uid.decode("utf-8", errors="ignore") for uid in raw_ids]
+            log.debug(
+                "IMAP search returned %d raw ids for query %s", len(uids), query
+            )
         except Exception as exc:
             log.exception("Unable to list IMAP messages for query %s", query)
             try:
@@ -258,7 +301,9 @@ class ImapChecker(EmailChecker):
                 error=str(exc),
             )
         seen_uids = set(ImapChecker._fetch_seen_uids())
+        log.debug("Found %d previously seen IMAP UIDs", len(seen_uids))
         new_uids = [uid for uid in uids if uid not in seen_uids]
+        log.debug("Identified %d new IMAP UIDs to process", len(new_uids))
         processed: List[Dict[str, Any]] = []
         for uid in new_uids:
             try:
@@ -282,6 +327,11 @@ class ImapChecker(EmailChecker):
             try:
                 result = ImapChecker._handle_imap_message(uid, msg_bytes)
                 processed.append(result)
+                log.debug(
+                    "Successfully processed IMAP UID %s with status %s",
+                    uid,
+                    result.get("status"),
+                )
             except Exception as exc:
                 log.exception("Failed to process IMAP message %s", uid)
                 processed.append(
@@ -295,6 +345,7 @@ class ImapChecker(EmailChecker):
             client.logout()
         except Exception:
             log.debug("IMAP logout raised an exception", exc_info=True)
+        log.debug("IMAP processing completed with %d processed messages", len(processed))
         return EmailChecker.build_summary(
             "imap",
             lookback_days,
@@ -303,3 +354,30 @@ class ImapChecker(EmailChecker):
             len(new_uids),
             processed,
         )
+
+
+def _configure_cli_logging(level: int = logging.DEBUG) -> None:
+    """Configure logging for command line execution with detailed debug output."""
+    root_logger = logging.getLogger()
+    if not root_logger.handlers:
+        logging.basicConfig(
+            level=level,
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        )
+    else:
+        root_logger.setLevel(level)
+    log.debug("CLI logging configured at level %s", logging.getLevelName(level))
+
+
+def main() -> int:
+    """Run the IMAP email check routine and print a JSON summary."""
+    _configure_cli_logging()
+    log.debug("Invoking ImapChecker.check_email from __main__ entry point.")
+    summary = ImapChecker.check_email()
+    print(json.dumps(summary, indent=2, default=str))
+    log.debug("IMAP email check completed with ok=%s", summary.get("ok"))
+    return 0 if summary.get("ok", True) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
