@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import logging
 import uuid
@@ -166,6 +166,56 @@ def _short_id_candidates(identifier: str) -> List[int]:
                 candidates.append(decimal_value)
 
     return candidates
+
+
+def _derive_related_item_metadata(
+    target_uuid: str,
+    relation_rows: Iterable[Mapping[str, Any]],
+) -> Tuple[List[str], Dict[str, int]]:
+    """Return related item identifiers and their association bitmasks."""
+
+    target_str = str(target_uuid)
+
+    ordered_related_ids: List[str] = []
+    relation_map: Dict[str, int] = {}
+    seen_identifiers: set[str] = set()
+
+    for relation in relation_rows:
+        relation_item_id = relation.get("item_id")
+        relation_assoc_id = relation.get("assoc_id")
+        if relation_item_id is None or relation_assoc_id is None:
+            # Incomplete rows do not convey a usable relationship, so skip them.
+            continue
+
+        item_id_str = str(relation_item_id)
+        assoc_id_str = str(relation_assoc_id)
+
+        if item_id_str == target_str:
+            other_id = assoc_id_str
+        elif assoc_id_str == target_str:
+            other_id = item_id_str
+        else:
+            # This row references unrelated items; ignore it while iterating.
+            continue
+
+        if other_id not in seen_identifiers:
+            ordered_related_ids.append(other_id)
+            seen_identifiers.add(other_id)
+
+        assoc_type_value = relation.get("assoc_type")
+        if assoc_type_value is None:
+            assoc_type_value = -1
+
+        existing_value = relation_map.get(other_id)
+        if existing_value is None:
+            relation_map[other_id] = assoc_type_value
+        elif existing_value < 0:
+            if assoc_type_value >= 0:
+                relation_map[other_id] = assoc_type_value
+        elif assoc_type_value >= 0:
+            relation_map[other_id] = existing_value | assoc_type_value
+
+    return ordered_related_ids, relation_map
 
 
 def _pick_best_short_id_row(
@@ -904,7 +954,93 @@ def search_items(
     if "\\\\\\" in raw_query:
         return search_items_in_items(raw_query, target_uuid=target_uuid, context=context, primary_key_column=primary_key_column, db_session=db_session)
 
-    if not (raw_query and raw_query.strip()):
+    trimmed_query = (raw_query or "").strip()
+    if not trimmed_query:
+        if target_uuid:
+            log.info(
+                "search_items: empty query with target %s -> returning related items",
+                target_uuid,
+            )
+
+            def _fetch_related_items(session: Any) -> List[Dict[str, Any]]:
+                """Hydrate every item linked to the supplied target identifier."""
+
+                try:
+                    normalized_target = normalize_pg_uuid(target_uuid)
+                except (ValueError, AttributeError, TypeError):
+                    log.warning(
+                        "search_items: unable to normalize target UUID %r for related-item fetch",
+                        target_uuid,
+                    )
+                    return _finalize_item_rows([])
+
+                relation_sql = text(
+                    """
+                    SELECT
+                        r.item_id,
+                        r.assoc_id,
+                        r.assoc_type
+                    FROM relationships AS r
+                    WHERE
+                        r.item_id = :target_uuid
+                        OR r.assoc_id = :target_uuid
+                    """
+                )
+                relation_rows = session.execute(
+                    relation_sql,
+                    {"target_uuid": normalized_target},
+                ).mappings().all()
+
+                related_ids, relation_map = _derive_related_item_metadata(
+                    normalized_target,
+                    relation_rows,
+                )
+
+                if not related_ids:
+                    # No related items exist, so return an empty, normalized payload.
+                    return _finalize_item_rows([])
+
+                items_sql = (
+                    text(
+                        """
+                        SELECT
+                            i.*
+                        FROM items AS i
+                        WHERE
+                            NOT i.is_deleted
+                            AND i.id IN :related_ids
+                        """
+                    ).bindparams(bindparam("related_ids", expanding=True))
+                )
+                item_rows = session.execute(
+                    items_sql,
+                    {"related_ids": related_ids},
+                ).mappings().all()
+
+                # Preserve the order established while parsing relationship rows.
+                items_by_id: Dict[str, Mapping[str, Any]] = {
+                    str(row.get("id")): row
+                    for row in item_rows
+                    if row.get("id") is not None
+                }
+
+                ordered_results: List[Dict[str, Any]] = []
+                for identifier in related_ids:
+                    row_mapping = items_by_id.get(identifier)
+                    if row_mapping is None:
+                        continue
+                    row_dict = augment_item_dict(dict(row_mapping))
+                    row_dict["assoc_type"] = relation_map.get(identifier, -1)
+                    ordered_results.append(row_dict)
+
+                return _finalize_item_rows(ordered_results)
+
+            if db_session is not None:
+                return _fetch_related_items(db_session)
+
+            with session_scope() as session:
+                return _fetch_related_items(session)
+
         log.info("search_items: empty query -> returning empty list")
         return _finalize_item_rows([])
 
@@ -1084,48 +1220,38 @@ def search_items(
         # --- RELATION / TARGET-UUID ENHANCEMENT ---
         # This is intentionally *not* an else-if. The base search above should always take place.
         if target_uuid:
-            relation_sql = text("""
-            SELECT
-                r.item_id,
-                r.assoc_id,
-                r.assoc_type
-            FROM relationships AS r
-            WHERE
-                r.item_id = :target_uuid
-                OR r.assoc_id = :target_uuid
-            """)
-            relation_rows = session.execute(relation_sql, {"target_uuid": target_uuid}).mappings().all()
+            try:
+                normalized_target = normalize_pg_uuid(target_uuid)
+            except (ValueError, AttributeError, TypeError):
+                log.warning(
+                    "search_items: unable to normalize target UUID %r for association tagging",
+                    target_uuid,
+                )
+                normalized_target = None
 
-            target_str = str(target_uuid)
             relation_map: Dict[str, int] = {}
-            for relation in relation_rows:
-                relation_item_id = relation.get("item_id")
-                relation_assoc_id = relation.get("assoc_id")
-                if relation_item_id is None or relation_assoc_id is None:
-                    continue
+            if normalized_target:
+                relation_sql = text(
+                    """
+                    SELECT
+                        r.item_id,
+                        r.assoc_id,
+                        r.assoc_type
+                    FROM relationships AS r
+                    WHERE
+                        r.item_id = :target_uuid
+                        OR r.assoc_id = :target_uuid
+                    """
+                )
+                relation_rows = session.execute(
+                    relation_sql,
+                    {"target_uuid": normalized_target},
+                ).mappings().all()
 
-                item_id_str = str(relation_item_id)
-                assoc_id_str = str(relation_assoc_id)
-
-                if item_id_str == target_str:
-                    other_id = assoc_id_str
-                elif assoc_id_str == target_str:
-                    other_id = item_id_str
-                else:
-                    continue
-
-                assoc_type_value = relation.get("assoc_type")
-                if assoc_type_value is None:
-                    assoc_type_value = -1
-
-                existing_value = relation_map.get(other_id)
-                if existing_value is None:
-                    relation_map[other_id] = assoc_type_value
-                elif existing_value < 0:
-                    if assoc_type_value >= 0:
-                        relation_map[other_id] = assoc_type_value
-                elif assoc_type_value >= 0:
-                    relation_map[other_id] = existing_value | assoc_type_value
+                _, relation_map = _derive_related_item_metadata(
+                    normalized_target,
+                    relation_rows,
+                )
 
             for item in results:
                 pk_value = item.get("pk") or item.get("id")
