@@ -539,6 +539,29 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
 
   const selectedDisplaySlug = singleSelectedRow?.slug || singleSelectedRow?.pk || "";
 
+  /**
+   * Render slug-like identifiers with an inline "code" presentation so that users can immediately recognize
+   * the exact identifier the move helpers will operate on.
+   */
+  const renderSlugBadge = useCallback(
+    (value: string | number | null | undefined) => {
+      const resolved = value == null ? "" : String(value);
+      return (
+        <code
+          className="text-danger border border-danger-subtle bg-transparent rounded px-1 fw-semibold"
+          style={{
+            backgroundColor: "rgba(220, 53, 69, 0.08)",
+            display: "inline-block",
+            letterSpacing: "0.01em",
+          }}
+        >
+          {resolved}
+        </code>
+      );
+    },
+    []
+  );
+
   const hasTitle = !isBlank(displayedTitle);
   const hasResults = displayRows.length > 0;
   const columnCount =
@@ -1251,14 +1274,19 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
           style={{ backgroundColor: "rgba(0, 0, 0, 0.06)" }}
         >
           {/* Provide quick containment move shortcuts when exactly one item is selected. */}
-          <span className="small text-muted">Move items between containers:</span>
+          <span className="small text-muted">Move 👋 items between containers:</span>
           <button
             type="button"
             className="btn btn-link btn-sm text-decoration-none"
             disabled={isBusy}
             onClick={() => handleMoveBetweenItems("target-into-selected")}
           >
-            Move {targetDisplaySlug || targetUuid} into {selectedDisplaySlug || singleSelectedRow.pk}
+            {/*
+             * Show the direction of movement with descriptive emojis and highlight the involved slugs so that the
+             * operator can double-check the action before committing to it.
+             */}
+            Move 👋 {renderSlugBadge(targetDisplaySlug || targetUuid)} into ➡️{' '}
+            {renderSlugBadge(selectedDisplaySlug || singleSelectedRow.pk)}
           </button>
           <button
             type="button"
@@ -1266,7 +1294,8 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
             disabled={isBusy}
             onClick={() => handleMoveBetweenItems("selected-into-target")}
           >
-            Move {selectedDisplaySlug || singleSelectedRow.pk} into {targetDisplaySlug || targetUuid}
+            Move 👋 {renderSlugBadge(selectedDisplaySlug || singleSelectedRow.pk)} into ➡️{' '}
+            {renderSlugBadge(targetDisplaySlug || targetUuid)}
           </button>
         </div>
       )}
