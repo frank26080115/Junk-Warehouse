@@ -92,6 +92,11 @@ def fetch_containment_paths(item_identifier: Any) -> List[dict[str, Any]]:
                     ELSE r.item_id
                 END
             WHERE NOT neighbor.id = ANY(containment_tree.path)
+              AND (
+                  -- Prevent recursion from walking past fixed locations unless we are still evaluating the original target item.
+                  NOT containment_tree.is_fixed_location
+                  OR containment_tree.current_id = :target
+              )
         ),
         terminal_paths AS (
             SELECT
