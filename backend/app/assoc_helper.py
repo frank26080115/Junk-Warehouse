@@ -359,6 +359,8 @@ def move_item(
             sequence = list(candidate.get("path") or [])
             if sequence:
                 try:
+                    # Each containment path already omits the moving item itself, so the first
+                    # element identifies the immediate container that currently holds the item.
                     existing_container_id = normalize_pg_uuid(str(sequence[0]))
                     selected_path = candidate
                     deletion_reason = "unique_fixed_location_path"
