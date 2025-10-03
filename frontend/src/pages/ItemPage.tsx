@@ -689,6 +689,7 @@ const ItemPage: React.FC = () => {
       <ContainmentPathPanel
         targetUuid={containmentTargetUuid}
         refreshSignal={containmentRefreshToken}
+        targetIsFixedLocation={Boolean(item.is_fixed_location)}
       />
 
       {/* Relevant Invoices */}
