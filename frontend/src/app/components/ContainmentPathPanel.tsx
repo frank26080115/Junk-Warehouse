@@ -184,13 +184,18 @@ const ContainmentPathPanel: React.FC<ContainmentPathPanelProps> = ({
                 // Each breadcrumb links directly to the relevant item page for quick navigation.
                 const fullName = row.names[index];
                 const shortLabel = formatDisplayName(fullName);
+                const isTruncated = shortLabel !== fullName;
+                // Provide accessible context for truncated labels so that assistive technology
+                // and hover tooltips expose the complete item name within the storage chain.
+                const accessibleLabel = fullName;
+                const tooltipText = isTruncated ? fullName : undefined;
                 return (
                   <React.Fragment key={`${id}-${index}`}>
                     <a
                       href={`/item/${id}`}
                       className="text-decoration-none"
-                      title={fullName}
-                      aria-label={fullName}
+                      title={tooltipText}
+                      aria-label={accessibleLabel}
                     >
                       {shortLabel}
                     </a>
