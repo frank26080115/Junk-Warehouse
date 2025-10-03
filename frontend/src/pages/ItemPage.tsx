@@ -147,6 +147,45 @@ const booleanFlags = [
 
 type FlagKey = typeof booleanFlags[number]["key"];
 
+interface CollapsiblePanelProps {
+  title: string;
+  isExpanded: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}
+
+interface PanelVisibilityState {
+  containment: boolean;
+  relationshipsSearch: boolean;
+  invoicesSearch: boolean;
+}
+
+// Provide a focused accordion-like wrapper so this page can collapse related panels without
+// altering the shared SearchPanel or ContainmentPathPanel components themselves.
+const CollapsiblePanel: React.FC<CollapsiblePanelProps> = ({ title, isExpanded, onToggle, children }) => {
+  const normalizedTitle = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const contentId = `${normalizedTitle || "panel"}-content`;
+  return (
+    <div className="mb-4 border rounded shadow-sm">
+      <button
+        type="button"
+        className="w-100 bg-light border-0 rounded-top px-3 py-2 d-flex align-items-center justify-content-between text-start"
+        onClick={onToggle}
+        aria-expanded={isExpanded}
+        aria-controls={contentId}
+      >
+        <span className="fw-semibold">{title}</span>
+        <span className="text-muted small">{isExpanded ? "Collapse ▲" : "Expand ▼"}</span>
+      </button>
+      {isExpanded && (
+        <div id={contentId} className="px-3 py-3 border-top">
+          {children}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const ItemPage: React.FC = () => {
   const { xyz } = useParams(); // id/slug/short-id or "new"
   const navigate = useNavigate();
@@ -157,6 +196,57 @@ const ItemPage: React.FC = () => {
   const [error, setError] = useState<string>("");
   const [refreshToken, setRefreshToken] = useState<number>(0); // signal panels to refresh
   const [containmentRefreshToken, setContainmentRefreshToken] = useState<number>(0); // notify containment path panel about relationship changes
+  const [panelVisibility, setPanelVisibility] = useState<PanelVisibilityState>({
+    containment: false,
+    relationshipsSearch: true,
+    invoicesSearch: true,
+  });
+
+  const toggleContainmentPanel = useCallback(() => {
+    setPanelVisibility((previous) => {
+      const nextContainment = !previous.containment;
+      if (nextContainment) {
+        // When the containment panel opens we intentionally collapse the search panels so the
+        // UI mirrors an accordion and keeps the focus on the storage chain details.
+        return {
+          containment: true,
+          relationshipsSearch: false,
+          invoicesSearch: false,
+        };
+      }
+      return {
+        ...previous,
+        containment: false,
+      };
+    });
+  }, []);
+
+  const toggleRelationshipsPanel = useCallback(() => {
+    setPanelVisibility((previous) => {
+      const nextValue = !previous.relationshipsSearch;
+      return {
+        // Opening either search panel hides the containment panel to match the
+        // accordion-style requirements provided for this page.
+        containment: nextValue ? false : previous.containment,
+        relationshipsSearch: nextValue,
+        invoicesSearch: previous.invoicesSearch,
+      };
+    });
+  }, []);
+
+  const toggleInvoicesPanel = useCallback(() => {
+    setPanelVisibility((previous) => {
+      const nextValue = !previous.invoicesSearch;
+      return {
+        // Opening either search panel hides the containment panel to match the
+        // accordion-style requirements provided for this page.
+        containment: nextValue ? false : previous.containment,
+        relationshipsSearch: previous.relationshipsSearch,
+        invoicesSearch: nextValue,
+      };
+    });
+  }, []);
+
 
   // Determine initial mode: edit if url is new OR item.is_staging
   const [isReadOnly, setIsReadOnly] = useState<boolean>(() => !isNewFromUrl); // temp until fetch completes
@@ -672,11 +762,11 @@ const ItemPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Relationships/Links */}
-      <div className="mb-4">
-        <div className="d-flex align-items-center justify-content-between mb-2">
-          <h2 className="h5 mb-0">Relationships/Links</h2>
-        </div>
+      <CollapsiblePanel
+        title="Relationships / Links"
+        isExpanded={panelVisibility.relationshipsSearch}
+        onToggle={toggleRelationshipsPanel}
+      >
         <SearchPanel
           targetUuid={targetUuid}
           targetSlug={item.slug ?? null}
@@ -684,21 +774,32 @@ const ItemPage: React.FC = () => {
           tableName="items"
           onRelationshipsChanged={handleContainmentRelationshipsChanged}
         />
-      </div>
+      </CollapsiblePanel>
 
-      <ContainmentPathPanel
-        targetUuid={containmentTargetUuid}
-        refreshSignal={containmentRefreshToken}
-        targetIsFixedLocation={Boolean(item.is_fixed_location)}
-      />
+      <CollapsiblePanel
+        title="Storage Chain"
+        isExpanded={panelVisibility.containment}
+        onToggle={toggleContainmentPanel}
+      >
+        <ContainmentPathPanel
+          targetUuid={containmentTargetUuid}
+          refreshSignal={containmentRefreshToken}
+          targetIsFixedLocation={Boolean(item.is_fixed_location)}
+        />
+      </CollapsiblePanel>
 
-      {/* Relevant Invoices */}
-      <div className="mb-4">
-        <div className="d-flex align-items-center justify-content-between mb-2">
-          <h2 className="h5 mb-0">Relevant Invoices</h2>
-        </div>
-        <SearchPanel targetUuid={targetUuid} targetSlug={item.slug ?? null} refreshToken={refreshToken} tableName="invoices" />
-      </div>
+      <CollapsiblePanel
+        title="Relevant Invoices"
+        isExpanded={panelVisibility.invoicesSearch}
+        onToggle={toggleInvoicesPanel}
+      >
+        <SearchPanel
+          targetUuid={targetUuid}
+          targetSlug={item.slug ?? null}
+          refreshToken={refreshToken}
+          tableName="invoices"
+        />
+      </CollapsiblePanel>
 
       {/* Footer meta */}
       <div className="text-muted small">

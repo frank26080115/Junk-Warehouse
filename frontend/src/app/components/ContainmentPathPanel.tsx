@@ -21,8 +21,8 @@ interface ContainmentPathPanelProps {
 interface DisplayRow {
   ids: string[];
   names: string[];
-  summary: string;
   terminalIsFixed: boolean;
+  terminalIsDeadEnd: boolean;
 }
 
 const MAX_DISPLAY_NAME_LENGTH = 10;
@@ -151,14 +151,12 @@ const ContainmentPathPanel: React.FC<ContainmentPathPanelProps> = ({
         return;
       }
       const isFixed = Boolean(entry.terminal_is_fixed_location);
-      const summary = isFixed
-        ? "🏠 Fixed location reached at the end of this path."
-        : "🔚 No further containment relationships beyond this point.";
+      const isDeadEnd = Boolean(entry.terminal_is_dead_end);
       rows.push({
         ids: idsForDisplay,
         names: namesForDisplay,
-        summary,
         terminalIsFixed: isFixed,
+        terminalIsDeadEnd: isDeadEnd,
       });
     });
     let rowsToDisplay = rows;
@@ -174,10 +172,9 @@ const ContainmentPathPanel: React.FC<ContainmentPathPanelProps> = ({
   const shouldExplainFiltering = targetIsFixedLocation && filteredOutCount > 0;
 
   return (
-    <div className="mb-4">
-      <div className="d-flex align-items-center justify-content-between mb-2">
-        <h2 className="h5 mb-0">Storage Chain</h2>
-      </div>
+    <div>
+      {/* The surrounding page is responsible for rendering the section heading so this
+          panel focuses solely on the informative content. */}
       {!targetUuid && (
         <div className="text-muted">Save the item to explore containment paths.</div>
       )}
@@ -207,10 +204,22 @@ const ContainmentPathPanel: React.FC<ContainmentPathPanelProps> = ({
         </div>
       )}
       {rowsToDisplay.map((row) => {
-        const key = row.ids.join("→") || row.summary;
+        const key = row.ids.join("→") || (row.terminalIsFixed ? "fixed" : "dead-end");
+        const indicatorEmoji = row.terminalIsFixed ? "🏠" : "🔚";
+        const indicatorDescription = row.terminalIsFixed
+          ? "This path ends at a fixed location."
+          : row.terminalIsDeadEnd
+            ? "This path currently has no further containment options."
+            : "This path continues beyond the listed containers.";
         return (
-          <div key={key} className="mb-3">
-            <div className="d-flex flex-wrap align-items-center gap-2">
+          <div key={key} className="mb-2">
+            <div className="d-flex align-items-center gap-2 flex-wrap">
+              <span aria-hidden className="fs-5">
+                {indicatorEmoji}
+              </span>
+              <span className="visually-hidden">
+                {indicatorDescription}
+              </span>
               {row.ids.map((id, index) => {
                 // Each breadcrumb links directly to the relevant item page for quick navigation.
                 const fullName = row.names[index];
@@ -239,7 +248,6 @@ const ContainmentPathPanel: React.FC<ContainmentPathPanelProps> = ({
                 );
               })}
             </div>
-            <div className="text-muted small mt-1">{row.summary}</div>
           </div>
         );
       })}
