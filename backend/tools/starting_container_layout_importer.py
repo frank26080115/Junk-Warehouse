@@ -152,7 +152,10 @@ class LayoutImporter:
     def _log(self, message: str) -> None:
         """Log to stdout so the operator sees progress immediately."""
 
-        LOGGER.info(message)
+        if self.mode == "dry-run":
+            print(message)
+        else:
+            LOGGER.info(message)
 
     def _apply_pin(self, item_id: str, context: str, timestamp: str) -> None:
         """Persist the pin operation according to the active mode."""
