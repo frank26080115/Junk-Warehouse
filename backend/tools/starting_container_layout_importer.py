@@ -211,7 +211,7 @@ class LayoutImporter:
             "metatext": "",
             "is_container": True,
             "is_fixed_location": definition.depth == 0,
-            "is_staging": False,
+            "is_staging": True,
         }
 
     def _record_insert_sql(self, definition: ItemDefinition, path: str) -> None:
