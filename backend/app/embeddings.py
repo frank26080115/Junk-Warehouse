@@ -153,7 +153,7 @@ $$;""",
     return table_name
 
 
-def get_embeddings_vector_for(item_identifier: Union[str, uuid.UUID], ai = None) -> Optional[Dict[str, Any]]:
+def get_embeddings_vector_for(item_identifier: Union[str, uuid.UUID], ai: EmbeddingAi = None) -> Optional[Dict[str, Any]]:
     """Return the persisted embedding vector for the requested item, if available."""
 
     if not ai:
@@ -241,14 +241,14 @@ def summarize_container_embeddings(container_uuid,
     e_self = None
     child_vecs: List[List[float]] = []
 
-    container_embedding = get_embeddings_vector_for(container_uuid, ai=True)
+    container_embedding = get_embeddings_vector_for(container_uuid)
     if not container_embedding:
         container_embedding = update_embeddings_for_item(container_uuid)
     if container_embedding and container_embedding.get("vec"):
         e_self = unit_vect([float(x) for x in container_embedding["vec"]])  # normalize
 
     for child_uuid in get_all_containments(container_uuid):
-        child_embedding = get_embeddings_vector_for(child_uuid, ai=True)
+        child_embedding = get_embeddings_vector_for(child_uuid)
         if child_embedding and child_embedding.get("vec"):
             child_vecs.append(unit([float(x) for x in child_embedding["vec"]]))  # normalize
 
@@ -298,7 +298,7 @@ def update_embeddings_for_container(item_or_identifier: Union[Mapping[str, Any],
 
     metadata = MetaData()
     embeddings_table = Table(container_table_name, metadata, autoload_with=engine)
-    values = {"vec": summarize_container_embeddings(container_uuid, ai=ai)}
+    values = {"vec": summarize_container_embeddings(container_uuid)}
 
     with engine.begin() as conn:
         existing = conn.execute(
