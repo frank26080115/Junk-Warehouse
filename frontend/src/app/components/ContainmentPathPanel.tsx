@@ -10,6 +10,12 @@ interface ContainmentPathEntry {
 interface ContainmentPathPanelProps {
   targetUuid?: string | null;
   refreshSignal?: number;
+  /**
+   * Indicates whether the inspected item itself is fixed in place. When true we limit the
+   * rendered storage chains to those that also terminate in a fixed location, because a
+   * fixed item should only be stored inside other fixed destinations.
+   */
+  targetIsFixedLocation?: boolean;
 }
 
 interface DisplayRow {
@@ -40,6 +46,7 @@ function formatDisplayName(name: string): string {
 const ContainmentPathPanel: React.FC<ContainmentPathPanelProps> = ({
   targetUuid,
   refreshSignal = 0,
+  targetIsFixedLocation = false,
 }) => {
   const [paths, setPaths] = useState<ContainmentPathEntry[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
@@ -113,10 +120,11 @@ const ContainmentPathPanel: React.FC<ContainmentPathPanelProps> = ({
     };
   }, [targetUuid, refreshSignal]);
 
-  // Pre-compute display-friendly rows so the render logic remains easy to read.
-  const displayRows = useMemo<DisplayRow[]>(() => {
+  // Pre-compute display-friendly rows so the render logic remains easy to read. We also track
+  // how many candidate paths we filtered out so the UI can explain the absence of results.
+  const { rowsToDisplay, filteredOutCount } = useMemo(() => {
     if (!paths.length) {
-      return [];
+      return { rowsToDisplay: [], filteredOutCount: 0 };
     }
     const normalizedTarget = targetUuid ? targetUuid.toLowerCase() : null;
     const rows: DisplayRow[] = [];
@@ -153,8 +161,17 @@ const ContainmentPathPanel: React.FC<ContainmentPathPanelProps> = ({
         terminalIsFixed: isFixed,
       });
     });
-    return rows;
-  }, [paths, targetUuid]);
+    let rowsToDisplay = rows;
+    if (targetIsFixedLocation) {
+      // When the inspected item is fixed in place, only show storage chains that also end at a
+      // fixed location. This keeps the suggestions consistent with the item's immovability.
+      rowsToDisplay = rows.filter((row) => row.terminalIsFixed);
+    }
+    const filteredOutCount = rows.length - rowsToDisplay.length;
+    return { rowsToDisplay, filteredOutCount };
+  }, [paths, targetUuid, targetIsFixedLocation]);
+
+  const shouldExplainFiltering = targetIsFixedLocation && filteredOutCount > 0;
 
   return (
     <div className="mb-4">
@@ -172,10 +189,24 @@ const ContainmentPathPanel: React.FC<ContainmentPathPanelProps> = ({
           {errorMessage}
         </div>
       )}
-      {targetUuid && !loading && !errorMessage && displayRows.length === 0 && (
-        <div className="text-muted">No containment paths are currently recorded.</div>
+      {targetUuid &&
+        !loading &&
+        !errorMessage &&
+        rowsToDisplay.length === 0 && (
+          <div className="text-muted">
+            {targetIsFixedLocation
+              ? "No fixed-location containment paths are currently recorded."
+              : "No containment paths are currently recorded."}
+          </div>
       )}
-      {displayRows.map((row) => {
+      {shouldExplainFiltering && (
+        <div className="text-muted small mb-2">
+          Showing only storage chains that terminate in a fixed location; {filteredOutCount}
+          {filteredOutCount === 1 ? " path is" : " paths are"} hidden because they end in
+          movable storage.
+        </div>
+      )}
+      {rowsToDisplay.map((row) => {
         const key = row.ids.join("→") || row.summary;
         return (
           <div key={key} className="mb-3">
