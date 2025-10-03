@@ -88,7 +88,7 @@ def parse_layout_file(layout_path: Path) -> List[ItemDefinition]:
             continue
 
         depth = 0
-        while depth < len(stripped_line) and stripped_line[depth] == "	":
+        while depth < len(stripped_line) and stripped_line[depth] == "\t":
             depth += 1
         content = stripped_line[depth:]
 
