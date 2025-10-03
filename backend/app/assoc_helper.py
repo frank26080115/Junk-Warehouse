@@ -286,8 +286,15 @@ def set_item_relationship(first_identifier: Any, second_identifier: Any, assoc_t
     return x
 
 
-def move_item(item_identifier: Any, target_container_identifier: Any) -> Dict[str, Any]:
-    """Move an item to a different container while keeping containment history tidy."""
+def move_item(
+    item_identifier: Any,
+    target_container_identifier: Any,
+    allow_relationship_deletion: bool = False,
+) -> Dict[str, Any]:
+    """Move an item to a different container while keeping containment history tidy.
+
+    When allow_relationship_deletion is True, the helper removes relationships that no longer retain any association bits.
+    """
     # Normalize identifiers so downstream comparisons remain reliable.
     try:
         normalized_item_id = normalize_pg_uuid(str(item_identifier))
@@ -389,6 +396,7 @@ def move_item(item_identifier: Any, target_container_identifier: Any) -> Dict[st
     previous_container: Optional[Dict[str, Any]] = None
     relationship_snapshot: Optional[Dict[str, Any]] = None
     relationship_update_result: Optional[Dict[str, Any]] = None
+    relationship_deleted = False
     unnecessary_move = False
     if selected_path and existing_container_id:
         previous_container = _load_item_dict(existing_container_id)
@@ -413,19 +421,33 @@ def move_item(item_identifier: Any, target_container_identifier: Any) -> Dict[st
                     # we reached this branch; we still record the snapshot for completeness.
                     relationship_update_result = dict(relationship)
                 else:
-                    try:
-                        # Update the relationship so it no longer implies containment, while retaining any
-                        # other association flags that might be present.
-                        relationship_update_result = set_item_relationship(
-                            normalized_item_id,
-                            existing_container_id,
-                            updated_assoc_type,
-                        )
-                    except Exception:
-                        log.exception(
-                            "move_item: failed to clear containment bit for relationship %s",
-                            relationship.get("id"),
-                        )
+                    if updated_assoc_type == 0 and allow_relationship_deletion:
+                        try:
+                            # Import lazily so the helper can operate without eagerly creating circular dependencies.
+                            from .items import delete_item_relationship  # noqa: PLC0415 local import by design
+
+                            # Remove the relationship entirely because no association bits remain to describe it.
+                            relationship_update_result = delete_item_relationship(relationship.get("id"))
+                            relationship_deleted = bool(relationship_update_result)
+                        except Exception:
+                            log.exception(
+                                "move_item: failed to delete relationship %s after clearing containment bit",
+                                relationship.get("id"),
+                            )
+                    else:
+                        try:
+                            # Update the relationship so it no longer implies containment, while retaining any
+                            # other association flags that might be present.
+                            relationship_update_result = set_item_relationship(
+                                normalized_item_id,
+                                existing_container_id,
+                                updated_assoc_type,
+                            )
+                        except Exception:
+                            log.exception(
+                                "move_item: failed to clear containment bit for relationship %s",
+                                relationship.get("id"),
+                            )
         else:
             log.debug(
                 "move_item: no containment relationship found between %s and %s",
@@ -496,7 +518,10 @@ def move_item(item_identifier: Any, target_container_identifier: Any) -> Dict[st
     if unnecessary_move:
         history_meta["note"] = "Move request was unnecessary because the item was already in the target container."
     elif relationship_snapshot:
-        history_meta["note"] = "Cleared containment flag from previous container relationship."
+        if relationship_deleted:
+            history_meta["note"] = "Removed previous container relationship because no association bits remained after the move."
+        else:
+            history_meta["note"] = "Cleared containment flag from previous container relationship."
     log_history(
         item_id_1=normalized_item_id,
         item_id_2=normalized_target_id,
