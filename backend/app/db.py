@@ -244,11 +244,17 @@ def get_or_create_session() -> Session:
         if not get_engine():
             raise RuntimeError("Unable to automatically initialize DB engine for DB session")
 
-    s = getattr(g, "db", None)
-    if s is None:
-        s = _SESSION_LOCAL()      # returns current thread's Session (creates if absent)
-        g.db = s                  # stash for the rest of this request
-    return s
+    if has_app_context():
+        existing_session = getattr(g, "db", None)
+        if existing_session is None:
+            existing_session = _SESSION_LOCAL()      # returns current thread's Session (creates if absent)
+            g.db = existing_session                  # stash for the rest of this request
+        return existing_session
+
+    # Outside a Flask request context we still rely on the scoped session to
+    # provide one session per thread.  Callers are responsible for closing
+    # the session when their unit of work completes (see session_scope()).
+    return _SESSION_LOCAL()
 
 
 @contextmanager
