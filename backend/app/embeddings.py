@@ -126,6 +126,39 @@ def _row_to_dict(row: Any) -> Dict[str, Any]:
     # As a last resort wrap the object itself, preserving behavior without raising errors.
     return {"vec": row}
 
+
+def _coerce_embedding_vector(payload: Any) -> Optional[List[float]]:
+    """Return a list of floats for the provided embedding payload when possible."""
+    # The embedding pipeline returns a mix of dictionaries, SQLAlchemy rows, numpy arrays,
+    # and plain Python sequences. Rather than requiring every caller to juggle those shapes,
+    # centralize the logic so each site can simply request a normalized list of floats.
+    if payload is None:
+        return None
+    if isinstance(payload, Mapping):
+        candidate = payload.get("vec")
+    else:
+        candidate = payload
+    if candidate is None:
+        return None
+    # Many numeric containers (notably numpy arrays) expose ``tolist`` which gives us a
+    # convenient conversion back to a vanilla Python list while gracefully handling scalars.
+    to_list = getattr(candidate, "tolist", None)
+    if callable(to_list):
+        try:
+            candidate = to_list()
+        except TypeError:
+            # Some ``tolist`` implementations expect arguments. If that happens simply fall
+            # back to the original value so we can try the more general sequence handling.
+            pass
+    if isinstance(candidate, Sequence) and not isinstance(candidate, (str, bytes, bytearray)):
+        return [float(value) for value in candidate]
+    try:
+        return [float(candidate)]
+    except (TypeError, ValueError):
+        # Provide helpful diagnostics while still allowing the caller to continue gracefully.
+        log.debug("Unable to coerce embedding payload %r into a numeric vector", candidate)
+        return None
+
 def ensure_embeddings_table_exists(tbl_prefix: str = EMB_TBL_NAME_PREFIX_ITEMS, ai: EmbeddingAi = None) -> str:
     """Create the embedding table for the requested model if it does not already exist."""
 
@@ -268,15 +301,19 @@ def summarize_container_embeddings(container_uuid,
     child_vecs: List[List[float]] = []
 
     container_embedding = get_embeddings_vector_for(container_uuid)
-    if not container_embedding:
+    if container_embedding is None:
         container_embedding = update_embeddings_for_item(container_uuid)
-    if container_embedding and container_embedding.get("vec"):
-        e_self = unit_vect([float(x) for x in container_embedding["vec"]])  # normalize
+    container_vector = _coerce_embedding_vector(container_embedding)
+    if container_vector:
+        # Normalize the container's own label vector so it participates evenly in averaging.
+        e_self = unit_vect(container_vector)
 
     for child_uuid in get_all_containments(container_uuid):
         child_embedding = get_embeddings_vector_for(child_uuid)
-        if child_embedding and child_embedding.get("vec"):
-            child_vecs.append(unit_vect([float(x) for x in child_embedding["vec"]]))  # normalize
+        child_vector = _coerce_embedding_vector(child_embedding)
+        if child_vector:
+            # Each child contributes an equal share once normalized, matching previous behavior.
+            child_vecs.append(unit_vect(child_vector))
 
     if not e_self and not child_vecs:
         log.info("No embeddings available to summarize for container %s", container_uuid)
