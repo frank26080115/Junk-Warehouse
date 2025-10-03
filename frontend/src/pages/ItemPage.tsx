@@ -20,6 +20,7 @@ export interface ItemDto {
   date_last_modified?: string | null; // ISO timestamp
   is_container?: boolean;
   is_collection?: boolean;
+  is_tree_root?: boolean;
   is_large?: boolean;
   is_small?: boolean;
   is_fixed_location?: boolean;
@@ -49,6 +50,7 @@ const EMPTY_ITEM: ItemDto = {
   source: "",
   is_container: false,
   is_collection: false,
+  is_tree_root: false,
   is_large: false,
   is_small: false,
   is_fixed_location: false,
@@ -136,6 +138,7 @@ function formatPinTimestamp(value?: string | null): { readable: string; instant:
 const booleanFlags = [
   { key: "is_container",      emoji: "📦", label: "Container" },
   { key: "is_collection",     emoji: "🗃️", label: "Collection" },
+  { key: "is_tree_root",     emoji: "🌳", label: "Tree Root" }, // Tree roots represent the anchor container in a hierarchy
   { key: "is_large",          emoji: "🐘", label: "Large" },
   { key: "is_small",          emoji: "🐜", label: "Small" },
   { key: "is_fixed_location", emoji: "🛏️", label: "Fixed Location" },
