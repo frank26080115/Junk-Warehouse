@@ -104,6 +104,28 @@ def unit_vect(vec: List[float]) -> List[float]:
         # Convert back to a list to keep SQL drivers happy (psycopg dislikes ndarrays).
         return np_vec.tolist()
 
+
+def _row_to_dict(row: Any) -> Dict[str, Any]:
+    """Return a plain dictionary from a SQLAlchemy row or compatible payload."""
+    if row is None:
+        return {}
+    if isinstance(row, Mapping):
+        return dict(row)
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None:
+        return dict(mapping)
+    vec_value = getattr(row, "vec", None)
+    if vec_value is not None:
+        return {"vec": vec_value}
+    if isinstance(row, Sequence) and not isinstance(row, (str, bytes, bytearray)):
+        if len(row) == 1:
+            return {"vec": row[0]}
+        # When multiple columns are present, fall back to an enumerated dictionary so callers
+        # still receive a deterministic representation for logging or debugging purposes.
+        return {str(index): value for index, value in enumerate(row)}
+    # As a last resort wrap the object itself, preserving behavior without raising errors.
+    return {"vec": row}
+
 def ensure_embeddings_table_exists(tbl_prefix: str = EMB_TBL_NAME_PREFIX_ITEMS, ai: EmbeddingAi = None) -> str:
     """Create the embedding table for the requested model if it does not already exist."""
 
@@ -169,12 +191,16 @@ def get_embeddings_vector_for(item_identifier: Union[str, uuid.UUID], ai: Embedd
         result = conn.execute(
             select(embeddings_table.c.vec).where(embeddings_table.c.item_id == item_uuid).limit(1)
         ).first()
-        if not result:
-            result = update_embeddings_for_item(item_uuid)
-        if result:
-            # Normalize to a dictionary so callers have a predictable structure.
-            record = dict(result)
-            return {"vec": record.get("vec")}
+
+    if result:
+        # SQLAlchemy 2.0 rows expose a _mapping attribute; fall back gracefully for older payloads.
+        record = _row_to_dict(result)
+    else:
+        # Populate the vector when it does not yet exist so callers always receive fresh data.
+        record = update_embeddings_for_item(item_uuid)
+
+    if record:
+        return {"vec": record.get("vec")}
     return None
 
 def update_embeddings_for_item(item_or_identifier: Union[Mapping[str, Any], str, uuid.UUID]) -> dict:
@@ -250,7 +276,7 @@ def summarize_container_embeddings(container_uuid,
     for child_uuid in get_all_containments(container_uuid):
         child_embedding = get_embeddings_vector_for(child_uuid)
         if child_embedding and child_embedding.get("vec"):
-            child_vecs.append(unit([float(x) for x in child_embedding["vec"]]))  # normalize
+            child_vecs.append(unit_vect([float(x) for x in child_embedding["vec"]]))  # normalize
 
     if not e_self and not child_vecs:
         log.info("No embeddings available to summarize for container %s", container_uuid)
