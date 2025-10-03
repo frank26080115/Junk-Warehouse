@@ -214,6 +214,13 @@ def get_engine() -> Engine:
             pool_pre_ping=pool_pre_ping,
             future=True,  # explicit for 2.x style
         )
+        try:
+            from pgvector.sqlalchemy import register_vector
+            register_vector(_ENGINE)
+        except ImportError:
+            from sqlalchemy.dialects.postgresql import base as pg_base
+            from pgvector.sqlalchemy import Vector
+            pg_base.ischema_names.setdefault("vector", Vector)
 
         session_factory = sessionmaker(bind=_ENGINE, future=True)
         _SESSION_FACTORY = session_factory
