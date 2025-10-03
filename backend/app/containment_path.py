@@ -3,9 +3,9 @@ from __future__ import annotations
 import logging
 import uuid
 from collections import deque
-from typing import Any, Deque, Iterable, List, Mapping, Sequence
+from typing import Any, Deque, Dict, Iterable, List, Mapping, Sequence
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from .assoc_helper import CONTAINMENT_BIT
 from .db import get_engine
@@ -51,111 +51,171 @@ def get_all_containments(item_identifier: Any) -> List[str]:
 
 
 def fetch_containment_paths(item_identifier: Any) -> List[dict[str, Any]]:
-    """Return every containment path reachable from the provided item.
+    """Return shortest containment paths from the provided item to fixed locations.
 
-    The implementation relies on a PostgreSQL recursive CTE so the database can
-    efficiently explore the containment graph.  Paths terminate when they reach
-    either an item marked as ``is_fixed_location`` or when no further
-    containment relationships are available (a dead end).  Each entry contains
-    both the UUID path and a matching list of item names so the caller can
-    present user-friendly breadcrumbs.
+    The previous implementation delegated the full search to PostgreSQL.  The new
+    approach gathers the relevant containment relationships, constructs an
+    in-memory graph, and performs a breadth-first search so we can enumerate
+    *every* shortest path that reaches furniture-like items (``is_fixed_location``).
+    When multiple fixed locations share the same minimal distance, each path is
+    surfaced.  If no fixed locations are reachable, the function falls back to
+    listing immediate neighboring containers to preserve the expectations of
+    callers such as :func:`move_items`.
     """
 
     normalized = normalize_pg_uuid(item_identifier)
-    # Ensure we have a consistently formatted UUID string for comparison.
     target_uuid_str = normalize_pg_uuid(normalized)
 
     engine = get_engine()
-    sql = text(
-        """
-        WITH RECURSIVE containment_tree AS (
-            SELECT
-                i.id AS current_id,
-                ARRAY[i.id] AS path,
-                ARRAY[i.name] AS name_path,
-                i.is_fixed_location
-            FROM items AS i
-            WHERE i.id = :target
-        UNION ALL
-            SELECT
-                neighbor.id AS current_id,
-                containment_tree.path || neighbor.id AS path,
-                containment_tree.name_path || neighbor.name AS name_path,
-                neighbor.is_fixed_location
-            FROM containment_tree
-            JOIN relationships AS r
-              ON (r.item_id = containment_tree.current_id OR r.assoc_id = containment_tree.current_id)
-             AND (COALESCE(r.assoc_type, 0) & :containment_bit) <> 0
-            JOIN items AS neighbor
-              ON neighbor.id = CASE
-                    WHEN r.item_id = containment_tree.current_id THEN r.assoc_id
-                    ELSE r.item_id
-                END
-            WHERE NOT neighbor.id = ANY(containment_tree.path)
-              AND (
-                  -- Prevent recursion from walking past fixed locations unless we are still evaluating the original target item.
-                  NOT containment_tree.is_fixed_location
-                  OR containment_tree.current_id = :target
-              )
-        ),
-        terminal_paths AS (
-            SELECT
-                containment_tree.path,
-                containment_tree.name_path,
-                containment_tree.current_id,
-                containment_tree.is_fixed_location,
-                NOT EXISTS (
-                    SELECT 1
-                    FROM relationships AS r2
-                    JOIN items AS neighbor2
-                      ON neighbor2.id = CASE
-                            WHEN r2.item_id = containment_tree.current_id THEN r2.assoc_id
-                            ELSE r2.item_id
-                        END
-                    WHERE (COALESCE(r2.assoc_type, 0) & :containment_bit) <> 0
-                      AND (r2.item_id = containment_tree.current_id OR r2.assoc_id = containment_tree.current_id)
-                      AND NOT neighbor2.id = ANY(containment_tree.path)
-                ) AS is_dead_end
-            FROM containment_tree
-        )
-        SELECT
-            path,
-            name_path,
-            is_fixed_location,
-            is_dead_end
-        FROM terminal_paths
-        WHERE is_fixed_location OR is_dead_end
-        ORDER BY cardinality(path) DESC, path
-        """
-    )
-
-    results: List[dict[str, Any]] = []
     with engine.begin() as conn:
-        for row in conn.execute(sql, {"target": normalized, "containment_bit": CONTAINMENT_BIT}).mappings():
-            raw_path: Iterable[Any] = row.get("path") or []
-            raw_names: Iterable[Any] = row.get("name_path") or []
-            normalized_path = [normalize_pg_uuid(value) for value in raw_path]
-            name_list = [str(value) if value is not None else "" for value in raw_names]
-            # The recursive query returns the target item at the start of the path.
-            # Remove that entry so callers only see the surrounding containment items.
-            start_index = 1 if normalized_path and normalized_path[0] == target_uuid_str else 0
-            trimmed_path = normalized_path[start_index:]
-            trimmed_names = name_list[start_index:]
-            if not trimmed_path:
-                # A path that only referenced the target itself conveys no useful
-                # containment information, so we skip returning it altogether.
+        fixed_rows = conn.execute(
+            text(
+                """
+                SELECT id, name
+                FROM items
+                WHERE is_fixed_location = TRUE
+                """
+            ),
+        ).mappings().all()
+
+        fixed_identifiers = {normalize_pg_uuid(row["id"]) for row in fixed_rows if row.get("id")}
+
+        relationship_rows = conn.execute(
+            text(
+                """
+                SELECT item_id, assoc_id
+                FROM relationships
+                WHERE (COALESCE(assoc_type, 0) & :containment_bit) <> 0
+                  AND item_id IS NOT NULL
+                  AND assoc_id IS NOT NULL
+                """
+            ),
+            {"containment_bit": CONTAINMENT_BIT},
+        ).mappings().all()
+
+        adjacency: Dict[str, set[str]] = {}
+        all_identifiers = {target_uuid_str} | set(fixed_identifiers)
+        for row in relationship_rows:
+            left_raw = row.get("item_id")
+            right_raw = row.get("assoc_id")
+            if not left_raw or not right_raw:
                 continue
-            results.append(
+            left_id = normalize_pg_uuid(left_raw)
+            right_id = normalize_pg_uuid(right_raw)
+            all_identifiers.add(left_id)
+            all_identifiers.add(right_id)
+            adjacency.setdefault(left_id, set()).add(right_id)
+            adjacency.setdefault(right_id, set()).add(left_id)
+
+        metadata: Dict[str, Mapping[str, Any]] = {}
+        if all_identifiers:
+            meta_sql = text(
+                """
+                SELECT id, name, is_fixed_location, is_container, is_collection
+                FROM items
+                WHERE id IN :identifiers
+                """
+            ).bindparams(bindparam("identifiers", expanding=True))
+            metadata_rows = conn.execute(meta_sql, {"identifiers": list(all_identifiers)}).mappings().all()
+            for row in metadata_rows:
+                normalized_id = normalize_pg_uuid(row.get("id"))
+                metadata[normalized_id] = row
+
+    def get_name(item_id: str) -> str:
+        details = metadata.get(item_id)
+        raw_name = details.get("name") if details else None
+        return str(raw_name) if raw_name is not None else ""
+
+    def is_fixed(item_id: str) -> bool:
+        details = metadata.get(item_id)
+        return bool(details.get("is_fixed_location")) if details else False
+
+    # The breadth-first search computes the shortest distance from the target to
+    # every reachable node and remembers the parents that achieve that distance.
+    distances: Dict[str, int] = {target_uuid_str: 0}
+    parents: Dict[str, List[str]] = {}
+    queue: Deque[str] = deque([target_uuid_str])
+
+    while queue:
+        current = queue.popleft()
+        for neighbor in sorted(adjacency.get(current, set())):
+            next_distance = distances[current] + 1
+            existing_distance = distances.get(neighbor)
+            if existing_distance is None:
+                distances[neighbor] = next_distance
+                parents[neighbor] = [current]
+                queue.append(neighbor)
+            elif next_distance == existing_distance:
+                parent_list = parents.setdefault(neighbor, [])
+                if current not in parent_list:
+                    parent_list.append(current)
+
+    def expand_shortest_paths(destination: str, partial: List[str], paths: List[List[str]]) -> None:
+        """Recursively expand ``partial`` paths until we reach the target item."""
+
+        if destination == target_uuid_str:
+            completed = list(reversed(partial + [destination]))
+            paths.append(completed)
+            return
+
+        for parent in parents.get(destination, []):
+            expand_shortest_paths(parent, partial + [destination], paths)
+
+    all_paths: List[dict[str, Any]] = []
+    for fixed_id in sorted(fixed_identifiers):
+        if fixed_id == target_uuid_str:
+            # The caller only needs neighboring context, so a self-referential
+            # path would be redundant noise.
+            continue
+        if fixed_id not in distances:
+            continue
+
+        raw_paths: List[List[str]] = []
+        expand_shortest_paths(fixed_id, [], raw_paths)
+        for path_with_target in raw_paths:
+            trimmed_path = path_with_target[1:]
+            if not trimmed_path:
+                continue
+            name_list = [get_name(item_id) for item_id in trimmed_path]
+            all_paths.append(
                 {
                     "path": trimmed_path,
-                    "names": trimmed_names,
-                    "terminal_is_fixed_location": bool(row.get("is_fixed_location")),
-                    "terminal_is_dead_end": bool(row.get("is_dead_end")),
+                    "names": name_list,
+                    "terminal_is_fixed_location": True,
+                    "terminal_is_dead_end": False,
+                    "distance": len(trimmed_path),
+                    "terminal_item_id": fixed_id,
+                    "terminal_item_name": get_name(fixed_id),
                 }
             )
 
-    return results
+    all_paths.sort(key=lambda entry: (entry.get("distance", 0), entry.get("path", [])))
 
+    if all_paths:
+        return all_paths
+
+    # No fixed locations could be reached, so offer immediate containers to give
+    # the caller a sensible fallback.
+    neighboring_containers: List[dict[str, Any]] = []
+    for neighbor in sorted(adjacency.get(target_uuid_str, set())):
+        details = metadata.get(neighbor, {})
+        is_container_flag = bool(details.get("is_container") or details.get("is_collection"))
+        if not is_container_flag:
+            continue
+        neighboring_containers.append(
+            {
+                "path": [neighbor],
+                "names": [get_name(neighbor)],
+                "terminal_is_fixed_location": is_fixed(neighbor),
+                "terminal_is_dead_end": False,
+                "distance": 1,
+                "terminal_item_id": neighbor,
+                "terminal_item_name": get_name(neighbor),
+                "fallback_reason": "no_fixed_location_paths",
+            }
+        )
+
+    return neighboring_containers
 
 def are_items_contaiment_chained(first_item: Any, second_item: Any) -> bool:
     """Return True when ``second_item`` appears in a containment path from ``first_item``."""
