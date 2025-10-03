@@ -286,9 +286,19 @@ class LayoutImporter:
         stack: List[ProcessedItem] = []
 
         for definition in definitions:
+            # Track whether we cleared the currently pinned container while walking back up the stack.
+            pin_was_cleared = False
             while len(stack) > definition.depth:
                 to_close = stack.pop()
-                self.release_pin(str(to_close.payload["id"]), to_close.path)
+                to_close_id = str(to_close.payload["id"])
+                if self._active_pin is not None and self._active_pin[0] == to_close_id:
+                    pin_was_cleared = True
+                self.release_pin(to_close_id, to_close.path)
+
+            if pin_was_cleared and definition.depth > 0 and stack:
+                # We climbed to a shallower depth, so re-pin the new parent before inserting its next child.
+                parent_to_repin = stack[-1]
+                self.ensure_pinned(str(parent_to_repin.payload["id"]), parent_to_repin.path)
 
             current_depth = len(stack)
             if definition.depth > current_depth and definition.depth != current_depth + 1:
