@@ -448,7 +448,8 @@ def save_item_api():
         if col in DEFAULTABLE_COLUMNS:
             payload.pop(col)
 
-    if payload.get("is_collection") is True:
+    if payload.get("is_collection") is True or payload.get("is_tree_root") is True:
+        # Ensure special groupings (collections and tree roots) always count as containers
         payload["is_container"] = True
 
     before_item = None
@@ -608,7 +609,8 @@ def insert_item(
         # False.  (Truthiness is preserved; only ``None`` triggers the default.)
         data["is_staging"] = True
 
-    if data.get("is_collection") is True:
+    if data.get("is_collection") is True or data.get("is_tree_root") is True:
+        # Ensure special groupings (collections and tree roots) always count as containers
         data["is_container"] = True
 
     # remove null creation date so the DB fills it in with now() automatically
