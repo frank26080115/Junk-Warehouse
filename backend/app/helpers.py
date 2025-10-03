@@ -8,7 +8,7 @@ import re
 import unicodedata
 import uuid
 from collections import deque
-from collections.abc import Deque, Hashable, Mapping, Sequence
+from collections.abc import Hashable, Mapping, Sequence
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Optional, Tuple, Union
