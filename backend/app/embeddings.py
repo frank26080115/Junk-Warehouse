@@ -284,7 +284,8 @@ def update_embeddings_for_item(item_or_identifier: Union[Mapping[str, Any], str,
         except Exception:
             log.exception("Failed to update container embeddings for item %s", item_uuid)
 
-    return dict(existing) if existing else None
+    # SQLAlchemy Row objects expose a mapping with column names; using it avoids tuple conversion issues.
+    return dict(existing._mapping) if existing else None
 
 
 def summarize_container_embeddings(container_uuid,
