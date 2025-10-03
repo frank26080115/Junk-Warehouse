@@ -210,6 +210,7 @@ CREATE TABLE public.items (
     is_large boolean DEFAULT false NOT NULL,
     is_small boolean DEFAULT false NOT NULL,
     is_fixed_location boolean DEFAULT false NOT NULL,
+    is_tree_root boolean DEFAULT false NOT NULL,
     is_consumable boolean DEFAULT false NOT NULL,
     metatext text DEFAULT ''::text NOT NULL,
     textsearch tsvector GENERATED ALWAYS AS (to_tsvector('english'::regconfig, ((((COALESCE(name, ''::text) || ' '::text) || COALESCE(description, ''::text)) || ' '::text) || COALESCE(metatext, ''::text)))) STORED,
