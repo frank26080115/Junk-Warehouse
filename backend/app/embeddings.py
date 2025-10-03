@@ -85,14 +85,24 @@ def _build_embedding_vector(ai: EmbeddingAi, text_input: str) -> List[float]:
     return unit_vect(ai.build_embedding_vector(text_input)[0])
 
 def unit_vect(vec: List[float]) -> List[float]:
+    """Normalize a vector to unit length (L2 norm = 1) and return a plain list."""
     try:
         import numpy as np
-        n = np.linalg.norm(vec)
-        return vec / n if n > 0 else vec
     except ImportError:
-        """Normalize a vector to unit length (L2 norm = 1)."""
+        # Fall back to a pure Python implementation when NumPy is unavailable.
         norm = math.sqrt(sum(x * x for x in vec))
-        return [x / norm for x in vec] if norm > 0 else vec
+        if norm > 0:
+            return [x / norm for x in vec]
+        # Ensure we always hand back a list so callers have a consistent type.
+        return list(vec)
+    else:
+        # NumPy provides a fast normalization path while we still return a list.
+        np_vec = np.array(vec, dtype=float)
+        norm = float(np.linalg.norm(np_vec))
+        if norm > 0:
+            np_vec = np_vec / norm
+        # Convert back to a list to keep SQL drivers happy (psycopg dislikes ndarrays).
+        return np_vec.tolist()
 
 def ensure_embeddings_table_exists(tbl_prefix: str = EMB_TBL_NAME_PREFIX_ITEMS, ai: EmbeddingAi = None) -> str:
     """Create the embedding table for the requested model if it does not already exist."""
