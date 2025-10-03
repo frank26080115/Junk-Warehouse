@@ -135,7 +135,10 @@ class LayoutImporter:
             raise ValueError(f"Mode must be one of {sorted(valid_modes)}; received {mode!r}.")
         self.mode = mode
         self.engine: Optional[Engine] = get_engine() if mode == "execute" else None
-        self._pinned_ids: set[str] = set()
+        # Only a single item may be pinned at any point in time.  The tuple stores
+        # the item identifier alongside its descriptive context so we can emit
+        # helpful log messages when the pin must be cleared automatically.
+        self._active_pin: Optional[tuple[str, str]] = None
         self._sql_lines: List[str] = []
         self._relationship_pairs: List[tuple[str, str]] = []
         self._metatext_placeholder = update_metatext("")
@@ -151,13 +154,9 @@ class LayoutImporter:
 
         LOGGER.info(message)
 
-    def ensure_pinned(self, item_id: str, context: str) -> None:
-        """Mark a container as open so subsequent inserts inherit it as a parent."""
+    def _apply_pin(self, item_id: str, context: str, timestamp: str) -> None:
+        """Persist the pin operation according to the active mode."""
 
-        if item_id in self._pinned_ids:
-            return
-
-        timestamp = self._utc_now_iso()
         if self.mode == "execute":
             assert self.engine is not None
             with self.engine.begin() as conn:
@@ -175,13 +174,8 @@ class LayoutImporter:
                 f"UPDATE items SET pin_as_opened = '{timestamp}' WHERE id = '{item_id}';"
             )
 
-        self._pinned_ids.add(item_id)
-
-    def release_pin(self, item_id: str, context: str) -> None:
-        """Clear the pinned flag once all nested children have been created."""
-
-        if item_id not in self._pinned_ids:
-            return
+    def _clear_pin(self, item_id: str, context: str) -> None:
+        """Persist the removal of a pin according to the active mode."""
 
         if self.mode == "execute":
             assert self.engine is not None
@@ -199,7 +193,39 @@ class LayoutImporter:
                 f"UPDATE items SET pin_as_opened = NULL WHERE id = '{item_id}';"
             )
 
-        self._pinned_ids.remove(item_id)
+    def ensure_pinned(self, item_id: str, context: str) -> None:
+        """Ensure only the immediate parent remains pinned for upcoming inserts."""
+
+        if self._active_pin is not None:
+            active_id, active_context = self._active_pin
+            if active_id == item_id:
+                # The requested container is already pinned, so no action is required.
+                return
+            # A different container is still pinned.  Release it first so the
+            # database reflects a single open chain of containers.
+            self._clear_pin(active_id, active_context)
+            self._active_pin = None
+
+        timestamp = self._utc_now_iso()
+        self._apply_pin(item_id, context, timestamp)
+        self._active_pin = (item_id, context)
+
+    def release_pin(self, item_id: str, context: str) -> None:
+        """Clear the pinned flag once all nested children have been created."""
+
+        if self._active_pin is None:
+            return
+
+        active_id, active_context = self._active_pin
+        if active_id != item_id:
+            # The caller is attempting to release an item that is no longer
+            # pinned.  This can happen naturally when the pin was cleared while
+            # switching to a different branch in the layout.  No additional work
+            # is required in that situation.
+            return
+
+        self._clear_pin(item_id, context)
+        self._active_pin = None
 
     def _build_payload(self, definition: ItemDefinition) -> dict[str, Any]:
         """Assemble the payload passed to ``insert_item``."""
