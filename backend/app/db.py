@@ -246,10 +246,16 @@ def get_or_create_session() -> Session:
     create one from the scoped_session and attach it to g.
     """
     global _SESSION_LOCAL
+    global _SESSION_FACTORY
     if _SESSION_LOCAL is None:
-        #raise RuntimeError("DB not initialized; call init_engine() first")
-        if not get_engine():
+        engine = get_engine()
+        if engine is None:
             raise RuntimeError("Unable to automatically initialize DB engine for DB session")
+        if _SESSION_FACTORY is None:
+            # Recreate the session factory so that the scoped session can be produced reliably.
+            _SESSION_FACTORY = sessionmaker(bind=engine, future=True)
+        # Ensure _SESSION_LOCAL always references a callable scoped_session registry before use.
+        _SESSION_LOCAL = scoped_session(_SESSION_FACTORY)
 
     if has_app_context():
         existing_session = getattr(g, "db", None)
