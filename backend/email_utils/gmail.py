@@ -12,12 +12,15 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-# We need the project root on sys.path so that absolute imports work when the
-# file is executed directly from different directories.
+# We need both the repository root and the backend package directory on sys.path so that
+# absolute imports work when the file is executed directly from different directories.
+# The backend path is added first because modules such as 'app' live directly beneath it.
 _CURRENT_FILE = Path(__file__).resolve()
 _PROJECT_ROOT = _CURRENT_FILE.parents[2]
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
+_BACKEND_PACKAGE_ROOT = _CURRENT_FILE.parents[1]
+for _path_string in (str(_BACKEND_PACKAGE_ROOT), str(_PROJECT_ROOT)):
+    if _path_string not in sys.path:
+        sys.path.insert(0, _path_string)
 
 from sqlalchemy import text
 
