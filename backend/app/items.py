@@ -424,6 +424,7 @@ def get_item_api():
     """
     data = request.get_json(silent=True) or {}
     xyz = (data.get("xyz") or "").strip()
+    include_containments = bool(data.get("inc_containments"))
 
     if not xyz:
         return jsonify({"error": "Missing 'xyz'"}), 400
@@ -443,7 +444,7 @@ def get_item_api():
         db_row = get_db_item_as_dict(engine, TABLE, item_uuid, id_col_name=ID_COL)
         if not db_row:
             return jsonify({"error": "Item not found"}), 404
-        return jsonify(augment_item_dict(db_row)), 200
+        return jsonify(augment_item_dict(db_row, inc_containments=include_containments)), 200
     except Exception as e:
         log.exception("getitem failed")
         return jsonify({"error": str(e)}), 400
@@ -1191,20 +1192,64 @@ def move_item_api():
     item_uuid = payload.get("item_uuid")
     target_uuid = payload.get("target_uuid")
 
-    if not item_uuid or not target_uuid:
+    if not item_uuid or target_uuid is None:
         return jsonify({"ok": False, "error": "Both item_uuid and target_uuid are required."}), 400
 
     try:
         normalized_item = normalize_pg_uuid(str(item_uuid))
-        normalized_target = normalize_pg_uuid(str(target_uuid))
     except Exception as exc:
-        log.debug(
-            "move_item_api: invalid identifiers %r and %r: %s",
-            item_uuid,
-            target_uuid,
-            exc,
-        )
-        return jsonify({"ok": False, "error": "Invalid item or target UUID."}), 400
+        log.debug("move_item_api: invalid item identifier %r: %s", item_uuid, exc)
+        return jsonify({"ok": False, "error": "Invalid item UUID."}), 400
+
+    normalized_target: Optional[str] = None
+    target_is_pinned = isinstance(target_uuid, str) and target_uuid.strip().lower() == "pinned"
+
+    if target_is_pinned:
+        # Special handling: treat the literal "pinned" keyword as a request to move the
+        # item into the most recently pinned inventory record.
+        try:
+            session_handle = get_or_create_session()
+        except Exception:
+            log.exception("move_item_api: unable to obtain database session for pinned lookup")
+            return jsonify({"ok": False, "error": "Unable to access pinned items."}), 500
+
+        try:
+            from .search import append_pinned_items  # Local import avoids circular dependency.
+
+            pinned_rows: List[Dict[str, Any]] = []
+            append_pinned_items(
+                session_handle,
+                "items",
+                pinned_rows,
+                augment_row=augment_item_dict,
+            )
+        except Exception:
+            log.exception("move_item_api: failed to collect pinned items")
+            return jsonify({"ok": False, "error": "Unable to resolve pinned target."}), 500
+
+        if not pinned_rows:
+            return jsonify({"ok": False, "error": "No pinned items are currently available."}), 400
+
+        pinned_identifier = pinned_rows[0].get("id") or pinned_rows[0].get("pk")
+        if not pinned_identifier:
+            log.error("move_item_api: pinned target row missing identifier: %r", pinned_rows[0])
+            return jsonify({"ok": False, "error": "Pinned target is missing an identifier."}), 500
+
+        try:
+            normalized_target = normalize_pg_uuid(str(pinned_identifier))
+        except Exception as exc:
+            log.exception("move_item_api: invalid pinned target identifier %r", pinned_identifier)
+            return jsonify({"ok": False, "error": "Pinned target identifier is invalid."}), 500
+    else:
+        try:
+            normalized_target = normalize_pg_uuid(str(target_uuid))
+        except Exception as exc:
+            log.debug(
+                "move_item_api: invalid target identifier %r: %s",
+                target_uuid,
+                exc,
+            )
+            return jsonify({"ok": False, "error": "Invalid target UUID."}), 400
 
     if normalized_item == normalized_target:
         return jsonify({"ok": False, "error": "Item and target UUID must be different."}), 400
