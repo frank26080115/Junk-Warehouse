@@ -159,7 +159,6 @@ class GmailChecker(EmailChecker):
                     prompt='consent',
                     access_type='offline',
                     include_granted_scopes='true',
-                    redirect_uri=manual_redirect_uri,
                 )
                 print(
                     'Please open the following URL in a browser, authorize Gmail access, and paste the provided code below:'
