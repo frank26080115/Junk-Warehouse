@@ -155,9 +155,14 @@ class ShopHandler:
 
     @classmethod
     def _get_specific_handlers(cls) -> Sequence[Type["ShopHandler"]]:
-        from amazon_handler import AmazonHandler
-        from digikey_handler import DigiKeyHandler
-        from mcmastercarr_handler import McMasterCarrHandler
+        try:
+            from amazon_handler import AmazonHandler
+            from digikey_handler import DigiKeyHandler
+            from mcmastercarr_handler import McMasterCarrHandler
+        except ImportError:
+            from .amazon_handler import AmazonHandler
+            from .digikey_handler import DigiKeyHandler
+            from .mcmastercarr_handler import McMasterCarrHandler
 
         handler_specs: Sequence[Tuple[str, str]] = (
             ("amazon_handler", "AmazonHandler"),
