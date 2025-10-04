@@ -141,8 +141,40 @@ class GmailChecker(EmailChecker):
                 "Starting OAuth flow because no cached Gmail token was located; this may prompt for user interaction."
             )
             flow = InstalledAppFlow.from_client_config(client_config, scopes=scopes)
-            # The console flow prints a URL and verification code so it works even on headless servers.
-            creds = flow.run_console()
+            # Historically we relied on run_console(), but newer google-auth-oauthlib versions removed it.
+            if hasattr(flow, 'run_console'):
+                # When run_console() exists we keep using it because it requires no local web server.
+                creds = flow.run_console()
+            else:
+                log.debug('InstalledAppFlow.run_console is unavailable; switching to manual authorization flow.')
+                # The copy-and-paste flow requires an explicit redirect URI because google-auth-oauthlib
+                # no longer assigns the historical default (urn:ietf:wg:oauth:2.0:oob) automatically.
+                manual_redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
+                log.debug('Assigning manual redirect URI for manual Gmail OAuth exchange: %s', manual_redirect_uri)
+                flow.redirect_uri = manual_redirect_uri
+                auth_url, _ = flow.authorization_url(
+                    prompt='consent',
+                    access_type='offline',
+                    include_granted_scopes='true',
+                )
+                print(
+                    'Please open the following URL in a browser, authorize Gmail access, and paste the provided code below:'
+                )
+                print(auth_url)
+                verification_code = input('Enter the Gmail authorization code displayed by Google: ').strip()
+                if not verification_code:
+                    raise RuntimeError('An authorization code is required to complete the Gmail OAuth process.')
+                try:
+                    # When we assign a manual redirect URI directly on the flow object the Google OAuth
+                    # libraries still expect us to echo that value back during token exchange. Providing
+                    # redirect_uri explicitly ensures the verification code is bound to the out-of-band
+                    # redirect target, which prevents oauthlib from complaining about a missing parameter.
+                    flow.fetch_token(code=verification_code, redirect_uri=manual_redirect_uri)
+                except Exception as exc:
+                    raise RuntimeError(
+                        'Fetching Gmail OAuth token using the supplied code failed; double-check the authorization code and try again.'
+                    ) from exc
+                creds = flow.credentials
             persist_token = True
         if not creds or not creds.valid:
             log.debug("Gmail credentials invalid; attempting refresh. Expired=%s", creds.expired if creds else None)
