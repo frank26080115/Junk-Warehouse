@@ -123,6 +123,18 @@ const MODAL_LINE_STYLE: React.CSSProperties = {
   gap: "8px",
 };
 
+const MODAL_HEADER_STYLE: React.CSSProperties = {
+  ...MODAL_LINE_STYLE,
+  justifyContent: "space-between",
+  alignItems: "flex-start",
+};
+
+const MODAL_ACTION_GROUP_STYLE: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: "12px",
+};
+
 const MODAL_ICON_BUTTON_STYLE: React.CSSProperties = {
   cursor: "pointer",
   fontSize: "18px",
@@ -196,6 +208,32 @@ function findNode(nodes: TreeNodeState[], id: string): TreeNodeState | null {
     }
   }
   return null;
+}
+
+function collectAncestorIds(nodes: TreeNodeState[], targetId: string): string[] {
+  // This helper performs a depth-first search so we can exclude ancestors from child lists.
+  const ancestors: string[] = [];
+  const stack: string[] = [];
+
+  function walk(branches: TreeNodeState[]): boolean {
+    for (const branch of branches) {
+      stack.push(branch.data.id);
+      if (branch.data.id === targetId) {
+        ancestors.push(...stack.slice(0, -1));
+        stack.pop();
+        return true;
+      }
+      if (walk(branch.children)) {
+        stack.pop();
+        return true;
+      }
+      stack.pop();
+    }
+    return false;
+  }
+
+  walk(nodes);
+  return ancestors;
 }
 
 function deriveAssociationBits(data: RawTreeItem): number {
@@ -276,6 +314,8 @@ const TreeView: React.FC = () => {
   const clickTimerRef = useRef<number | null>(null);
   const mountedRef = useRef<boolean>(true);
 
+  const treeNodesRef = useRef<TreeNodeState[]>([]);
+
   useEffect(() => {
     // React's Strict Mode intentionally mounts components twice in development, so we reset
     // the mounted flag on every entry to guarantee asynchronous responses can update state.
@@ -288,6 +328,11 @@ const TreeView: React.FC = () => {
       }
     };
   }, []);
+
+  useEffect(() => {
+    // Persist the latest tree structure so background requests can reference fresh ancestry data.
+    treeNodesRef.current = treeNodes;
+  }, [treeNodes]);
 
   const parseFetchJson = useCallback(async (response: Response): Promise<any> => {
     let payload: any = null;
@@ -377,10 +422,24 @@ const TreeView: React.FC = () => {
         if (!parent) {
           throw new Error("Item details were not returned by the server.");
         }
+        // Build a list of ancestor identifiers so parent nodes never masquerade as their own children.
+        const ancestorIds = collectAncestorIds(treeNodesRef.current, nodeId);
+        const invalidIds = new Set<string>([nodeId, ...ancestorIds]);
         const containmentIds = Array.isArray(parent.containments)
-          ? parent.containments.filter((value): value is string => typeof value === "string" && value.length > 0)
+          ? parent.containments
+              .filter((value): value is string => typeof value === "string" && value.length > 0)
+              .filter((value) => !invalidIds.has(value))
           : [];
-        const childPromises = containmentIds.map((childId) => fetchItem(childId, false));
+        const uniqueContainmentIds: string[] = [];
+        // This local set prevents redundant fetches when the API returns duplicate identifiers.
+        const seenContainmentIds = new Set<string>();
+        for (const candidateId of containmentIds) {
+          if (!seenContainmentIds.has(candidateId)) {
+            seenContainmentIds.add(candidateId);
+            uniqueContainmentIds.push(candidateId);
+          }
+        }
+        const childPromises = uniqueContainmentIds.map((childId) => fetchItem(childId, false));
         const childRows = await Promise.all(childPromises);
         const preparedChildren = childRows
           .filter((row): row is RawTreeItem => Boolean(row && typeof row.id === "string"))
@@ -600,13 +659,9 @@ const TreeView: React.FC = () => {
     [loadChildrenForNode],
   );
 
-  const openItemInSameTab = useCallback((data: RawTreeItem) => {
-    const url = buildItemUrl(data);
-    window.location.assign(url);
-  }, []);
-
   const openItemInNewTab = useCallback((data: RawTreeItem) => {
     const url = buildItemUrl(data);
+    // Using noopener and noreferrer protects the original window from potential tab hijacking.
     window.open(url, "_blank", "noopener,noreferrer");
   }, []);
 
@@ -638,9 +693,10 @@ const TreeView: React.FC = () => {
         window.clearTimeout(clickTimerRef.current);
         clickTimerRef.current = null;
       }
-      openItemInSameTab(node.data);
+      // Double-clicks open a separate tab so the original view remains visible for quick comparisons.
+      openItemInNewTab(node.data);
     },
-    [openItemInSameTab],
+    [openItemInNewTab],
   );
 
   const handleLabelAuxClick = useCallback(
@@ -731,10 +787,47 @@ const TreeView: React.FC = () => {
       {modalNodeId && modalNode ? (
         <div style={MODAL_OVERLAY_STYLE}>
           <div style={MODAL_CARD_STYLE}>
-            <div style={MODAL_LINE_STYLE}>
-              <label htmlFor="treeview-name" style={{ flex: 1 }}>
+            <div style={MODAL_HEADER_STYLE}>
+              <label htmlFor="treeview-name" style={{ flex: 1, marginBottom: 0 }}>
                 Rename item:
               </label>
+              <div style={MODAL_ACTION_GROUP_STYLE}>
+                <span
+                  role="button"
+                  aria-label="Delete item"
+                  style={{
+                    ...MODAL_ICON_BUTTON_STYLE,
+                    opacity: modalBusy ? 0.4 : 1,
+                    pointerEvents: modalBusy ? "none" : "auto",
+                  }}
+                  onClick={handleDelete}
+                  title="Mark item as deleted"
+                >
+                  🗑️
+                </span>
+                <span
+                  role="button"
+                  aria-label="Save changes"
+                  style={{
+                    ...MODAL_ICON_BUTTON_STYLE,
+                    opacity: modalBusy ? 0.4 : 1,
+                    pointerEvents: modalBusy ? "none" : "auto",
+                  }}
+                  onClick={handleSave}
+                  title="Save changes"
+                >
+                  💾
+                </span>
+                <span
+                  role="button"
+                  aria-label="Cancel"
+                  style={MODAL_ICON_BUTTON_STYLE}
+                  onClick={closeModal}
+                  title="Cancel and close"
+                >
+                  ❌
+                </span>
+              </div>
             </div>
             <div style={{ ...MODAL_LINE_STYLE, marginBottom: "16px" }}>
               <input
@@ -751,43 +844,6 @@ const TreeView: React.FC = () => {
                   }
                 }}
               />
-            </div>
-            <div style={MODAL_LINE_STYLE}>
-              <span
-                role="button"
-                aria-label="Delete item"
-                style={{
-                  ...MODAL_ICON_BUTTON_STYLE,
-                  opacity: modalBusy ? 0.4 : 1,
-                  pointerEvents: modalBusy ? "none" : "auto",
-                }}
-                onClick={handleDelete}
-                title="Mark item as deleted"
-              >
-                🗑️
-              </span>
-              <span
-                role="button"
-                aria-label="Save changes"
-                style={{
-                  ...MODAL_ICON_BUTTON_STYLE,
-                  opacity: modalBusy ? 0.4 : 1,
-                  pointerEvents: modalBusy ? "none" : "auto",
-                }}
-                onClick={handleSave}
-                title="Save changes"
-              >
-                💾
-              </span>
-              <span
-                role="button"
-                aria-label="Cancel"
-                style={MODAL_ICON_BUTTON_STYLE}
-                onClick={closeModal}
-                title="Cancel and close"
-              >
-                ❌
-              </span>
             </div>
             {pinnedSuggestion ? (
               <div style={MODAL_LINE_STYLE}>
