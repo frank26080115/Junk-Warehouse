@@ -2,6 +2,7 @@ import React, { useMemo } from "react";
 import { useParams } from "react-router-dom";
 
 import SearchPanel from "../app/components/SearchPanel";
+import TreeView from "../app/components/TreeView";
 
 const SearchItemsPage: React.FC = () => {
   const { xyz } = useParams<{ xyz?: string }>();
@@ -15,6 +16,7 @@ const SearchItemsPage: React.FC = () => {
         tableName="items"
         allowDelete
       />
+      <TreeView />
     </div>
   );
 };
