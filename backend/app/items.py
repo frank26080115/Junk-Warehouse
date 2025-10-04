@@ -25,7 +25,7 @@ from .assoc_helper import (
     move_item,
     set_item_relationship,
 )
-from .containment_path import fetch_containment_paths
+from .containment_path import fetch_containment_paths, get_all_containments
 from .image_handler import (
     store_image_for_item,
     BadRequest as ImageBadRequest,
@@ -34,6 +34,7 @@ from .image_handler import (
 from .job_manager import get_job_manager
 from app.config_loader import get_pin_open_expiry_hours
 from .history import log_history
+from .tree_browse import get_root_structure
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +46,19 @@ bp = Blueprint("items", __name__, url_prefix="/api")
 
 TABLE = "items"
 ID_COL = "id"
+
+@bp.get("/getinittree")
+@login_required
+def get_initial_tree() -> tuple[Any, int]:
+    """Return the initial tree data for the containment browser."""
+
+    try:
+        tree_structure = get_root_structure()
+    except Exception as exc:
+        log.exception("Unable to build initial tree structure")
+        return jsonify({"error": str(exc)}), 500
+
+    return jsonify(tree_structure), 200
 
 
 def _fetch_recent_pin_ids(conn: Any, table_name: str) -> List[str]:
@@ -302,12 +316,15 @@ def augment_item_dict(
     data: Mapping[str, Any],
     *,
     thumbnail_getter: Optional[Callable[[Optional[str]], str]] = None,
+    inc_containments: bool = False,
 ) -> Dict[str, Any]:
     """
     Convert an item row to a JSON-ready dict with derived fields.
 
     This helper normalizes UUIDs, generates the slug, attaches a thumbnail,
-    and converts datetime objects to ISO strings.
+    and converts datetime objects to ISO strings.  When ``inc_containments`` is
+    enabled, the response also lists every containment relationship discovered
+    by :func:`get_all_containments`.
     """
 
     out: Dict[str, Any] = dict(data)
@@ -360,6 +377,16 @@ def augment_item_dict(
                 out[key] = value.isoformat()
             except Exception:  # pragma: no cover - defensive guard
                 pass
+
+    if inc_containments:
+        item_identifier = out.get(ID_COL)
+        if item_identifier:
+            try:
+                containment_ids = get_all_containments(item_identifier)
+            except Exception as exc:
+                log.debug("Unable to load containment ids for %s: %s", item_identifier, exc)
+                containment_ids = []
+            out["containments"] = containment_ids
 
     return out
 
