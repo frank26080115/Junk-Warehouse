@@ -208,7 +208,14 @@ def group_repeating_siblings(root):
     return candidates
 
 def analyze(html, base_url=None, topn=5):
-    root = parse_unknown_html_or_mhtml(html)
+    parsed_result = parse_unknown_html_or_mhtml(html)
+    # The helper returns both the parsed DOM root and a textual format hint;
+    # only the root element is required for downstream analysis, so unwrap it
+    # defensively in case future helpers alter the return contract.
+    if isinstance(parsed_result, tuple):
+        root, _detected_format = parsed_result
+    else:
+        root = parsed_result
     root = sanitize_dom(root)
     root.make_links_absolute(base_url) if base_url else None
 
