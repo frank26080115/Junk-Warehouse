@@ -966,7 +966,7 @@ def search_items(
     sq_context.setdefault("table_alias", "i")
     sq = SearchQuery(s=raw_query, context=sq_context)
 
-    if not trimmed_query:
+    if not sq.query_text:
         if sq.has_directive("pinned"):
 
             def _fetch_pinned(session: Any) -> List[Dict[str, Any]]:
@@ -979,6 +979,7 @@ def search_items(
                     pinned_results,
                     augment_row=augment_item_dict,
                 )
+                log.debug(f"results: {pinned_results}")
                 return _finalize_item_rows(pinned_results)
 
             if db_session is not None:
@@ -986,6 +987,8 @@ def search_items(
 
             with session_scope() as session:
                 return _fetch_pinned(session)
+
+    if not trimmed_query:
         if target_uuid:
             log.info(
                 "search_items: empty query with target %s -> returning related items",
