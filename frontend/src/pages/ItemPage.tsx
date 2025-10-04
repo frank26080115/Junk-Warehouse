@@ -379,7 +379,20 @@ const ItemPage: React.FC = () => {
   }, [isReadOnly, doSave]);
 
   const disabled = isReadOnly;
-  const targetUuid = item.id || "new";
+  const searchPanelTargetUuid = item.id ?? null;
+  // Track whether this item already has a persisted identifier so we can tailor downstream components accordingly.
+  const hasExistingId = Boolean(searchPanelTargetUuid);
+  // Provide a normalized UUID string for consumers that require a concrete string value (e.g., the image gallery API).
+  const resolvedItemUuid = searchPanelTargetUuid ?? "";
+  // The relationship search panel should automatically refresh once the backend-provided UUID arrives. By assigning a
+  // stable key that changes when the UUID changes, we nudge React to remount the panel so it reruns its initial blank-query
+  // search against the proper target item.
+  const relationshipsSearchPanelKey = searchPanelTargetUuid
+    ? `relationships-${searchPanelTargetUuid}`
+    : "relationships-pending";
+  const invoicesSearchPanelKey = searchPanelTargetUuid
+    ? `invoices-${searchPanelTargetUuid}`
+    : "invoices-pending";
   const urlEntries = useMemo(() => {
     const raw = item.url || "";
     return raw
@@ -387,7 +400,6 @@ const ItemPage: React.FC = () => {
       .map((part) => part.trim())
       .filter((part) => part.length > 0);
   }, [item.url]);
-  const hasExistingId = Boolean(item?.id);
   const containmentTargetUuid = hasExistingId ? item.id ?? null : null;
   const insertEmoji = hasExistingId ? "👯" : "➕";
   const insertTitle = `Insert new item (${insertEmoji})`;
@@ -708,7 +720,7 @@ const ItemPage: React.FC = () => {
         <div className="d-flex align-items-center justify-content-between mb-2">
           <h2 className="h5 mb-0">Photos</h2>
         </div>
-        <ImageGallery targetUuid={targetUuid} refreshToken={refreshToken} />
+        <ImageGallery targetUuid={resolvedItemUuid} refreshToken={refreshToken} />
       </div>
 
       {/* Pin management controls */}
@@ -768,7 +780,8 @@ const ItemPage: React.FC = () => {
         onToggle={toggleRelationshipsPanel}
       >
         <SearchPanel
-          targetUuid={targetUuid}
+          key={relationshipsSearchPanelKey}
+          targetUuid={searchPanelTargetUuid}
           targetSlug={item.slug ?? null}
           refreshToken={refreshToken}
           tableName="items"
@@ -794,7 +807,8 @@ const ItemPage: React.FC = () => {
         onToggle={toggleInvoicesPanel}
       >
         <SearchPanel
-          targetUuid={targetUuid}
+          key={invoicesSearchPanelKey}
+          targetUuid={searchPanelTargetUuid}
           targetSlug={item.slug ?? null}
           refreshToken={refreshToken}
           tableName="invoices"
