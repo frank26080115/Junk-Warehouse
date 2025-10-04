@@ -1452,9 +1452,6 @@ def search_api():
             # In future: you might stash the DB session or auth user here.
         }
 
-        if not raw_query:
-            return jsonify(ok=True, data=[])
-
         items = search_items(raw_query=raw_query, target_uuid=target_uuid, context=ctx)
 
         if include_thumbnails and items:
