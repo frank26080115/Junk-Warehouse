@@ -69,7 +69,20 @@ class GmailChecker(EmailChecker):
         if isinstance(token, dict):
             log.debug("Loaded Gmail OAuth token information from secrets configuration.")
             return token
-        log.debug("Gmail OAuth token was not present in configuration.")
+        log.debug(
+            "Gmail OAuth token was not present in configuration; a new token may need to be generated."
+        )
+        return None
+
+    @staticmethod
+    def _load_gmail_client_config() -> Optional[Dict[str, Any]]:
+        """Return the OAuth client configuration used for interactive token generation."""
+        secrets = EmailChecker.load_secrets()
+        client_config = secrets.get("gmail_api_credentials")
+        if isinstance(client_config, dict) and client_config:
+            log.debug("Loaded Gmail OAuth client configuration from secrets.json")
+            return client_config
+        log.debug("Gmail OAuth client configuration is unavailable in secrets.json")
         return None
 
     @staticmethod
@@ -82,8 +95,15 @@ class GmailChecker(EmailChecker):
                 return True
             secrets = EmailChecker.load_secrets()
             token = secrets.get("gmail_api_token")
-            log.debug("Gmail token file missing; checking secrets configuration presence: %s", bool(token))
-            return isinstance(token, dict) and bool(token)
+            client_config = secrets.get("gmail_api_credentials")
+            log.debug(
+                "Gmail token file missing; token config present=%s client config present=%s",
+                isinstance(token, dict) and bool(token),
+                isinstance(client_config, dict) and bool(client_config),
+            )
+            return (isinstance(token, dict) and bool(token)) or (
+                isinstance(client_config, dict) and bool(client_config)
+            )
         except Exception:
             log.exception("Error while checking Gmail configuration; assuming Gmail is unavailable.")
             return False
@@ -92,24 +112,44 @@ class GmailChecker(EmailChecker):
     def _build_gmail_service() -> Any:
         """Initialise the Gmail API service client."""
         token_info = GmailChecker._load_gmail_token()
-        if not token_info:
-            raise RuntimeError("Gmail credentials are not configured.")
         token_path = GmailChecker._gmail_token_path()
         log.debug("Building Gmail API client using token information. Persist path: %s", token_path)
         try:
             from google.auth.transport.requests import Request
             from google.oauth2.credentials import Credentials
             from googleapiclient.discovery import build
+            from google_auth_oauthlib.flow import InstalledAppFlow
         except ImportError as exc:  # pragma: no cover - dependency provided in runtime env
             raise RuntimeError("Google API client libraries are required to poll Gmail") from exc
-        scopes = token_info.get("scopes") or ["https://www.googleapis.com/auth/gmail.readonly"]
-        creds = Credentials.from_authorized_user_info(token_info, scopes=scopes)
-        persist_token = not token_path.exists()
-        if not creds.valid:
-            log.debug("Gmail credentials invalid; attempting refresh. Expired=%s", creds.expired)
-            if creds.expired and creds.refresh_token:
-                creds.refresh(Request())
+        scopes = ["https://www.googleapis.com/auth/gmail.readonly"]
+        creds: Optional[Credentials] = None
+        persist_token = False
+        if token_info:
+            scopes = token_info.get("scopes") or scopes
+            creds = Credentials.from_authorized_user_info(token_info, scopes=scopes)
+            persist_token = not token_path.exists()
+        else:
+            client_config = GmailChecker._load_gmail_client_config()
+            if not client_config:
+                raise RuntimeError(
+                    "Gmail credentials are not configured. Provide gmail_api_token or gmail_api_credentials."
+                )
+            log.debug(
+                "Starting OAuth flow because no cached Gmail token was located; this may prompt for user interaction."
+            )
+            flow = InstalledAppFlow.from_client_config(client_config, scopes=scopes)
+            # The console flow prints a URL and verification code so it works even on headless servers.
+            creds = flow.run_console()
             persist_token = True
+        if not creds or not creds.valid:
+            log.debug("Gmail credentials invalid; attempting refresh. Expired=%s", creds.expired if creds else None)
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                persist_token = True
+            else:
+                raise RuntimeError(
+                    "Gmail credentials could not be refreshed automatically; manual re-authorization is required."
+                )
         if persist_token:
             token_path.parent.mkdir(parents=True, exist_ok=True)
             token_path.write_text(creds.to_json(), encoding="utf-8")
