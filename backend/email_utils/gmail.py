@@ -344,8 +344,12 @@ class GmailChecker(EmailChecker):
             gmail_link,
             None,
         )
+        raw_identifier = normalized_id or message_id or ""
+        # Gmail message identifiers must be stored in the bytea column as raw bytes.
+        # Encoding the identifier clarifies the contract and keeps psycopg happy.
+        email_uuid_bytes = raw_identifier.encode("utf-8")
         gmail_payload: Dict[str, Any] = {
-            "email_uuid": normalized_id or message_id,
+            "email_uuid": email_uuid_bytes,
             "date_seen": email_date,
         }
         if ingestion.get("invoice_id"):
