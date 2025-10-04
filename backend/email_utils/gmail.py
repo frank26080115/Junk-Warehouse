@@ -28,7 +28,10 @@ from backend.app.config_loader import get_private_dir_path
 from app.db import get_engine, update_db_row_by_dict, unwrap_db_result
 from app.helpers import normalize_pg_uuid
 
-from .email_helper import EmailChecker
+try:
+    from .email_helper import EmailChecker
+except ImportError:
+    from email_helper import EmailChecker
 
 log = logging.getLogger(__name__)
 log.setLevel(logging.DEBUG)
