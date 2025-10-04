@@ -15,6 +15,7 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
 from collections import Counter, defaultdict
 from urllib.parse import urlparse, unquote
 from collections import Counter
@@ -22,6 +23,20 @@ from collections import Counter
 import lxml.html
 import lxml.etree
 import lxml.etree as ET
+
+def _ensure_module_search_paths() -> None:
+    """Maintain predictable sys.path entries for IDE and CLI execution contexts."""
+    current_file = Path(__file__).resolve()
+    automation_root = current_file.parent
+    backend_root = automation_root.parent
+    for candidate in (automation_root, backend_root):
+        candidate_str = str(candidate)
+        if candidate_str not in sys.path:
+            sys.path.insert(0, candidate_str)
+
+_ensure_module_search_paths()
+
+from automation.html_invoice_helpers import parse_unknown_html_or_mhtml
 
 CURRENCY_RE = re.compile(r'(?i)(?:[$€£]\s?\d[\d,]*(?:\.\d{2})?|USD\s?\d[\d,]*(?:\.\d{2})?)')
 QTY_WORD_RE = re.compile(r'(?i)\b(qty|quantity|count|pcs|units?)\b')
@@ -193,7 +208,6 @@ def group_repeating_siblings(root):
     return candidates
 
 def analyze(html, base_url=None, topn=5):
-    from html_invoice_helpers import parse_unknown_html_or_mhtml
     root = parse_unknown_html_or_mhtml(html)
     root = sanitize_dom(root)
     root.make_links_absolute(base_url) if base_url else None
