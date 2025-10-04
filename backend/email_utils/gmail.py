@@ -220,11 +220,8 @@ class GmailChecker(EmailChecker):
         hex_candidate = cleaned.replace("-", "")
         hex_chars = set("0123456789abcdefABCDEF")
         if 16 <= len(hex_candidate) <= 32 and set(hex_candidate).issubset(hex_chars):
-            try:
-                padded = hex_candidate.rjust(32, "0")
-                return normalize_pg_uuid(padded)
-            except Exception:
-                log.debug("Message id %s looked hex-like but failed UUID normalization", message_id)
+            padded = hex_candidate.rjust(32, "0")
+            return padded
         return cleaned
 
     @staticmethod
