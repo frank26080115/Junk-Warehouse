@@ -955,7 +955,37 @@ def search_items(
         return search_items_in_items(raw_query, target_uuid=target_uuid, context=context, primary_key_column=primary_key_column, db_session=db_session)
 
     trimmed_query = (raw_query or "").strip()
+
+    if isinstance(context, dict):
+        sq_context = dict(context)
+    else:
+        sq_context = {}
+        if context is not None:
+            sq_context["payload"] = context
+    sq_context.setdefault("table", "items")
+    sq_context.setdefault("table_alias", "i")
+    sq = SearchQuery(s=raw_query, context=sq_context)
+
     if not trimmed_query:
+        if sq.has_directive("pinned"):
+
+            def _fetch_pinned(session: Any) -> List[Dict[str, Any]]:
+                """Collect pinned inventory items using the shared helper."""
+
+                pinned_results: List[Dict[str, Any]] = []
+                append_pinned_items(
+                    session,
+                    "items",
+                    pinned_results,
+                    augment_row=augment_item_dict,
+                )
+                return _finalize_item_rows(pinned_results)
+
+            if db_session is not None:
+                return _fetch_pinned(db_session)
+
+            with session_scope() as session:
+                return _fetch_pinned(session)
         if target_uuid:
             log.info(
                 "search_items: empty query with target %s -> returning related items",
@@ -1045,16 +1075,6 @@ def search_items(
         return _finalize_item_rows([])
 
     # Parse the query and extract normalized free-text
-
-    if isinstance(context, dict):
-        sq_context = dict(context)
-    else:
-        sq_context = {}
-        if context is not None:
-            sq_context["payload"] = context
-    sq_context.setdefault("table", "items")
-    sq_context.setdefault("table_alias", "i")
-    sq = SearchQuery(s=raw_query, context=sq_context)
 
     def _execute_with_session(session: Any) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []
