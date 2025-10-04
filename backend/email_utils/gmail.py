@@ -141,8 +141,25 @@ class GmailChecker(EmailChecker):
                 "Starting OAuth flow because no cached Gmail token was located; this may prompt for user interaction."
             )
             flow = InstalledAppFlow.from_client_config(client_config, scopes=scopes)
-            # The console flow prints a URL and verification code so it works even on headless servers.
-            creds = flow.run_console()
+            # Historically we relied on run_console(), but newer google-auth-oauthlib versions removed it.
+            if hasattr(flow, 'run_console'):
+                # When run_console() exists we keep using it because it requires no local web server.
+                creds = flow.run_console()
+            else:
+                log.debug('InstalledAppFlow.run_console is unavailable; switching to manual authorization flow.')
+                auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline', include_granted_scopes='true')
+                print(
+                    'Please open the following URL in a browser, authorize Gmail access, and paste the provided code below:'
+                )
+                print(auth_url)
+                verification_code = input('Enter the Gmail authorization code: ').strip()
+                if not verification_code:
+                    raise RuntimeError('An authorization code is required to complete the Gmail OAuth process.')
+                try:
+                    flow.fetch_token(code=verification_code)
+                except Exception as exc:
+                    raise RuntimeError('Fetching Gmail OAuth token using the supplied code failed.') from exc
+                creds = flow.credentials
             persist_token = True
         if not creds or not creds.valid:
             log.debug("Gmail credentials invalid; attempting refresh. Expired=%s", creds.expired if creds else None)
