@@ -277,6 +277,9 @@ const TreeView: React.FC = () => {
   const mountedRef = useRef<boolean>(true);
 
   useEffect(() => {
+    // React's Strict Mode intentionally mounts components twice in development, so we reset
+    // the mounted flag on every entry to guarantee asynchronous responses can update state.
+    mountedRef.current = true;
     return () => {
       mountedRef.current = false;
       if (clickTimerRef.current !== null) {
