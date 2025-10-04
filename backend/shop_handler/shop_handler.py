@@ -410,11 +410,11 @@ class GenericShopHandler(ShopHandler):
 
             chosen_text = ""
             if url:
-                chosen_text = anchor_text if len(anchor_text) >= TEXT_LENGTH_LIMIT else preview_text
-                if len(chosen_text) < TEXT_LENGTH_LIMIT:
+                chosen_text = anchor_text if len(anchor_text) >= self.TEXT_LENGTH_LIMIT else preview_text
+                if len(chosen_text) < self.TEXT_LENGTH_LIMIT:
                     chosen_text = ""
             else:
-                if len(preview_text) >= TEXT_LENGTH_LIMIT:
+                if len(preview_text) >= self.TEXT_LENGTH_LIMIT:
                     chosen_text = preview_text
 
             if not chosen_text and not url:
