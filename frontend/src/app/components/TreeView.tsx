@@ -748,7 +748,7 @@ const TreeView: React.FC = () => {
               ) : node.children.length > 0 ? (
                 node.children.map((child) => renderNode(child, depth + 1))
               ) : node.hasLoadedChildren ? (
-                <li style={LOADING_STYLE}>No children found.</li>
+                <li style={LOADING_STYLE}>No child items found.</li>
               ) : null}
             </ul>
           ) : null}
@@ -769,7 +769,7 @@ const TreeView: React.FC = () => {
   return (
     <div style={{ marginTop: "24px" }}>
       <h2 className="h5" style={{ marginBottom: "12px" }}>
-        Containment Tree
+        Storage Tree
       </h2>
       {initialError ? <div style={STATUS_STYLE}>{initialError}</div> : null}
       {statusMessage ? (
