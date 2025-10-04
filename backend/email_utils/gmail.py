@@ -168,11 +168,12 @@ class GmailChecker(EmailChecker):
                 if not verification_code:
                     raise RuntimeError('An authorization code is required to complete the Gmail OAuth process.')
                 try:
-                    # When we assign a manual redirect URI directly on the flow object the Google OAuth
-                    # libraries still expect us to echo that value back during token exchange. Providing
-                    # redirect_uri explicitly ensures the verification code is bound to the out-of-band
-                    # redirect target, which prevents oauthlib from complaining about a missing parameter.
-                    flow.fetch_token(code=verification_code, redirect_uri=manual_redirect_uri)
+                    # Reassert the redirect URI immediately before exchanging the verification code so that
+                    # the underlying OAuth session forwards it to Google's token endpoint. This protects the
+                    # manual copy-and-paste path from oauthlib complaining about a missing redirect parameter
+                    # while also avoiding duplicate keyword arguments that would raise a TypeError.
+                    flow.redirect_uri = manual_redirect_uri
+                    flow.fetch_token(code=verification_code)
                 except Exception as exc:
                     raise RuntimeError(
                         'Fetching Gmail OAuth token using the supplied code failed; double-check the authorization code and try again.'
