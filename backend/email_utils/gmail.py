@@ -26,7 +26,7 @@ from sqlalchemy import text
 
 from backend.app.config_loader import get_private_dir_path
 from app.db import get_engine, update_db_row_by_dict, unwrap_db_result
-from app.helpers import normalize_pg_uuid
+from app.helpers import normalize_pg_uuid, hex_str_to_bytea, bytea_to_hex_str
 
 try:
     from .email_helper import EmailChecker
@@ -35,37 +35,6 @@ except ImportError:
 
 log = logging.getLogger(__name__)
 log.setLevel(logging.DEBUG)
-
-
-def hex_str_to_bytea(hex_string: Optional[str]) -> bytes:
-    """Convert a hexadecimal identifier string into raw bytes for database storage."""
-    if hex_string is None:
-        return b""
-    cleaned = hex_string.strip()
-    if not cleaned:
-        return b""
-    if len(cleaned) % 2 != 0:
-        cleaned = f"0{cleaned}"
-    try:
-        return bytes.fromhex(cleaned)
-    except ValueError as exc:
-        log.error("Failed to convert identifier %s into bytes: %s", hex_string, exc)
-        raise
-
-
-def bytea_to_hex_str(data: Optional[Union[bytes, bytearray, memoryview]]) -> str:
-    """Convert raw bytea values retrieved from PostgreSQL into zero-padded hexadecimal strings."""
-    if data is None:
-        return ""
-    if isinstance(data, memoryview):
-        data = data.tobytes()
-    if isinstance(data, bytearray):
-        data = bytes(data)
-    if not isinstance(data, bytes):
-        return str(data)
-    hex_string = data.hex()
-    expected_length = len(data) * 2
-    return hex_string.zfill(expected_length)
 
 
 class GmailChecker(EmailChecker):
@@ -238,8 +207,7 @@ class GmailChecker(EmailChecker):
                 seen_ids: List[str] = []
                 for row in result:
                     hex_value = bytea_to_hex_str(row[0])
-                    if hex_value:
-                        seen_ids.append(hex_value)
+                    seen_ids.append(hex_value)
                 log.debug("Loaded %d previously seen Gmail message identifiers.", len(seen_ids))
                 return seen_ids
         except Exception:

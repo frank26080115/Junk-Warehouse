@@ -30,37 +30,6 @@ log = logging.getLogger(__name__)
 log.setLevel(logging.DEBUG)
 
 
-def hex_str_to_bytea(hex_string: Optional[str]) -> bytes:
-    """Convert a hexadecimal identifier string into raw bytes for database persistence."""
-    if hex_string is None:
-        return b""
-    cleaned = hex_string.strip()
-    if not cleaned:
-        return b""
-    if len(cleaned) % 2 != 0:
-        cleaned = f"0{cleaned}"
-    try:
-        return bytes.fromhex(cleaned)
-    except ValueError as exc:
-        log.error("Failed to convert identifier %s into bytes: %s", hex_string, exc)
-        raise
-
-
-def bytea_to_hex_str(data: Optional[Union[bytes, bytearray, memoryview]]) -> str:
-    """Convert bytea values from PostgreSQL back into zero-padded hexadecimal strings."""
-    if data is None:
-        return ""
-    if isinstance(data, memoryview):
-        data = data.tobytes()
-    if isinstance(data, bytearray):
-        data = bytes(data)
-    if not isinstance(data, bytes):
-        return str(data)
-    hex_string = data.hex()
-    expected_length = len(data) * 2
-    return hex_string.zfill(expected_length)
-
-
 class ImapChecker(EmailChecker):
     """Poll a traditional IMAP inbox for recent order confirmations."""
 
@@ -145,8 +114,7 @@ class ImapChecker(EmailChecker):
                 seen: List[str] = []
                 for row in result:
                     hex_value = bytea_to_hex_str(row[0])
-                    if hex_value:
-                        seen.append(hex_value)
+                    seen.append(hex_value)
                 log.debug("Loaded %d previously seen IMAP message identifiers.", len(seen))
                 return seen
         except Exception:

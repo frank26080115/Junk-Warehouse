@@ -46,6 +46,35 @@ WORD_SPLIT_HYPHEN_EQUIVALENTS = (
 )
 
 
+def hex_str_to_bytea(hex_string: Optional[str], expected_str_length: int = 16) -> bytes:
+    """Convert a hexadecimal identifier string into raw bytes for database storage."""
+    if hex_string is None:
+        return b""
+    cleaned = hex_string.strip()
+    if not cleaned:
+        return b""
+    cleaned = cleaned.zfill(expected_str_length)
+    try:
+        return bytes.fromhex(cleaned)
+    except ValueError as exc:
+        log.error("Failed to convert identifier %s into bytes: %s", hex_string, exc)
+        raise
+
+
+def bytea_to_hex_str(data: Optional[Union[bytes, bytearray, memoryview]], expected_str_length: int = 16) -> str:
+    """Convert raw bytea values retrieved from PostgreSQL into zero-padded hexadecimal strings."""
+    if data is None:
+        return ""
+    if isinstance(data, memoryview):
+        data = data.tobytes()
+    if isinstance(data, bytearray):
+        data = bytes(data)
+    if not isinstance(data, bytes):
+        return str(data)
+    hex_string = data.hex()
+    return hex_string.zfill(expected_str_length)
+
+
 def deduplicate_preserving_order(value: list, lev_limit: int = -1) -> Any:
     """Return ``value`` with duplicates removed while preserving the first occurrence."""
 
