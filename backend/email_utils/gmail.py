@@ -10,7 +10,7 @@ import sys
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 # We need both the repository root and the backend package directory on sys.path so that
 # absolute imports work when the file is executed directly from different directories.
@@ -211,12 +211,24 @@ class GmailChecker(EmailChecker):
             return []
 
     @staticmethod
-    def _normalize_gmail_id(message_id: Optional[str]) -> Optional[str]:
+    def _normalize_gmail_id(message_id: Optional[Union[str, bytes]]) -> Optional[str]:
         """Convert Gmail message identifiers into canonical UUID format when possible."""
         log.debug("Normalizing Gmail message id: %s", message_id)
-        if not message_id:
-            return message_id
-        cleaned = message_id.strip()
+        if message_id is None:
+            return None
+        if isinstance(message_id, bytes):
+            try:
+                decoded = message_id.decode("utf-8")
+            except UnicodeDecodeError:
+                log.debug("Failed to decode Gmail id as UTF-8; falling back to latin-1 to preserve bytes.")
+                decoded = message_id.decode("latin-1")
+            # At this point the identifier is always a string so subsequent normalization logic can operate on it.
+            cleaned_source = decoded
+        else:
+            cleaned_source = message_id
+        if not cleaned_source:
+            return cleaned_source
+        cleaned = cleaned_source.strip()
         hex_candidate = cleaned.replace("-", "")
         hex_chars = set("0123456789abcdefABCDEF")
         if 16 <= len(hex_candidate) <= 32 and set(hex_candidate).issubset(hex_chars):
