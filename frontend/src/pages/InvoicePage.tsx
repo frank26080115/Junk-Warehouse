@@ -270,6 +270,53 @@ const InvoicePage: React.FC = () => {
     setInvoice((prev) => ({ ...prev, [key]: value }));
   };
 
+  // Persisting early ensures callbacks can reference this function without temporal dead zone issues.
+  const persistInvoice = useCallback(
+    async (
+      proposedInvoice: InvoiceDto,
+      options?: { successMessage?: string; lockAfterSave?: boolean; navigateOnIdChange?: boolean },
+    ) => {
+      const {
+        successMessage = "Invoice saved.",
+        lockAfterSave = true,
+        navigateOnIdChange = true,
+      } = options || {};
+      try {
+        setSaving(true);
+        setError("");
+        setSuccess("");
+        const payload: InvoiceDto = {
+          ...proposedInvoice,
+          id: proposedInvoice.id || (!isNewInvoice && uuid ? uuid : proposedInvoice.id),
+        };
+        const res = await fetch("/api/setinvoice", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) throw new Error(`Save failed: ${res.status}`);
+        const data: InvoiceDto = await res.json();
+        const merged = { ...EMPTY_INVOICE, ...data };
+        setInvoice(merged);
+        setSnapshot(merged);
+        if (lockAfterSave) {
+          setIsReadOnly(true);
+        }
+        if (successMessage) {
+          setSuccess(successMessage);
+        }
+        if (navigateOnIdChange && merged.id && uuid !== merged.id) {
+          navigate(`/invoice/${merged.id}`, { replace: true });
+        }
+      } catch (e: any) {
+        console.error(e);
+        setError(e?.message || "Failed to save invoice");
+      } finally {
+        setSaving(false);
+      }
+    },
+    [isNewInvoice, navigate, uuid],
+  );
   const handleDeletedChange = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
       const nextValue = event.target.checked;
@@ -327,52 +374,6 @@ const InvoicePage: React.FC = () => {
     setError("");
   };
 
-  const persistInvoice = useCallback(
-    async (
-      proposedInvoice: InvoiceDto,
-      options?: { successMessage?: string; lockAfterSave?: boolean; navigateOnIdChange?: boolean },
-    ) => {
-      const {
-        successMessage = "Invoice saved.",
-        lockAfterSave = true,
-        navigateOnIdChange = true,
-      } = options || {};
-      try {
-        setSaving(true);
-        setError("");
-        setSuccess("");
-        const payload: InvoiceDto = {
-          ...proposedInvoice,
-          id: proposedInvoice.id || (!isNewInvoice && uuid ? uuid : proposedInvoice.id),
-        };
-        const res = await fetch("/api/setinvoice", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        if (!res.ok) throw new Error(`Save failed: ${res.status}`);
-        const data: InvoiceDto = await res.json();
-        const merged = { ...EMPTY_INVOICE, ...data };
-        setInvoice(merged);
-        setSnapshot(merged);
-        if (lockAfterSave) {
-          setIsReadOnly(true);
-        }
-        if (successMessage) {
-          setSuccess(successMessage);
-        }
-        if (navigateOnIdChange && merged.id && uuid !== merged.id) {
-          navigate(`/invoice/${merged.id}`, { replace: true });
-        }
-      } catch (e: any) {
-        console.error(e);
-        setError(e?.message || "Failed to save invoice");
-      } finally {
-        setSaving(false);
-      }
-    },
-    [isNewInvoice, navigate, uuid],
-  );
 
   const handleSave = async () => {
     await persistInvoice(invoice);
@@ -747,3 +748,4 @@ const InvoicePage: React.FC = () => {
 };
 
 export default InvoicePage;
+
