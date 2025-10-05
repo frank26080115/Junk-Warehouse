@@ -852,6 +852,8 @@ def parse_tagged_text_to_dict(text: str, required_key: str = "name", def_req_val
             if match:
                 key = match  # fuzzy-correct the key if we got a reasonable match
         value = chr(10).join(current_buf).strip()  # Use a literal LF to prevent accidental CRLF artifacts in stored text
+        if "url" in key:
+            value = value.replace('\n', '').replace('\r', '')
         result[key] = value
         current_key, current_buf = None, []
 

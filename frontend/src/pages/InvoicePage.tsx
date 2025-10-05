@@ -534,9 +534,10 @@ const InvoicePage: React.FC = () => {
         />
       </div>
       <div className="mb-3">
-        <label className="form-label" htmlFor="invoice-urls">🔗🔗🔗 URLs</label>
+        <label className="form-label" htmlFor="invoice-urls">🔗🔗🔗 URLs:</label>
         {isReadOnly ? (
           singleMailUrl ? (
+            <div>
             <a
               href={singleMailUrl}
               target="_blank"
@@ -549,6 +550,7 @@ const InvoicePage: React.FC = () => {
               </span>
               <span className="text-break">{truncateUrlForDisplay(singleMailUrl)}</span>
             </a>
+            </div>
           ) : (
             <div className="d-flex flex-wrap gap-2">
               {urlEntries.length === 0 && <span className="text-muted">No URLs</span>}
@@ -556,6 +558,7 @@ const InvoicePage: React.FC = () => {
                 const linkKey = `${index}-${url}`;
                 const label = isGmailUrl(url) ? "✉️" : "🔗";
                 return (
+                  <div>
                   <a
                     key={linkKey}
                     href={url}
@@ -566,6 +569,7 @@ const InvoicePage: React.FC = () => {
                   >
                     {label}
                   </a>
+                  </div>
                 );
               })}
             </div>
@@ -613,7 +617,7 @@ const InvoicePage: React.FC = () => {
               checked={Boolean(invoice.has_been_processed)}
               onChange={handleProcessedChange}
             />
-            <label className="form-check-label" htmlFor="invoice-processed">Has been processed</label>
+            <label className="form-check-label" htmlFor="invoice-processed">✅Mark as been-processed</label>
           </div>
         </div>
       </div>
@@ -675,7 +679,7 @@ const InvoicePage: React.FC = () => {
           onClick={handleAnalyzeHtmlJob}
           disabled={analyzingHtml || !effectiveUuid || !analyzeHtml.trim()}
         >
-          🪄
+          🪄 Analyze
         </button>
         {analyzingHtml && analyzeJobStatus === "queued" && (
           <div className="text-muted small">Job queued…</div>
