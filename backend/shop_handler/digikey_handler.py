@@ -37,6 +37,15 @@ class DigiKeyHandler(ShopHandler):
     )
     REQUEST_TIMEOUT = 15
 
+    def get_order_number(self) -> Optional[str]:
+        pattern = self.ORDER_NUMBER_REGEX
+        if pattern is None:
+            return None
+        match = pattern.search(self._get_sanitized_text())
+        if match:
+            return match.group(1) if match.groups() else match.group(0)
+        return None
+
     def guess_items(self) -> List[Dict[str, str]]:
         """Attempt all Digi-Key strategies in priority order."""
 

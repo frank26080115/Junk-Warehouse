@@ -29,6 +29,15 @@ class McMasterCarrHandler(ShopHandler):
         """Return True when ``value`` includes any numeric digit."""
         return any(character.isdigit() for character in value)
 
+    def get_order_number(self) -> Optional[str]:
+        pattern = self.ORDER_NUMBER_REGEX
+        if pattern is None:
+            return None
+        match = pattern.search(self._get_sanitized_text())
+        if match:
+            return match.group(1) if match.groups() else match.group(0)
+        return None
+
     def guess_items(self) -> List[Dict[str, str]]:
         """Attempt to extract item details from McMaster-Carr order tables."""
         # Gather every table in the sanitized DOM. The structure we care about should

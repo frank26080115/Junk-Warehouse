@@ -46,6 +46,15 @@ class AmazonHandler(ShopHandler):
     }
     REQUEST_TIMEOUT = 15
 
+    def get_order_number(self) -> Optional[str]:
+        pattern = self.ORDER_NUMBER_REGEX
+        if pattern is None:
+            return None
+        match = pattern.search(self._get_sanitized_text())
+        if match:
+            return match.group(1) if match.groups() else match.group(0)
+        return None
+
     def guess_items(self) -> List[Dict[str, str]]:
         """Run the available extraction strategies and return the richest result set."""
         candidates_from_invoice_tables = self._guess_items_strategy_one()
