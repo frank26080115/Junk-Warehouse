@@ -6,7 +6,6 @@ interface AutoSummaryEntry {
   id: string;
   text: string;
   image: string;
-  selected: boolean;
 }
 
 interface AutoInvoiceSummaryPanelProps {
@@ -41,7 +40,6 @@ const createBlankEntry = (seed: number): AutoSummaryEntry => ({
   id: generateClientId(seed),
   text: "",
   image: "",
-  selected: false,
 });
 
 const PUNCTUATION_FOR_NAME = /[!"#$%&'()*+,\-./:;<=>?@[\]^_`{|}~]/g;
@@ -222,7 +220,6 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
           id: clientId,
           text: textValue,
           image: imageValue,
-          selected: false,
         };
       });
 
@@ -236,19 +233,7 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
   }, [autoSummaryRaw]);
 
   const hasInvoiceUuid = Boolean(invoiceUuid);
-  const selectedEntries = entries.filter((entry) => entry.selected);
-  const selectedCount = selectedEntries.length;
   const canMutate = hasInvoiceUuid && !isBusy;
-
-  const handleToggleEntry = (id: string) => {
-    setEntries((prev) =>
-      prev.map((entry) =>
-        entry.id === id
-          ? { ...entry, selected: !entry.selected }
-          : entry
-      )
-    );
-  };
 
   const handleEntryChange = (id: string, key: "text" | "image", value: string) => {
     if (key === "image" && value.startsWith("data:") && value.length > MAX_DATA_URL_LENGTH) {
@@ -345,12 +330,6 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
     reader.readAsDataURL(file);
   };
 
-  const handleDeselectAll = () => {
-    setEntries((prev) =>
-      prev.map((entry) => ({ ...entry, selected: false }))
-    );
-  };
-
   const buildErrorSummary = (failures: unknown): string => {
     if (!Array.isArray(failures) || failures.length === 0) {
       return "";
@@ -378,7 +357,7 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
       return;
     }
     if (entriesToInsert.length === 0) {
-      setModalError("Select at least one row before inserting.");
+      setModalError("Provide at least one row before inserting.");
       return;
     }
 
@@ -401,7 +380,7 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
 
       const missingTextEntry = payloadItems.find((item) => item.text === "");
       if (missingTextEntry) {
-        setModalError("Each selected entry must include tagged text before inserting.");
+        setModalError("Each entry must include tagged text before inserting.");
         return;
       }
 
@@ -490,15 +469,7 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
     }
   };
 
-  const handleInsertSelected = () => {
-    performInsert(selectedEntries.map((entry) => ({ ...entry })));
-  };
-
   const handleRowInsert = (entry: AutoSummaryEntry) => {
-    if (!entry.selected) {
-      setModalError("Select the row using its checkbox before inserting it.");
-      return;
-    }
     performInsert([{ ...entry }]);
   };
 
@@ -541,8 +512,8 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
           <table className="table table-sm align-middle">
             <tbody>
               {entries.map((entry, index) => {
-                const checkboxId = `auto-summary-checkbox-${index}`;
                 const insertLabel = isBusy ? "⏳" : "🪄➕";
+                const displayNumber = index + 1;
                 return (
                   <tr key={entry.id}>
                     <td className="text-center align-top" style={{ width: "1%", whiteSpace: "nowrap" }}>
@@ -551,25 +522,13 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
                         className="btn btn-outline-primary btn-sm"
                         onClick={() => handleRowInsert(entry)}
                         disabled={!canMutate}
-                        title="Click to insert selected entries"
+                        title="Insert this entry into the invoice"
                       >
                         {insertLabel}
                       </button>
                     </td>
                     <td>
-                      <div className="d-flex justify-content-between align-items-center mb-2">
-                        <div className="form-check mb-0">
-                          <input
-                            id={checkboxId}
-                            type="checkbox"
-                            className="form-check-input"
-                            checked={entry.selected}
-                            onChange={() => handleToggleEntry(entry.id)}
-                            disabled={isBusy}
-                          />
-                          <label className="form-check-label" htmlFor={checkboxId}>Use this entry</label>
-                        </div>
-                      </div>
+                      <div className="text-muted small mb-2">Suggested entry #{displayNumber}</div>
                       {/* Multiline area keeps tagged text readable while giving the user room to expand. */}
                       <div className="input-group input-group-sm mb-2">
                         <span className="input-group-text" aria-hidden="true">🪪</span>
@@ -602,31 +561,6 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
               })}
             </tbody>
           </table>
-        </div>
-      )}
-
-      {!missingMessage && !parseError && entries.length > 0 && (
-        <div className="d-flex justify-content-between align-items-center mt-3">
-          <div className="text-muted small">{selectedCount} selected</div>
-          <div className="d-flex gap-2">
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              onClick={handleInsertSelected}
-              disabled={!canMutate || selectedCount === 0}
-              title="Click to insert selected entries"
-            >
-              {isBusy ? "⏳" : "🪄➕"}
-            </button>
-            <button
-              type="button"
-              className="btn btn-outline-secondary btn-sm"
-              onClick={handleDeselectAll}
-              disabled={isBusy || selectedCount === 0}
-            >
-              ❌☐☐
-            </button>
-          </div>
         </div>
       )}
 
