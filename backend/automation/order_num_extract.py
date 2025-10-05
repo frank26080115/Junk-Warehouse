@@ -34,13 +34,13 @@ KEYWORD_RE = re.compile(r"(?i)\b(?:" + "|".join(KEYWORD_PATTERNS) + r")\b")
 
 # Strict token (general case): 6–40 chars, alnum with internal - _
 STRICT_NUMERIC_TOKEN_RE = r"[0-9](?:[0-9\-_]{4,38})[0-9]"
-STRICT_ALNUM_TOKEN_RE = r"(?=[A-Z0-9\-_]*[A-Z])(?=[A-Z0-9\-_]*[0-9])[A-Z0-9](?:[A-Z0-9\-_]{4,38})[A-Z0-9]"
+STRICT_ALNUM_TOKEN_RE = r"(?=[A-Z0-9\-_]*[A-Z])(?=[A-Z0-9\-_]*[0-9])[A-Z0-9](?:[A-Z0-9\-_]{4,38})[A-Z0-9](?!\/)"
 STRICT_TOKEN_RE = rf"(?:{STRICT_NUMERIC_TOKEN_RE}|{STRICT_ALNUM_TOKEN_RE})"
 
 # Short IDs for strongly-cued forms like "Order No. 1135" or "Invoice num: A12B3"
 # 3–12 chars, allow hyphenated groups
 SHORT_NUMERIC_ID_RE = r"[0-9]{3,12}(?:-[0-9]{2,12}){0,3}"
-SHORT_ALNUM_ID_RE = r"(?=[A-Z0-9-]*[A-Z])(?=[A-Z0-9-]*[0-9])[A-Z0-9]{3,12}(?:-[A-Z0-9]{2,12}){0,3}"
+SHORT_ALNUM_ID_RE = r"(?=[A-Z0-9-]*[A-Z])(?=[A-Z0-9-]*[0-9])[A-Z0-9]{3,12}(?:-[A-Z0-9]{2,12}){0,3}(?!\/)"
 SHORT_ID_RE = rf"(?:{SHORT_NUMERIC_ID_RE}|{SHORT_ALNUM_ID_RE})"
 
 # Cues immediately before a short ID:
