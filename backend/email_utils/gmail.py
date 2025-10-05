@@ -9,6 +9,7 @@ import logging
 import sys
 import uuid
 from datetime import datetime, timedelta
+from email.utils import parseaddr
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Union
 
@@ -339,6 +340,7 @@ class GmailChecker(EmailChecker):
             h.get("name", "").lower(): h.get("value", "")
             for h in msg.get("payload", {}).get("headers", [])
         }
+        sender_email = parseaddr(headers.get("from", ""))[1] or None
         subject = headers.get("subject", "")
         message_id = msg.get("id") or ""
         normalized_id = GmailChecker._normalize_gmail_id(message_id)
@@ -356,6 +358,7 @@ class GmailChecker(EmailChecker):
             text_body,
             gmail_link,
             None,
+            sender_email,
         )
         raw_identifier = normalized_id or message_id or ""
         # Gmail message identifiers arrive as hexadecimal strings that need to live in the bytea column as raw bytes.

@@ -10,6 +10,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from email import message_from_bytes
 from email.header import decode_header, make_header
+from email.utils import parseaddr
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 # Ensure repository imports function when executing the file directly.
@@ -185,6 +186,8 @@ class ImapChecker(EmailChecker):
         msg = message_from_bytes(msg_bytes)
         subject = ImapChecker._decode_header_value(msg.get("Subject"))
         message_id = ImapChecker._decode_header_value(msg.get("Message-ID")) or uid
+        from_header = ImapChecker._decode_header_value(msg.get("From"))
+        sender_email = parseaddr(from_header)[1] or None
         html_body, text_body = ImapChecker._extract_bodies(msg)
         email_date = EmailChecker.parse_email_date(msg.get("Date"))
         ingestion = EmailChecker.ingest_invoice_from_email(
@@ -196,6 +199,7 @@ class ImapChecker(EmailChecker):
             text_body,
             None,
             None,
+            sender_email,
         )
         # Persist the canonical hexadecimal UID as raw bytes so the bytea column stays consistent.
         payload: Dict[str, Any] = {

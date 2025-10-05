@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from collections.abc import Mapping
 from typing import Any, Optional
@@ -22,6 +23,9 @@ _REPO_ROOT_PREFIX = "<REPO_ROOT>/"
 _PIN_OPEN_EXPIRY_CONFIG_KEY = "pin_open_expiry_hours"
 _PIN_OPEN_EXPIRY_DEFAULT_HOURS = 36
 
+_EMAIL_WHITELIST_CACHE: Optional[tuple[str, ...]] = None
+_EMAIL_WHITELIST_CACHE_READY = False
+
 def _read_json_file(path: Path) -> dict:
     """Read JSON from disk, returning an empty mapping on failure."""
     try:
@@ -34,6 +38,30 @@ def load_app_config() -> dict:
     """Return the raw JSON configuration for the application."""
     return _read_json_file(CONFIG_PATH)
 
+def _normalize_email_whitelist(raw_value: Any) -> tuple[str, ...]:
+    """Convert raw configuration values into a normalized whitelist tuple."""
+    normalized_entries = []
+
+    def _append_entry(candidate: Any) -> None:
+        """Add cleaned whitelist entries while ignoring invalid data types."""
+        if not isinstance(candidate, str):
+            return
+        cleaned = candidate.strip().lower()
+        if not cleaned:
+            return
+        if cleaned in normalized_entries:
+            return
+        normalized_entries.append(cleaned)
+
+    if isinstance(raw_value, str):
+        for piece in re.split(r"[;,\s]+", raw_value):
+            _append_entry(piece)
+    elif isinstance(raw_value, list):
+        for item in raw_value:
+            _append_entry(item)
+
+    return tuple(normalized_entries)
+
 def _coerce_positive_number(value: Any, fallback: int) -> int:
     """Convert unknown input into a positive integer number of hours."""
     try:
@@ -43,6 +71,24 @@ def _coerce_positive_number(value: Any, fallback: int) -> int:
     if numeric <= 0:
         return int(fallback)
     return int(numeric)
+
+def get_email_whitelist(cfg: Optional[Mapping[str, Any]] = None) -> list[str]:
+    """Return the cached list of permitted email sender fragments."""
+    global _EMAIL_WHITELIST_CACHE, _EMAIL_WHITELIST_CACHE_READY
+    if _EMAIL_WHITELIST_CACHE_READY:
+        return list(_EMAIL_WHITELIST_CACHE or ())
+
+    if cfg is None:
+        cfg = load_app_config()
+
+    raw_value: Any = None
+    if isinstance(cfg, Mapping):
+        raw_value = cfg.get("email_whitelist")
+
+    whitelist_tuple = _normalize_email_whitelist(raw_value)
+    _EMAIL_WHITELIST_CACHE = whitelist_tuple
+    _EMAIL_WHITELIST_CACHE_READY = True
+    return list(whitelist_tuple)
 
 def get_pin_open_expiry_hours(cfg: Optional[Mapping[str, Any]] = None) -> int:
     """Resolve the configured window (in hours) for keeping pins open."""
