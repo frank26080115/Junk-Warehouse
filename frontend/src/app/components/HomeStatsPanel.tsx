@@ -102,7 +102,7 @@ const STAT_DEFINITIONS: StatDefinition[] = [
     id: "merges",
     label: "Merges Planned",
     emoji: "⏳🤝",
-    query: "* \mergewaiting",
+    query: "* \\mergewaiting",
     endpoint: "items",
   },
   {
@@ -116,14 +116,14 @@ const STAT_DEFINITIONS: StatDefinition[] = [
     id: "pinned-items",
     label: "Pinned Containers",
     emoji: "📌📦",
-    query: "* \pinned",
+    query: "\\pinned",
     endpoint: "items",
   },
   {
     id: "pinned-invoices",
     label: "Pinned Invoices",
     emoji: "📌✉️",
-    query: "* \pinned",
+    query: "\\pinned",
     endpoint: "invoices",
   },
 ];
