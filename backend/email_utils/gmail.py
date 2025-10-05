@@ -10,7 +10,7 @@ import sys
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 # We need both the repository root and the backend package directory on sys.path so that
 # absolute imports work when the file is executed directly from different directories.
@@ -35,6 +35,37 @@ except ImportError:
 
 log = logging.getLogger(__name__)
 log.setLevel(logging.DEBUG)
+
+
+def hex_str_to_bytea(hex_string: Optional[str]) -> bytes:
+    """Convert a hexadecimal identifier string into raw bytes for database storage."""
+    if hex_string is None:
+        return b""
+    cleaned = hex_string.strip()
+    if not cleaned:
+        return b""
+    if len(cleaned) % 2 != 0:
+        cleaned = f"0{cleaned}"
+    try:
+        return bytes.fromhex(cleaned)
+    except ValueError as exc:
+        log.error("Failed to convert identifier %s into bytes: %s", hex_string, exc)
+        raise
+
+
+def bytea_to_hex_str(data: Optional[Union[bytes, bytearray, memoryview]]) -> str:
+    """Convert raw bytea values retrieved from PostgreSQL into zero-padded hexadecimal strings."""
+    if data is None:
+        return ""
+    if isinstance(data, memoryview):
+        data = data.tobytes()
+    if isinstance(data, bytearray):
+        data = bytes(data)
+    if not isinstance(data, bytes):
+        return str(data)
+    hex_string = data.hex()
+    expected_length = len(data) * 2
+    return hex_string.zfill(expected_length)
 
 
 class GmailChecker(EmailChecker):
@@ -203,7 +234,12 @@ class GmailChecker(EmailChecker):
         try:
             with engine.connect() as conn:
                 result = conn.execute(text("SELECT email_uuid FROM gmail_seen"))
-                seen_ids = [str(row[0]) for row in result if row[0] is not None]
+                # Convert stored bytea values back into canonical hexadecimal strings for comparison.
+                seen_ids: List[str] = []
+                for row in result:
+                    hex_value = bytea_to_hex_str(row[0])
+                    if hex_value:
+                        seen_ids.append(hex_value)
                 log.debug("Loaded %d previously seen Gmail message identifiers.", len(seen_ids))
                 return seen_ids
         except Exception:
@@ -211,12 +247,24 @@ class GmailChecker(EmailChecker):
             return []
 
     @staticmethod
-    def _normalize_gmail_id(message_id: Optional[str]) -> Optional[str]:
+    def _normalize_gmail_id(message_id: Optional[Union[str, bytes]]) -> Optional[str]:
         """Convert Gmail message identifiers into canonical UUID format when possible."""
         log.debug("Normalizing Gmail message id: %s", message_id)
-        if not message_id:
-            return message_id
-        cleaned = message_id.strip()
+        if message_id is None:
+            return None
+        if isinstance(message_id, bytes):
+            try:
+                decoded = message_id.decode("utf-8")
+            except UnicodeDecodeError:
+                log.debug("Failed to decode Gmail id as UTF-8; falling back to latin-1 to preserve bytes.")
+                decoded = message_id.decode("latin-1")
+            # At this point the identifier is always a string so subsequent normalization logic can operate on it.
+            cleaned_source = decoded
+        else:
+            cleaned_source = message_id
+        if not cleaned_source:
+            return cleaned_source
+        cleaned = cleaned_source.strip()
         hex_candidate = cleaned.replace("-", "")
         hex_chars = set("0123456789abcdefABCDEF")
         if 16 <= len(hex_candidate) <= 32 and set(hex_candidate).issubset(hex_chars):
@@ -342,9 +390,9 @@ class GmailChecker(EmailChecker):
             None,
         )
         raw_identifier = normalized_id or message_id or ""
-        # Gmail message identifiers must be stored in the bytea column as raw bytes.
-        # Encoding the identifier clarifies the contract and keeps psycopg happy.
-        email_uuid_bytes = raw_identifier.encode("utf-8")
+        # Gmail message identifiers arrive as hexadecimal strings that need to live in the bytea column as raw bytes.
+        # Converting through hex_str_to_bytea preserves zero padding so Gmail URLs remain stable.
+        email_uuid_bytes = hex_str_to_bytea(raw_identifier) if raw_identifier else b""
         gmail_payload: Dict[str, Any] = {
             "email_uuid": email_uuid_bytes,
             "date_seen": email_date,

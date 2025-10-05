@@ -10,7 +10,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from email import message_from_bytes
 from email.header import decode_header, make_header
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 # Ensure repository imports function when executing the file directly.
 from pathlib import Path
@@ -28,6 +28,37 @@ from .email_helper import EmailChecker
 
 log = logging.getLogger(__name__)
 log.setLevel(logging.DEBUG)
+
+
+def hex_str_to_bytea(hex_string: Optional[str]) -> bytes:
+    """Convert a hexadecimal identifier string into raw bytes for database persistence."""
+    if hex_string is None:
+        return b""
+    cleaned = hex_string.strip()
+    if not cleaned:
+        return b""
+    if len(cleaned) % 2 != 0:
+        cleaned = f"0{cleaned}"
+    try:
+        return bytes.fromhex(cleaned)
+    except ValueError as exc:
+        log.error("Failed to convert identifier %s into bytes: %s", hex_string, exc)
+        raise
+
+
+def bytea_to_hex_str(data: Optional[Union[bytes, bytearray, memoryview]]) -> str:
+    """Convert bytea values from PostgreSQL back into zero-padded hexadecimal strings."""
+    if data is None:
+        return ""
+    if isinstance(data, memoryview):
+        data = data.tobytes()
+    if isinstance(data, bytearray):
+        data = bytes(data)
+    if not isinstance(data, bytes):
+        return str(data)
+    hex_string = data.hex()
+    expected_length = len(data) * 2
+    return hex_string.zfill(expected_length)
 
 
 class ImapChecker(EmailChecker):
@@ -113,13 +144,9 @@ class ImapChecker(EmailChecker):
                 result = conn.execute(text("SELECT email_uuid FROM imail_seen"))
                 seen: List[str] = []
                 for row in result:
-                    value = row[0]
-                    if isinstance(value, memoryview):
-                        value = value.tobytes()
-                    if isinstance(value, bytes):
-                        seen.append(value.decode("utf-8", errors="ignore"))
-                    elif value is not None:
-                        seen.append(str(value))
+                    hex_value = bytea_to_hex_str(row[0])
+                    if hex_value:
+                        seen.append(hex_value)
                 log.debug("Loaded %d previously seen IMAP message identifiers.", len(seen))
                 return seen
         except Exception:
@@ -202,8 +229,9 @@ class ImapChecker(EmailChecker):
             None,
             None,
         )
+        # Persist the canonical hexadecimal UID as raw bytes so the bytea column stays consistent.
         payload: Dict[str, Any] = {
-            "email_uuid": uid.encode("utf-8"),
+            "email_uuid": hex_str_to_bytea(uid) if uid else b"",
             "date_seen": email_date,
         }
         invoice_id = ingestion.get("invoice_id")
@@ -302,7 +330,28 @@ class ImapChecker(EmailChecker):
             )
         seen_uids = set(ImapChecker._fetch_seen_uids())
         log.debug("Found %d previously seen IMAP UIDs", len(seen_uids))
-        new_uids = [uid for uid in uids if uid not in seen_uids]
+        # Translate each server-provided UID into the canonical hexadecimal form stored in the database.
+        uid_pairs: List[Tuple[str, str]] = []
+        for uid in uids:
+            canonical_uid = ""
+            if uid:
+                try:
+                    canonical_uid = bytea_to_hex_str(hex_str_to_bytea(uid))
+                except ValueError:
+                    log.error(
+                        "IMAP UID %s could not be interpreted as hexadecimal; skipping for deduplication.",
+                        uid,
+                    )
+                    canonical_uid = ""
+            uid_pairs.append((uid, canonical_uid))
+        new_uid_pairs = [
+            (uid, canonical)
+            for uid, canonical in uid_pairs
+            if canonical and canonical not in seen_uids
+        ]
+        new_uids = [uid for uid, _ in new_uid_pairs]
+        # Update the in-memory seen set so duplicates later in the list are ignored during this run as well.
+        seen_uids.update(canonical for _, canonical in new_uid_pairs)
         log.debug("Identified %d new IMAP UIDs to process", len(new_uids))
         processed: List[Dict[str, Any]] = []
         for uid in new_uids:
