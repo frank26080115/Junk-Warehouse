@@ -6,5 +6,6 @@
     "emb_model_offline": "all-mpnet-base-v2",
     "pin_open_expiry_hours": 36,
     "meta_whitelist": "sony, apple, ece",
-    "public_html_path": "<REPO_ROOT>/var/public_html"
+    "public_html_path": "<REPO_ROOT>/var/public_html",
+    "email_whitelist": "shopify;"
 }
