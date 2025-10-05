@@ -21,6 +21,11 @@ SECRETS_PATH = REPO_ROOT / "config" / "secrets.json"
 
 log = logging.getLogger(__name__)
 
+# Toggle to prevent inserting invoices when the automated summary contains no useful information.
+SKIP_EMPTY_AUTO_SUMMARY = True
+
+# Normalized representations that indicate the auto-summary contained no generated insights.
+EMPTY_AUTO_SUMMARY_SENTINELS = {"", "[]"}
 
 class EmailChecker:
     """Simple base class used by concrete mailbox polling helpers."""
@@ -190,6 +195,21 @@ class EmailChecker:
             handler_order = handler.get_order_number()
             if handler_order:
                 order_number = handler_order.strip()
+        if SKIP_EMPTY_AUTO_SUMMARY and order_number:
+            # Respect the operator preference by refusing to persist invoices that lack automated insights.
+            normalized_summary = (auto_summary or "").strip()
+            if normalized_summary in EMPTY_AUTO_SUMMARY_SENTINELS:
+                log.info(
+                    "Skipping invoice creation for %s message %s because the auto-summary was empty.",
+                    provider_label,
+                    message_id,
+                )
+                return {
+                    "order_number": order_number,
+                    "invoice_id": None,
+                    "invoice_error": None,
+                    "status": "auto_summary_empty",
+                }
         invoice_id = None
         invoice_error: Optional[str] = None
         if order_number:
