@@ -78,7 +78,7 @@ class AmazonHandler(ShopHandler):
             ai = LlmAi("offline")
 
             try:
-                ai_name = ai.query([prod_name], "You will be given the product name of an item available on Amazon, it will have some useless information that can be removed, reply with a concise name for the object without any SEO info or quantity information.")
+                ai_name = ai.query([prod_name], "You will be given the product name of an item available on Amazon, it will have some useless information that can be removed, reply with a concise name for the object without any SEO info or quantity information. This is not a conversation, please reply with only the final concise name.")
                 final_name = ai_name or prod_name
             except Exception as ex:
                 log.error(f"AI exception when summarizing Amazon product name: {ex!r}")
@@ -111,7 +111,7 @@ class AmazonHandler(ShopHandler):
             description_value = description or candidate.get("description", "")
             if description_value:
                 try:
-                    ai_desc = ai.query([final_name, description_value], "You will be given the product name and description of an item available on Amazon. Summarize it down to a short paragraph about what the item is and what it is used for.")
+                    ai_desc = ai.query([final_name, description_value], "You will be given the product name and description of an item available on Amazon. Summarize it down to a short paragraph about what the item is and what it is used for. This is not a conversation, please reply with only the summary.")
                     description_value = ai_desc or description_value
                 except Exception as ex:
                     log.error(f"AI exception when summarizing Amazon product name: {ex!r}")
