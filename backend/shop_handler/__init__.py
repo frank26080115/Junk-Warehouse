@@ -4,6 +4,7 @@ from .shop_handler import ShopHandler, GenericShopHandler
 from .amazon_handler import AmazonHandler
 from .digikey_handler import DigiKeyHandler
 from .mcmastercarr_handler import McMasterCarrHandler
+from .ebay_handler import EbayHandler
 
 __all__ = [
     "ShopHandler",
@@ -11,4 +12,5 @@ __all__ = [
     "AmazonHandler",
     "DigiKeyHandler",
     "McMasterCarrHandler",
+    "EbayHandler",
 ]
