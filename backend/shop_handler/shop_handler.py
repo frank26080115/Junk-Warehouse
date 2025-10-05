@@ -159,15 +159,18 @@ class ShopHandler:
             from amazon_handler import AmazonHandler
             from digikey_handler import DigiKeyHandler
             from mcmastercarr_handler import McMasterCarrHandler
+            from ebay_handler import EbayHandler
         except ImportError:
             from .amazon_handler import AmazonHandler
             from .digikey_handler import DigiKeyHandler
             from .mcmastercarr_handler import McMasterCarrHandler
+            from .ebay_handler import EbayHandler
 
         handler_specs: Sequence[Tuple[str, str]] = (
             ("amazon_handler", "AmazonHandler"),
             ("digikey_handler", "DigiKeyHandler"),
             ("mcmastercarr_handler", "McMasterCarrHandler"),
+            ("ebay_handler", "EbayHandler"),
         )
 
         handler_package = cls._determine_handler_package()
