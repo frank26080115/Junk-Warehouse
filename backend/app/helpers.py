@@ -70,9 +70,9 @@ def bytea_to_hex_str(data: Optional[Union[bytes, bytearray, memoryview]], expect
     if isinstance(data, bytearray):
         data = bytes(data)
     if not isinstance(data, bytes):
-        return str(data)
+        return str(data).lstrip('0').zfill(expected_str_length)
     hex_string = data.hex()
-    return hex_string.zfill(expected_str_length)
+    return hex_string.lstrip('0').zfill(expected_str_length)
 
 
 def deduplicate_preserving_order(value: list, lev_limit: int = -1) -> Any:
