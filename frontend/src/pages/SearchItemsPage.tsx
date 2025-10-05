@@ -57,19 +57,3 @@ const SearchItemsPage: React.FC = () => {
 };
 
 export default SearchItemsPage;
-  }, [location.search, xyz]);
-
-  return (
-    <div className="container-lg py-4" style={{ maxWidth: "960px" }}>
-      <SearchPanel
-        displayedTitle="Search Inventory Items"
-        prefilledQuery={prefilled}
-        tableName="items"
-        allowDelete
-      />
-      <TreeView />
-    </div>
-  );
-};
-
-export default SearchItemsPage;

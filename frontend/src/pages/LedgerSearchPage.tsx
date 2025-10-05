@@ -80,28 +80,3 @@ const LedgerSearchPage: React.FC = () => {
 };
 
 export default LedgerSearchPage;
-
-  }, [prefilled]);
-
-  return (
-    <div className="container-lg py-4" style={{ maxWidth: "960px" }}>
-      <SearchPanel
-        displayedTitle="Search Ledger"
-        prefilledQuery={searchPrefill}
-        tableName="invoices"
-        allowDelete
-      />
-
-      <InvoiceUploaderPanel
-        onSearchPrefillSuggested={(query) => {
-          // Provide the parent search panel with the recommended query so users immediately see fresh results.
-          setSearchPrefill(query);
-        }}
-        // Email polling is now automated, so hide the manual checker panel.
-        showCheckEmailPanel={false}
-      />
-    </div>
-  );
-};
-
-export default LedgerSearchPage;
