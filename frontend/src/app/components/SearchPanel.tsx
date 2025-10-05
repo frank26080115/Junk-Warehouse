@@ -142,6 +142,36 @@ function formatDateToYMD(value: string): string {
   return trimmed;
 }
 
+function hasMeaningfulAutoSummary(value: unknown): boolean {
+  if (value == null) {
+    return false;
+  }
+  const raw = typeof value === "string" ? value.trim() : String(value).trim();
+  if (raw === "") {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.some((entry) => {
+        if (!entry || typeof entry !== "object") {
+          return false;
+        }
+        const entryRecord = entry as Record<string, unknown>;
+        const textValue =
+          typeof entryRecord.text === "string" ? entryRecord.text.trim() : "";
+        const imageValue =
+          typeof entryRecord.image === "string" ? entryRecord.image.trim() : "";
+        return textValue !== "" || imageValue !== "";
+      });
+    }
+    return true;
+  } catch (error) {
+    // If the payload cannot be parsed we still indicate that content exists so the user can investigate.
+    return true;
+  }
+}
+
 function extractInvoiceLines(row: SearchRow): string[] {
   const normalize = (value: unknown): string => {
     if (value == null) {
@@ -165,10 +195,12 @@ function extractInvoiceLines(row: SearchRow): string[] {
   if (hasBeenProcessed === false) {
     line += `⏳`;
   }
-  // TODO: const hasAutoSummary = ???????
-  //if (hasAutoSummary) {
-  //  line += `🪄`;
-  //}
+  const autoSummaryValue = (row as any).auto_summary;
+  const hasAutoSummary = hasMeaningfulAutoSummary(autoSummaryValue);
+  if (hasAutoSummary) {
+    // Provide a gentle hint that automatically generated context exists for this invoice.
+    line += `🪄`;
+  }
   lines.push(line);
 
   const shopRaw = normalize((row as any).shop_name);
