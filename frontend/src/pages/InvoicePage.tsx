@@ -38,6 +38,23 @@ const EMPTY_INVOICE: InvoiceDto = {
   pin_as_opened: null,
 };
 
+function describeRelativeDays(date: Date): string | null {
+  // Communicate how recent the invoice is without forcing the user to do mental math.
+  const now = new Date();
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const diffMs = now.getTime() - date.getTime();
+  const rawDays = diffMs / msPerDay;
+  if (Math.abs(rawDays) < 1) {
+    return "today";
+  }
+  if (rawDays > 0) {
+    const fullDays = Math.floor(rawDays);
+    return fullDays === 1 ? "1 day ago" : `${fullDays} days ago`;
+  }
+  const fullDaysAhead = Math.ceil(Math.abs(rawDays));
+  return fullDaysAhead === 1 ? "in 1 day" : `in ${fullDaysAhead} days`;
+}
+
 function fmtDateTime(value?: string | null): string {
   if (!value) return "";
   const date = new Date(value);
@@ -47,7 +64,9 @@ function fmtDateTime(value?: string | null): string {
   const day = `${date.getDate()}`.padStart(2, "0");
   const hours = `${date.getHours()}`.padStart(2, "0");
   const minutes = `${date.getMinutes()}`.padStart(2, "0");
-  return `${year}/${month}/${day} ${hours}:${minutes}`;
+  const base = `${year}/${month}/${day} ${hours}:${minutes}`;
+  const relative = describeRelativeDays(date);
+  return relative ? `${base} (${relative})` : base;
 }
 
 function toDateInputValue(value?: string | null): string {
@@ -74,6 +93,22 @@ function splitUrls(value?: string): string[] {
     .split(";")
     .map((url) => url.trim())
     .filter((url) => url.length > 0);
+}
+
+
+const GMAIL_URL_PATTERN = /mail\.google\.com|gmail\.com/i;
+
+function isGmailUrl(url: string): boolean {
+  return GMAIL_URL_PATTERN.test(url);
+}
+
+function truncateUrlForDisplay(url: string, maxLength = 30): string {
+  // Keep the display readable while still hinting at the destination.
+  if (url.length <= maxLength) {
+    return url;
+  }
+  const visiblePortion = Math.max(maxLength - 3, 0);
+  return `${url.slice(0, visiblePortion)}...`;
 }
 
 
@@ -204,6 +239,12 @@ const InvoicePage: React.FC = () => {
   }, [uuid, isNewInvoice]);
 
   const urlEntries = useMemo(() => splitUrls(invoice.urls), [invoice.urls]);
+  const singleMailUrl = useMemo(() => {
+    if (urlEntries.length === 1 && isGmailUrl(urlEntries[0])) {
+      return urlEntries[0];
+    }
+    return null;
+  }, [urlEntries]);
   const effectiveUuid = invoice.id || uuid || "";
   const pinDetails = describePinTimestamp(invoice.pin_as_opened);
   const isPinCurrentlyActive = pinDetails.instant
@@ -229,14 +270,41 @@ const InvoicePage: React.FC = () => {
     setInvoice((prev) => ({ ...prev, [key]: value }));
   };
 
-  const handleToggleDeleted = () => {
-    if (isReadOnly) return;
-    setInvoice((prev) => ({ ...prev, is_deleted: !prev.is_deleted }));
-  };
+  const handleDeletedChange = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const nextValue = event.target.checked;
+      const proposedInvoice: InvoiceDto = { ...invoice, is_deleted: nextValue };
+      setInvoice(proposedInvoice);
+      setSuccess("");
+      setError("");
+      if (!effectiveUuid) {
+        return;
+      }
+      void persistInvoice(proposedInvoice, {
+        successMessage: nextValue ? "Invoice moved to trash." : "Invoice restored.",
+        lockAfterSave: isReadOnly,
+      });
+    },
+    [effectiveUuid, invoice, isReadOnly, persistInvoice],
+  );
 
-  const handleProcessedChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    handleFieldChange("has_been_processed", event.target.checked);
-  };
+  const handleProcessedChange = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const nextValue = event.target.checked;
+      const proposedInvoice: InvoiceDto = { ...invoice, has_been_processed: nextValue };
+      setInvoice(proposedInvoice);
+      setSuccess("");
+      setError("");
+      if (!effectiveUuid) {
+        return;
+      }
+      void persistInvoice(proposedInvoice, {
+        successMessage: nextValue ? "Invoice marked as processed." : "Invoice marked as not processed.",
+        lockAfterSave: isReadOnly,
+      });
+    },
+    [effectiveUuid, invoice, isReadOnly, persistInvoice],
+  );
 
   const handleUrlsChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
     handleFieldChange("urls", event.target.value);
@@ -467,19 +535,40 @@ const InvoicePage: React.FC = () => {
       <div className="mb-3">
         <label className="form-label" htmlFor="invoice-urls">🔗🔗🔗 URLs</label>
         {isReadOnly ? (
-          <div className="d-flex flex-wrap gap-2">
-            {urlEntries.length === 0 && <span className="text-muted">No URLs</span>}
-            {urlEntries.map((url, index) => {
-              const isMail = /mail\.google\.com|gmail\.com/i.test(url);
-              const label = isMail ? "✉️" : "🔗";
-              const linkKey = `${index}-${url}`;
-              return (
-                <a key={linkKey} href={url} target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-outline-secondary">
-                  {label}
-                </a>
-              );
-            })}
-          </div>
+          singleMailUrl ? (
+            <a
+              href={singleMailUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="d-inline-flex align-items-center gap-2 text-decoration-none"
+              title={singleMailUrl}
+            >
+              <span role="img" aria-label="Email link">
+                ✉️
+              </span>
+              <span className="text-break">{truncateUrlForDisplay(singleMailUrl)}</span>
+            </a>
+          ) : (
+            <div className="d-flex flex-wrap gap-2">
+              {urlEntries.length === 0 && <span className="text-muted">No URLs</span>}
+              {urlEntries.map((url, index) => {
+                const linkKey = `${index}-${url}`;
+                const label = isGmailUrl(url) ? "✉️" : "🔗";
+                return (
+                  <a
+                    key={linkKey}
+                    href={url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="btn btn-sm btn-outline-secondary"
+                    title={url}
+                  >
+                    {label}
+                  </a>
+                );
+              })}
+            </div>
+          )
         ) : (
           <textarea
             id="invoice-urls"
@@ -502,21 +591,18 @@ const InvoicePage: React.FC = () => {
         />
       </div>
       <div className="mb-3">
-        <div className="d-flex align-items-center gap-3">
-          <div className="d-flex align-items-center gap-2">
-            <label className="form-label mb-0" htmlFor="invoice-deleted-toggle">🗑️</label>
-            <button
+        <div className="d-flex flex-column flex-md-row align-items-start align-items-md-center gap-3">
+          <div className="form-check mb-0">
+            <input
               id="invoice-deleted-toggle"
-              type="button"
-              className="btn btn-outline-danger"
-              onClick={handleToggleDeleted}
-              disabled={isReadOnly}
-              style={{ opacity: invoice.is_deleted ? 1 : 0.25 }}
-              aria-pressed={invoice.is_deleted}
-              aria-label={invoice.is_deleted ? "Marked deleted" : "Not deleted"}
-            >
-              🗑️
-            </button>
+              type="checkbox"
+              className="form-check-input"
+              checked={Boolean(invoice.is_deleted)}
+              onChange={handleDeletedChange}
+            />
+            <label className="form-check-label" htmlFor="invoice-deleted-toggle">
+              🗑️ Mark invoice as deleted
+            </label>
           </div>
           <div className="form-check mb-0">
             <input
@@ -525,33 +611,33 @@ const InvoicePage: React.FC = () => {
               className="form-check-input"
               checked={Boolean(invoice.has_been_processed)}
               onChange={handleProcessedChange}
-              disabled={isReadOnly}
             />
             <label className="form-check-label" htmlFor="invoice-processed">Has been processed</label>
           </div>
         </div>
       </div>
       <div className="mb-3">
-        <div className="d-flex align-items-center justify-content-between">
-          <label className="form-label mb-0">HTML</label>
-          <button
-            type="button"
-            className="btn btn-sm btn-outline-primary"
-            onClick={() => setHtmlExpanded((prev) => !prev)}
-          >
-            {htmlExpanded ? "Hide" : "Show"} HTML
-          </button>
-        </div>
-        <div className={`mt-3 ${htmlExpanded ? "" : "d-none"}`}>
-          <div className="ratio ratio-16x9">
-            <iframe
-              title="Invoice HTML"
-              srcDoc={invoice.html || ""}
-              className="w-100 h-100 border"
-              sandbox="allow-same-origin"
-            />
+        <button
+          type="button"
+          className="btn btn-outline-primary w-100 d-flex justify-content-between align-items-center"
+          onClick={() => setHtmlExpanded((prev) => !prev)}
+          aria-expanded={htmlExpanded}
+        >
+          <span className="fw-semibold">Show/Hide HTML</span>
+          <span aria-hidden="true">{htmlExpanded ? "▲" : "▼"}</span>
+        </button>
+        {htmlExpanded && (
+          <div className="mt-3">
+            <div className="ratio ratio-16x9">
+              <iframe
+                title="Invoice HTML"
+                srcDoc={invoice.html || ""}
+                className="w-100 h-100 border"
+                sandbox="allow-same-origin"
+              />
+            </div>
           </div>
-        </div>
+        )}
       </div>
       <div className="mb-3">
         <label className="form-label" htmlFor="invoice-analyze-html">Analyze More HTML</label>
@@ -620,7 +706,7 @@ const InvoicePage: React.FC = () => {
                 disabled={saving || loading || !effectiveUuid}
                 title={effectiveUuid ? "Mark this invoice as opened" : "Save the invoice before pinning"}
               >
-                📌 Pin as Opened
+                📌 Pin Invoice to be Auto-Attached
               </button>
             )}
             {isPinCurrentlyActive && (
