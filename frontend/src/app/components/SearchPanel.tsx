@@ -156,15 +156,20 @@ function extractInvoiceLines(row: SearchRow): string[] {
   const lines: string[] = [];
 
   const dateRaw = normalize((row as any).date);
-  const formattedDate = formatDateToYMD(dateRaw);
+  let formattedDate = formatDateToYMD(dateRaw);
   const hasBeenProcessed = (row as any).has_been_processed;
-  if (!isBlank(formattedDate)) {
-    let line = `📅 ${formattedDate}`;
-    if (hasBeenProcessed === false) {
-      line = `${line} ⏳`;
-    }
-    lines.push(line);
+  if (isBlank(formattedDate)) {
+    formattedDate = "(no date)";
   }
+  let line = `📅 ${formattedDate}`;
+  if (hasBeenProcessed === false) {
+    line += `⏳`;
+  }
+  // TODO: const hasAutoSummary = ???????
+  //if (hasAutoSummary) {
+  //  line += `🪄`;
+  //}
+  lines.push(line);
 
   const shopRaw = normalize((row as any).shop_name);
   const orderRaw = normalize((row as any).order_number);
