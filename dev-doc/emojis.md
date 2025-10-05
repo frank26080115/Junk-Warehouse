@@ -77,6 +77,9 @@
 | 🏷️    | Label tag                   | &#128278;&#65039;     |
 | 📖    | Open book                   | &#128214;             |
 | 🌳    | Deciduous tree              | &#127795;             |
+| 🔽    | Downwards button            | &#128315;             |
+| ▶️    | Play button                 | &#9654;&#65039; |
+| 🔹    | Small blue diamond          | &#128313;             |
 | ⬆️    | Up arrow                    | &#11014;&#65039;      |
 | ⬇️    | Down arrow                  | &#11015;&#65039;      |
 | ⬅️    | Left arrow                  | &#11013;&#65039;      |
