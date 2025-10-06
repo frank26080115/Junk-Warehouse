@@ -297,8 +297,23 @@ function splitLabelSegments(labelText: string): { linkText: string; renameText: 
     return { linkText: "", renameText: "" };
   }
   const midpoint = Math.ceil(labelText.length / 2);
-  const linkText = labelText.slice(0, midpoint);
-  const renameText = labelText.slice(midpoint);
+  let linkText = labelText.slice(0, midpoint);
+  let renameText = labelText.slice(midpoint);
+  // Preserve any spacing that lands on the seam between the link and rename segments. Converting
+  // the seam whitespace to non-breaking spaces keeps the visual gap intact instead of letting the
+  // browser collapse it away as part of normal inline text rendering.
+  const trailingWhitespaceMatch = linkText.match(/\s+$/u);
+  if (trailingWhitespaceMatch) {
+    const trailingWhitespace = trailingWhitespaceMatch[0];
+    const nbspPadding = "\u00A0".repeat(trailingWhitespace.length);
+    linkText = `${linkText.slice(0, linkText.length - trailingWhitespace.length)}${nbspPadding}`;
+  }
+  const leadingWhitespaceMatch = renameText.match(/^\s+/u);
+  if (leadingWhitespaceMatch) {
+    const leadingWhitespace = leadingWhitespaceMatch[0];
+    const nbspPadding = "\u00A0".repeat(leadingWhitespace.length);
+    renameText = `${nbspPadding}${renameText.slice(leadingWhitespace.length)}`;
+  }
   return { linkText, renameText };
 }
 
@@ -526,6 +541,24 @@ export const TreeView: React.FC = () => {
     setModalBusy(false);
     setPinnedSuggestion(null);
   }, []);
+
+  useEffect(() => {
+    if (!modalNodeId) {
+      return;
+    }
+    // Provide a dedicated escape key listener so keyboard users can dismiss the rename modal
+    // without needing to traverse to the cancel button.
+    const handleEscapeKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeModal();
+      }
+    };
+    window.addEventListener("keydown", handleEscapeKey);
+    return () => {
+      window.removeEventListener("keydown", handleEscapeKey);
+    };
+  }, [closeModal, modalNodeId]);
 
   const openModalForNode = useCallback(
     (node: TreeNodeState) => {

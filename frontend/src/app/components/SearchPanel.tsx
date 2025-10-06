@@ -274,6 +274,24 @@ const SearchPanel: React.FC<SearchPanelProps> = ({
     | null
   >(null);
 
+  useEffect(() => {
+    if (!modalMessage) {
+      return;
+    }
+    // Offer Escape-based dismissal for the modal so workflows stay efficient even when a dialog
+    // appears unexpectedly in the middle of a search session.
+    const handleEscapeKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setModalMessage(null);
+      }
+    };
+    window.addEventListener("keydown", handleEscapeKey);
+    return () => {
+      window.removeEventListener("keydown", handleEscapeKey);
+    };
+  }, [modalMessage]);
+
   // When the table switches between items and invoices, adjust the association bits accordingly so the footer buttons behave predictably.
   useEffect(() => {
     setAssociationBits((previous) => {

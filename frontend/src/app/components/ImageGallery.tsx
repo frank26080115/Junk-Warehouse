@@ -85,6 +85,24 @@ const ImageGallery: React.FC<ImageGalleryProps> = ({ targetUuid, refreshToken })
     fetchImages();
   }, [fetchImages, refreshToken]);
 
+  useEffect(() => {
+    if (!showErrorModal) {
+      return;
+    }
+    // Mirror the rest of the application by letting the Escape key dismiss the error modal. This
+    // keeps the gallery navigable even when an upload issue occurs.
+    const handleEscapeKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeErrorModal();
+      }
+    };
+    window.addEventListener("keydown", handleEscapeKey);
+    return () => {
+      window.removeEventListener("keydown", handleEscapeKey);
+    };
+  }, [closeErrorModal, showErrorModal]);
+
   const submitFormData = useCallback(async (formData: FormData) => {
     if (!targetUuid) {
       return;
