@@ -305,9 +305,9 @@ function splitLabelSegments(labelText: string): { linkText: string; renameText: 
 function buildItemUrl(data: RawTreeItem): string {
   const slugValue = typeof data.slug === "string" ? data.slug.trim() : "";
   if (slugValue) {
-    return `/items/${slugValue}`;
+    return `/item/${slugValue}`;
   }
-  return `/items/${data.id}`;
+  return `/item/${data.id}`;
 }
 
 function computeHasChildren(node: TreeNodeState): boolean {
