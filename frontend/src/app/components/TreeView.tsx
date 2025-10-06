@@ -878,7 +878,21 @@ const TreeView: React.FC = () => {
             {modalNode ? (
               <div style={{ marginTop: "8px", color: "#555" }}>
                 <div>ID: {modalNode.data.id}</div>
-                <div>Slug: {modalNode.data.slug || "(none)"}</div>
+                <div>
+                  {/* Present the slug as a direct hyperlink so users can easily open the item details view. */}
+                  Slug: {modalNode.data.slug ? (
+                    <a
+                      href={`/item/${modalNode.data.slug}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={MODAL_LINK_STYLE}
+                    >
+                      {modalNode.data.slug}
+                    </a>
+                  ) : (
+                    "(none)"
+                  )}
+                </div>
               </div>
             ) : null}
           </div>
