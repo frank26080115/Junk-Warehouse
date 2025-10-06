@@ -465,36 +465,3 @@ def get_item_details(digikey_product_number: str) -> Dict[str, str]:
             result["description"] = descriptor
 
     return result
-
-
-def _encode_salesorder(salesorder: int) -> bytes:
-    """Convert a sales order identifier into the stored byte representation."""
-
-    if not isinstance(salesorder, int):
-        raise ValueError("salesorder must be provided as an integer value")
-
-    # The digikey_seen table stores the identifier as a BYTEA column containing the ASCII digits.
-    digits = str(salesorder).strip()
-    if not digits:
-        raise ValueError("salesorder cannot be an empty value")
-
-    return digits.encode("utf-8")
-
-
-def _coerce_invoice_uuid(invoice_id: Optional[Union[UUID, str]]) -> Optional[UUID]:
-    """Normalise optional invoice identifiers into UUID objects or None."""
-
-    if invoice_id is None:
-        return None
-
-    if isinstance(invoice_id, UUID):
-        return invoice_id
-
-    candidate = str(invoice_id).strip()
-    if not candidate:
-        return None
-
-    try:
-        return UUID(candidate)
-    except Exception as exc:  # pragma: no cover - defensive validation
-        raise ValueError(f"invoice_id {invoice_id!r} is not a valid UUID") from exc
