@@ -122,7 +122,8 @@ const LoginPanel: React.FC<Props> = ({
       </Card>
 
       {/* Error modal */}
-      <Modal show={showErr} onHide={() => setShowErr(false)} centered>
+      {/* Explicitly enable keyboard dismissal so the Escape key always closes the modal. */}
+      <Modal show={showErr} onHide={() => setShowErr(false)} centered keyboard>
         <Modal.Header closeButton>
           <Modal.Title>Login Error</Modal.Title>
         </Modal.Header>

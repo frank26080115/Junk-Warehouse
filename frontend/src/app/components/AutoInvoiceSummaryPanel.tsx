@@ -186,6 +186,24 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
     }
   }, [autoSummaryRaw]);
 
+  useEffect(() => {
+    if (!modalError) {
+      return;
+    }
+    // Respect the expectation that any modal overlay should dismiss when Escape is pressed so the
+    // user never feels trapped after encountering an error dialog.
+    const handleEscapeKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setModalError(null);
+      }
+    };
+    window.addEventListener("keydown", handleEscapeKey);
+    return () => {
+      window.removeEventListener("keydown", handleEscapeKey);
+    };
+  }, [modalError]);
+
   const hasInvoiceUuid = Boolean(invoiceUuid);
   const canMutate = hasInvoiceUuid && !isBusy;
 

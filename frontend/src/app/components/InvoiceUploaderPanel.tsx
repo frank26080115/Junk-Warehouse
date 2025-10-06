@@ -40,6 +40,24 @@ const InvoiceUploaderPanel: React.FC<InvoiceUploaderPanelProps> = ({
     };
   }, []);
 
+  useEffect(() => {
+    if (!modalMessage) {
+      return;
+    }
+    // Allow the information modal to close immediately when Escape is pressed so users can resume
+    // their workflow without reaching for the mouse or the on-screen button.
+    const handleEscapeKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setModalMessage(null);
+      }
+    };
+    window.addEventListener("keydown", handleEscapeKey);
+    return () => {
+      window.removeEventListener("keydown", handleEscapeKey);
+    };
+  }, [modalMessage]);
+
   const showModal = (title: string, body: string) => {
     setModalMessage({ title, body });
   };
