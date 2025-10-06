@@ -79,26 +79,22 @@ const LABEL_STYLE: React.CSSProperties = {
 // The label is split between a navigation hyperlink and a rename trigger, so each half
 // gets dedicated styling to keep the presentation neutral while still being interactive.
 const LABEL_CONTENT_STYLE: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  gap: "8px",
+  display: "inline-flex",
+  alignItems: "baseline",
+  gap: 0,
   width: "100%",
+  whiteSpace: "nowrap",
 };
 
 const LABEL_LINK_STYLE: React.CSSProperties = {
   color: "inherit",
   textDecoration: "none",
-  flex: 1,
-  display: "inline-block",
-  minWidth: 0,
+  display: "inline",
 };
 
 const LABEL_RENAME_STYLE: React.CSSProperties = {
-  flex: 1,
-  display: "inline-block",
+  display: "inline",
   cursor: "pointer",
-  minWidth: 0,
 };
 
 const LOADING_STYLE: React.CSSProperties = {
@@ -759,11 +755,37 @@ export const TreeView: React.FC = () => {
       const indicator = hasChildren ? (node.isOpen ? "🔽" : "▶️") : "🔹";
       const labelText = formatNodeLabel(node.data);
       const { linkText, renameText } = splitLabelSegments(labelText);
-      // Keep a visible click target even when the label length is too short for a second half.
-      const renameDisplayText = renameText.length > 0 ? renameText : " ";
       const renameDescription = `Rename "${labelText}"`;
       const itemUrl = buildItemUrl(node.data);
       const nestedStyle = createNestedListStyle(depth + 1);
+      // Render the two label segments as an array so React does not inject extra whitespace between
+      // them. That keeps the text visually continuous even though the behaviors differ.
+      const labelSegments: React.ReactNode[] = [
+        (
+          <a
+            key="label-link"
+            href={itemUrl}
+            style={LABEL_LINK_STYLE}
+            title={labelText}
+          >
+            {linkText}
+          </a>
+        ),
+        (
+          <span
+            key="label-rename"
+            style={LABEL_RENAME_STYLE}
+            onClick={(event) => handleRenameClick(event, node)}
+            onDoubleClick={(event) => handleRenameDoubleClick(event, node)}
+            onAuxClick={(event) => handleRenameAuxClick(event, node)}
+            title={renameDescription}
+            aria-label={renameDescription}
+          >
+            {/* Preserve a click target even when the rename segment is empty. */}
+            {renameText.length > 0 ? renameText : " "}
+          </span>
+        ),
+      ];
       return (
         <li key={node.data.id} style={{ listStyleType: "none", margin: "4px 0" }}>
           {/* Each row is rendered as a flex-based list to respect the requirement of using only <ul>/<li> elements. */}
@@ -776,19 +798,7 @@ export const TreeView: React.FC = () => {
             </li>
             <li style={LABEL_STYLE} title={labelText}>
               <span style={LABEL_CONTENT_STYLE}>
-                <a href={itemUrl} style={LABEL_LINK_STYLE} title={labelText}>
-                  {linkText}
-                </a>
-                <span
-                  style={LABEL_RENAME_STYLE}
-                  onClick={(event) => handleRenameClick(event, node)}
-                  onDoubleClick={(event) => handleRenameDoubleClick(event, node)}
-                  onAuxClick={(event) => handleRenameAuxClick(event, node)}
-                  title={renameDescription}
-                  aria-label={renameDescription}
-                >
-                  {renameDisplayText}
-                </span>
+                {labelSegments}
               </span>
             </li>
           </ul>
