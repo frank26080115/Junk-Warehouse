@@ -467,13 +467,6 @@ def get_item_details(digikey_product_number: str) -> Dict[str, str]:
     return result
 
 
-
-
-
-
-
-
-
 def _encode_salesorder(salesorder: int) -> bytes:
     """Convert a sales order identifier into the stored byte representation."""
 
@@ -486,7 +479,6 @@ def _encode_salesorder(salesorder: int) -> bytes:
         raise ValueError("salesorder cannot be an empty value")
 
     return digits.encode("utf-8")
-
 
 
 def _coerce_invoice_uuid(invoice_id: Optional[Union[UUID, str]]) -> Optional[UUID]:
