@@ -299,7 +299,7 @@ function createNestedListStyle(depth: number): React.CSSProperties {
   };
 }
 
-const TreeView: React.FC = () => {
+export const TreeView: React.FC = () => {
   const [treeNodes, setTreeNodes] = useState<TreeNodeState[]>([]);
   const [initialLoading, setInitialLoading] = useState<boolean>(false);
   const [initialError, setInitialError] = useState<string | null>(null);
