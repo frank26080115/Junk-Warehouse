@@ -487,7 +487,8 @@ def save_item_api():
         log.exception("for history logging, while calling get_db_item_as_dict for 'before_item'")
 
     payload["name"] = clean_item_name(payload["name"])
-    payload["metatext"] = update_metatext(payload["metatext"])
+    if "metatext" in payload:
+        payload["metatext"] = update_metatext(payload["metatext"])
 
     try:
         # Fuzzy update: lets the helper map keys without hardcoding column names here
