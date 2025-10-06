@@ -83,12 +83,14 @@ def get_root_structure() -> Dict[str, Any]:
         ).scalars().all()
 
         for raw_root_id in root_rows:
+            from .items import augment_item_dict
             if not raw_root_id:
                 continue
             root_id = str(raw_root_id)
             # Use the shared helper so the row shape matches other item responses.
             try:
                 root_row = get_db_item_as_dict(engine, ITEMS_TABLE, root_id)
+                root_row = augment_item_dict(root_row)
             except LookupError:
                 log.debug("Skipping missing root item %s", root_id)
                 continue
@@ -102,6 +104,7 @@ def get_root_structure() -> Dict[str, Any]:
             for child_id in child_identifiers:
                 try:
                     child_row = get_db_item_as_dict(engine, ITEMS_TABLE, child_id)
+                    child_row = augment_item_dict(child_row)
                 except LookupError:
                     log.debug("Skipping missing child item %s", child_id)
                     continue
