@@ -31,7 +31,6 @@ from .image_handler import (
     BadRequest as ImageBadRequest,
     UnsupportedMedia as ImageUnsupportedMedia,
 )
-from .job_manager import get_job_manager
 from app.config_loader import get_pin_open_expiry_hours
 from .history import log_history
 from .tree_browse import get_root_structure
@@ -976,14 +975,18 @@ def _autogen_items_task(context: Dict[str, Any]) -> Dict[str, Any]:
 @login_required
 def autogen_items_api():
     payload = request.get_json(silent=True) or {}
-    try:
-        manager = get_job_manager(current_app)
-        job_id = manager.start_job(_autogen_items_task, {"payload": payload})
-    except Exception as exc:
-        log.exception("Failed to enqueue auto-generated item job")
-        return jsonify({"success": False, "error": str(exc)}), 503
 
-    return jsonify({"job_id": job_id})
+    try:
+        # Execute the generation task immediately so the caller can receive a detailed result without polling.
+        result = _autogen_items_task({"payload": payload})
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except Exception:
+        log.exception("Failed to auto-generate items inline")
+        return jsonify({"success": False, "error": "Failed to auto-generate items."}), 500
+
+    # Always return the task payload verbatim so the client can surface success and partial failure details.
+    return jsonify(result)
 
 
 def delete_item_relationship(relationship_identifier: Any) -> Optional[Dict[str, Any]]:
