@@ -363,6 +363,12 @@ def store_image_for_item(
             tmp_path = _download_to_tmp(source_url, tmp_dir)
             original_name = tmp_path.name
 
+        try:
+            from trim_img_border import trim_img_border_inplace
+            trim_img_border_inplace(tmp_path)
+        except Exception:
+            log.exception("Unexpected error trimming image border")
+
         width, height = _open_image_probe(tmp_path)
 
     except BadRequest:
