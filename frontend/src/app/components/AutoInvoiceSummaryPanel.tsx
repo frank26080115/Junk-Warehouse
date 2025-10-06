@@ -1,7 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
 
-type JobStatus = "queued" | "busy" | "done" | "error";
-
 interface AutoSummaryEntry {
   id: string;
   text: string;
@@ -136,8 +134,6 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
   const [isBusy, setIsBusy] = useState<boolean>(false);
   const [modalError, setModalError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
   const isMountedRef = useRef(true);
 
   useEffect(() => {
@@ -146,48 +142,6 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
       isMountedRef.current = false;
     };
   }, []);
-
-  const pollJobUntilComplete = async (
-    jobId: string,
-    onStatusUpdate: (status: JobStatus) => void,
-  ): Promise<any> => {
-    let delay = 1000;
-    while (isMountedRef.current) {
-      const response = await fetch(`/api/jobstatus?id=${encodeURIComponent(jobId)}`);
-      let payload: any = null;
-      try {
-        payload = await response.json();
-      } catch (error) {
-        payload = null;
-      }
-      if (!response.ok) {
-        const message =
-          (payload && (payload.error || payload.message)) ||
-          response.statusText ||
-          "Failed to query job status.";
-        throw new Error(message);
-      }
-      const rawStatus = typeof payload?.status === "string" ? payload.status : "";
-      let normalised: JobStatus = "queued";
-      if (rawStatus === "busy" || rawStatus === "done" || rawStatus === "error" || rawStatus === "queued") {
-        normalised = rawStatus as JobStatus;
-      }
-      onStatusUpdate(normalised);
-      if (normalised === "done") {
-        return payload?.result;
-      }
-      if (normalised === "error") {
-        const message =
-          typeof payload?.error === "string" && payload.error.trim()
-            ? payload.error
-            : "Job failed.";
-        throw new Error(message);
-      }
-      await new Promise((resolve) => setTimeout(resolve, delay));
-      delay = Math.min(5000, delay + 500);
-    }
-    throw new Error("Job monitoring cancelled.");
-  };
 
   useEffect(() => {
     setStatusMessage(null);
@@ -364,8 +318,6 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
     setIsBusy(true);
     setModalError(null);
     setStatusMessage(null);
-    setJobId(null);
-    setJobStatus(null);
 
     try {
       const payloadItems = entriesToInsert.map((entry) => {
@@ -384,6 +336,7 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
         return;
       }
 
+      // Submit the request and collect the immediate response payload because the backend now runs the work inline.
       const response = await fetch("/api/autogenitems", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -393,66 +346,68 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
         }),
       });
 
-      let jobEnvelope: any = null;
+      let rawData: any = null;
       try {
-        jobEnvelope = await response.json();
+        rawData = await response.json();
       } catch (error) {
-        jobEnvelope = null;
+        rawData = null;
       }
 
       if (!response.ok) {
-        const message = (jobEnvelope && (jobEnvelope.error || jobEnvelope.message))
-          ? jobEnvelope.error || jobEnvelope.message
-          : `Request failed: ${response.status}`;
-        throw new Error(message);
+        const responseErrorText =
+          typeof rawData?.error === "string" && rawData.error.trim() !== ""
+            ? rawData.error
+            : typeof rawData?.message === "string" && rawData.message.trim() !== ""
+            ? rawData.message
+            : `Request failed: ${response.status}`;
+        throw new Error(responseErrorText);
       }
 
-      const nextJobId: string | null =
-        (jobEnvelope && (jobEnvelope.job_id || jobEnvelope.jobId)) || null;
-      if (!nextJobId || typeof nextJobId !== "string") {
-        throw new Error("Job identifier was not provided.");
-      }
-
-      setJobId(nextJobId);
-      setJobStatus("queued");
-
-      const jobResult = await pollJobUntilComplete(nextJobId, (status) => {
-        if (isMountedRef.current) {
-          setJobStatus(status);
-        }
-      });
-
+      // Abort any follow-up state updates if the component unmounted while waiting for the server reply.
       if (!isMountedRef.current) {
         return;
       }
 
-      const data: any = jobResult && typeof jobResult === "object" ? jobResult : {};
+      const payloadRecord: Record<string, unknown> =
+        rawData && typeof rawData === "object" ? (rawData as Record<string, unknown>) : {};
 
-      const succeededIds = Array.isArray(data?.succeeded_ids)
-        ? data.succeeded_ids.map((value: unknown) => String(value))
+      const rawSucceededValues = Array.isArray(payloadRecord["succeeded_ids"] as unknown[])
+        ? (payloadRecord["succeeded_ids"] as unknown[])
         : [];
+      const succeededIds = rawSucceededValues.map((value) => String(value));
 
       if (succeededIds.length > 0) {
         setEntries((prev) =>
           ensureFreeformRows(prev.filter((entry) => !succeededIds.includes(entry.id))),
         );
-        setStatusMessage(`Inserted ${succeededIds.length} item${succeededIds.length === 1 ? "" : "s"}.`);
-      } else {
-        setStatusMessage(null);
       }
 
-      const failureSummary = buildErrorSummary(data?.failures);
-      const fallbackMessage =
-        typeof data?.message === "string" && data.message.trim() !== ""
-          ? data.message
-          : typeof data?.error === "string" && data.error.trim() !== ""
-          ? data.error
+      const successFlag = Boolean(payloadRecord["success"]);
+
+      const rawMessage = payloadRecord["message"];
+      const messageText =
+        typeof rawMessage === "string" && rawMessage.trim() !== ""
+          ? rawMessage.trim()
+          : succeededIds.length > 0
+          ? `Inserted ${succeededIds.length} item${succeededIds.length === 1 ? "" : "s"}.`
           : "";
+
+      const shouldShowStatus = successFlag || succeededIds.length > 0;
+      setStatusMessage(shouldShowStatus && messageText ? messageText : null);
+
+      const failureSummary = buildErrorSummary(payloadRecord["failures"]);
+      const rawError = payloadRecord["error"];
+      const fallbackError =
+        typeof rawError === "string" && rawError.trim() !== "" ? rawError.trim() : "";
 
       if (failureSummary) {
         setModalError(failureSummary);
-      } else if (!succeededIds.length && fallbackMessage) {
-        setModalError(fallbackMessage);
+      } else if (!successFlag) {
+        const combinedError =
+          fallbackError || messageText || "Auto-generated item insertion did not succeed.";
+        if (combinedError) {
+          setModalError(combinedError);
+        }
       }
     } catch (error: any) {
       if (!isMountedRef.current) {
@@ -463,8 +418,6 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
     } finally {
       if (isMountedRef.current) {
         setIsBusy(false);
-        setJobId(null);
-        setJobStatus(null);
       }
     }
   };
@@ -491,10 +444,7 @@ const AutoInvoiceSummaryPanel: React.FC<AutoInvoiceSummaryPanelProps> = ({ invoi
         </div>
       )}
       {isBusy && (
-        <div className="alert alert-info" role="status">{jobStatus === "queued"
-          ? `Job queued${jobId ? ` (${jobId})` : ""}…`
-          : `Processing auto-generated items${jobId ? ` (${jobId})` : ""}…`}
-        </div>
+        <div className="alert alert-info" role="status">Processing auto-generated items…</div>
       )}
 
       {statusMessage && (
