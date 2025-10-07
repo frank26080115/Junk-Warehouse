@@ -5,6 +5,7 @@ import React, {
   useRef,
   useState,
 } from "react";
+import { PIN_OPEN_EXPIRY_MS } from "../config";
 import { collect_emoji_characters_from_int } from "../helpers/assocHelper";
 
 interface RawTreeItem {
@@ -20,6 +21,7 @@ interface RawTreeItem {
   is_tree_root?: boolean | null;
   is_collection?: boolean | null;
   is_deleted?: boolean | null;
+  pin_as_opened?: string | null;
   [key: string]: unknown;
 }
 
@@ -113,6 +115,70 @@ const INFO_STYLE: React.CSSProperties = {
   marginTop: "8px",
   color: "#2a6",
 };
+
+/**
+ * Convert potentially messy timestamp values into a usable Date so we can evaluate pin freshness reliably.
+ * This mirrors the logic used by the search panel so both surfaces agree on what qualifies as a recent pin.
+ */
+function coercePinDate(value: unknown): Date | null {
+  if (value == null) {
+    return null;
+  }
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const fromNumber = new Date(value);
+    return Number.isNaN(fromNumber.getTime()) ? null : fromNumber;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const fromString = new Date(trimmed);
+    return Number.isNaN(fromString.getTime()) ? null : fromString;
+  }
+  return null;
+}
+
+/**
+ * Determine whether the provided timestamp still falls within the active "pinned as opened" window.
+ */
+function isPinTimestampActive(value: unknown): boolean {
+  const pinDate = coercePinDate(value);
+  if (!pinDate) {
+    return false;
+  }
+  const nowMs = Date.now();
+  const pinMs = pinDate.getTime();
+  if (!Number.isFinite(pinMs)) {
+    return false;
+  }
+  const difference = nowMs - pinMs;
+  if (difference < 0) {
+    // Future timestamps should still count as "open" so operators notice the pending pin immediately.
+    return true;
+  }
+  return difference <= PIN_OPEN_EXPIRY_MS;
+}
+
+/**
+ * Small helper that centralizes the pinned detection so the rendering logic stays easy to read.
+ */
+function isItemPinned(data: RawTreeItem): boolean {
+  if (!data) {
+    return false;
+  }
+  const pinValue = data.pin_as_opened;
+  if (typeof pinValue === "string") {
+    if (pinValue.trim().length === 0) {
+      return false;
+    }
+    return isPinTimestampActive(pinValue);
+  }
+  return isPinTimestampActive(pinValue);
+}
 
 const MODAL_OVERLAY_STYLE: React.CSSProperties = {
   position: "fixed",
@@ -542,6 +608,38 @@ export const TreeView: React.FC = () => {
     setPinnedSuggestion(null);
   }, []);
 
+  const collectPinnedItems = useCallback(async (): Promise<PinnedSuggestion[]> => {
+    // Reuse the same search endpoint that powers the modal suggestion so we stay in sync with backend pin rules.
+    const response = await fetch(SEARCH_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        q: PINNED_QUERY,
+        table: "items",
+      }),
+    });
+    const payload = await parseFetchJson(response);
+    const rawResults: unknown = Array.isArray(payload)
+      ? payload
+      : payload && typeof payload === "object" && "data" in payload
+      ? (payload as any).data
+      : [];
+    const rows: any[] = Array.isArray(rawResults) ? (rawResults as any[]) : [];
+    const suggestions: PinnedSuggestion[] = [];
+    for (const row of rows) {
+      if (!row || typeof row.pk !== "string") {
+        continue;
+      }
+      const suggestion: PinnedSuggestion = {
+        id: String(row.pk),
+        name: coerceName(row.name, coerceName(row.slug, String(row.pk))),
+        slug: typeof row.slug === "string" ? row.slug : undefined,
+      };
+      suggestions.push(suggestion);
+    }
+    return suggestions;
+  }, [parseFetchJson]);
+
   useEffect(() => {
     if (!modalNodeId) {
       return;
@@ -578,31 +676,9 @@ export const TreeView: React.FC = () => {
     let ignore = false;
     async function loadPinnedSuggestion() {
       try {
-        const response = await fetch(SEARCH_ENDPOINT, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            q: PINNED_QUERY,
-            table: "items",
-          }),
-        });
-        const payload = await parseFetchJson(response);
-        const rawResults: unknown = Array.isArray(payload)
-          ? payload
-          : payload && typeof payload === "object" && "data" in payload
-          ? (payload as any).data
-          : [];
-        const rows: any[] = Array.isArray(rawResults) ? (rawResults as any[]) : [];
-        const firstRow = rows.find((row) => row && typeof row.pk === "string");
-        if (firstRow && !ignore) {
-          const suggestion: PinnedSuggestion = {
-            id: String(firstRow.pk),
-            name: coerceName(firstRow.name, coerceName(firstRow.slug, String(firstRow.pk))),
-            slug: typeof firstRow.slug === "string" ? firstRow.slug : undefined,
-          };
-          setPinnedSuggestion(suggestion);
-        } else if (!ignore) {
-          setPinnedSuggestion(null);
+        const suggestions = await collectPinnedItems();
+        if (!ignore) {
+          setPinnedSuggestion(suggestions.length > 0 ? suggestions[0] : null);
         }
       } catch {
         if (!ignore) {
@@ -614,7 +690,7 @@ export const TreeView: React.FC = () => {
     return () => {
       ignore = true;
     };
-  }, [modalNodeId, parseFetchJson]);
+  }, [collectPinnedItems, modalNodeId]);
 
   const handleSave = useCallback(async () => {
     if (!modalNodeId || modalBusy) {
@@ -704,6 +780,59 @@ export const TreeView: React.FC = () => {
     }
   }, [closeModal, loadInitialTree, modalBusy, modalNodeId, parseFetchJson]);
 
+  const handlePinAsOpened = useCallback(async () => {
+    if (!modalNodeId || modalBusy) {
+      return;
+    }
+    setModalBusy(true);
+    setModalError(null);
+    try {
+      const nowIso = new Date().toISOString();
+      const pinnedItems = await collectPinnedItems();
+      const otherPinnedIds = pinnedItems
+        .map((item) => item.id)
+        .filter((itemId): itemId is string => typeof itemId === "string" && itemId.length > 0 && itemId !== modalNodeId);
+
+      if (otherPinnedIds.length > 0) {
+        const unpinResults = await Promise.all(
+          otherPinnedIds.map(async (itemId) => {
+            const response = await fetch(SAVE_ENDPOINT, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                id: itemId,
+                pin_as_opened: null,
+              }),
+            });
+            const payload = await parseFetchJson(response);
+            return { itemId, payload };
+          }),
+        );
+        for (const result of unpinResults) {
+          applyNodeUpdate(result.itemId, result.payload as RawTreeItem);
+        }
+      }
+
+      const response = await fetch(SAVE_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: modalNodeId,
+          pin_as_opened: nowIso,
+        }),
+      });
+      const payload = await parseFetchJson(response);
+      applyNodeUpdate(modalNodeId, payload as RawTreeItem);
+      setStatusIsError(false);
+      setStatusMessage("Item pinned as opened. Other inventory pins cleared.");
+      closeModal();
+    } catch (error: any) {
+      setModalError(error?.message ?? "Unable to update the pinned state.");
+    } finally {
+      setModalBusy(false);
+    }
+  }, [applyNodeUpdate, closeModal, collectPinnedItems, modalBusy, modalNodeId, parseFetchJson]);
+
   const handleIndicatorClick = useCallback(
     (event: React.MouseEvent<HTMLLIElement>, node: TreeNodeState) => {
       event.preventDefault();
@@ -791,6 +920,17 @@ export const TreeView: React.FC = () => {
       const renameDescription = `Rename "${labelText}"`;
       const itemUrl = buildItemUrl(node.data);
       const nestedStyle = createNestedListStyle(depth + 1);
+      const pinned = isItemPinned(node.data);
+      const pinnedIcon = pinned ? (
+        <span
+          key="label-pin"
+          aria-hidden="true"
+          style={{ marginRight: "6px", display: "inline-flex" }}
+          title="Pinned as opened"
+        >
+          📌
+        </span>
+      ) : null;
       // Render the two label segments as an array so React does not inject extra whitespace between
       // them. That keeps the text visually continuous even though the behaviors differ.
       const labelSegments: React.ReactNode[] = [
@@ -831,6 +971,7 @@ export const TreeView: React.FC = () => {
             </li>
             <li style={LABEL_STYLE} title={labelText}>
               <span style={LABEL_CONTENT_STYLE}>
+                {pinnedIcon}
                 {labelSegments}
               </span>
             </li>
@@ -938,6 +1079,18 @@ export const TreeView: React.FC = () => {
                   }
                 }}
               />
+            </div>
+            <div style={MODAL_LINE_STYLE}>
+              {/* Provide a clear pin control that mirrors the item detail pages while staying within the quick-rename workflow. */}
+              <button
+                type="button"
+                className="btn btn-outline-primary btn-sm"
+                onClick={handlePinAsOpened}
+                disabled={modalBusy}
+                title="Pin this item as opened and clear other inventory pins"
+              >
+                📌 Pin as Opened (clear other inventory pins)
+              </button>
             </div>
             {pinnedSuggestion ? (
               <div style={MODAL_LINE_STYLE}>
