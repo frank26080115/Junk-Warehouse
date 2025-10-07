@@ -44,8 +44,6 @@ from backend.app.db import session_scope
 __all__ = [
     "get_all_items",
     "get_item_details",
-    "has_seen_digikey_invoice",
-    "set_digikey_invoice_seen",
 ]
 
 log = logging.getLogger(__name__)

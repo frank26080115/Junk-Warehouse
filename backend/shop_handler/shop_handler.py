@@ -119,7 +119,7 @@ class ShopHandler:
         self._last_dom_report: Optional[Dict[str, Any]] = None
 
     @classmethod
-    def ingest_html(cls, raw_html: str) -> "ShopHandler":
+    def ingest_html(cls, raw_html: str, email_subject: str = None) -> "ShopHandler":
         if not isinstance(raw_html, str) or not raw_html.strip():
             raise ValueError("HTML content must be a non-empty string.")
 
@@ -133,6 +133,12 @@ class ShopHandler:
             root = lxml_html.fragment_fromstring(raw_html, create_parent=True, parser=parser)
 
         sanitized_root = sanitize_dom(root)
+
+        if email_subject:
+            # TODO: inject the email subject as a <h1> item as the first element of <body> or <html>
+            # if the email is not HTML then just insert it as text as the first line
+            pass
+
         sanitized_html = lxml_html.tostring(sanitized_root, encoding="unicode")
         normalized_text = sanitized_html.lower()
 
@@ -141,7 +147,7 @@ class ShopHandler:
         for handler_cls in specific_handlers:
             name_counts[handler_cls] = handler_cls._count_name_hits(normalized_text)
 
-        best_handler: Type[ShopHandler] = GenericShopHandler
+        best_handler: Type[ShopHandler] = AiShopHandler # GenericShopHandler
         if name_counts:
             sorted_counts: List[Tuple[Type[ShopHandler], int]] = sorted(
                 name_counts.items(), key=lambda item: item[1], reverse=True
@@ -171,6 +177,7 @@ class ShopHandler:
             ("digikey_handler", "DigiKeyHandler"),
             ("mcmastercarr_handler", "McMasterCarrHandler"),
             ("ebay_handler", "EbayHandler"),
+            ("ai_shop_handler", "AiShopHandler"),
         )
 
         handler_package = cls._determine_handler_package()
@@ -229,7 +236,7 @@ class ShopHandler:
         return None
 
     def guess_items(self) -> List[Dict[str, str]]:
-        # TODO: Implement store specific item extraction when structure is known.
+        # stub, should have been another class implementing this
         return []
 
     def build_auto_summary(self) -> str:
@@ -438,6 +445,82 @@ class GenericShopHandler(ShopHandler):
 
         return summary
 
+
+class AiShopHandler(ShopHandler):
+    def __init__(self, raw_html: str, sanitized_root: etree._Element, sanitized_html: str) -> None:
+        # TODO: validate this code below will work
+        super().__init__(raw_html, sanitized_root, sanitized_html)
+        from automation.ai_helpers import LlmAi
+        self.ai = LlmAi("gpt-oss:20b")
+        self.ai.make_tool(
+            "Extract invoice fields from HTML email/webpage.",
+            {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties":{
+                        "is_invoice": {"type": "boolean"},
+                        "store_name": {"type": "string"},
+                        "order_id":   {"type": "string"},
+                        "items": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "properties": {
+                                    "name":        {"type": "string"},
+                                    "part_number": {"type": "string"},
+                                    "product_url": {"type": "string", "format": "uri"}
+                                },
+                                "required": ["name"]
+                            }
+                        }
+                    },
+                    "required": ["is_invoice", "store_name", "order_id", "items"]
+                }
+            ,
+            required = ["is_invoice", "store_name", "order_id", "items"],
+            system_msg = (
+                "You are an information extraction engine. "
+                "Input is HTML for an email or webpage. "
+                "Determine if it is an invoice. If it is an invoice, set is_invoice=true."
+                "If not an invoice, set is_invoice=false and return empty items. "
+                "If invoice-like, extract store name, a unique order/invoice/transaction ID, and line items. "
+                "Prefer explicit values in HTML over inferred ones. Be conservative with is_invoice=true."
+            ),
+            name = "extract_invoice"
+        )
+        log.debug("Begin AI assisted email parsing")
+        r = self.ai.query(self.sanitized_html)
+        # TODO: make sure the following is correct
+        if r["is_invoice"]:
+            log.debug("AI assisted email parsing success")
+            self.shop_name = r["store_name"]
+            self.order_id = r["order_id"]
+            self.extracted_items = r["items"]
+        else:
+            log.debug("AI assisted email parsing yielded no result")
+            self.shop_name = None
+            self.order_id = None
+            self.extracted_items = None
+
+    def has_already_been_handled(self, shop_name: str, order_number: str) -> bool:
+        """Generic handlers rely on the base human-processing check without changes."""
+        return super().has_already_been_handled(shop_name, order_number)
+
+    # TODO: validate if this will work because the super class function is a classmethod
+    # maybe that needs to be changed?
+    def get_shop_name(self) -> str:
+        return self.shop_name
+
+    def get_order_number(self) -> Optional[str]:
+        return self.order_id
+
+    def guess_items(self) -> List[Dict[str, str]]:
+        # TODO: the keys in self.extracted_items does not match the columns of the database table `items`
+        # there might be future additional extractions
+        # construct a list of new dicts, the new dicts have keys reflecting the database table `items`
+        # fill with data from self.extracted_items, and anticipate future keys for self.extracted_items
+        return
 
 def _load_invoice_html(file_path: Path) -> str:
     """Return HTML text from the provided path, converting MIME formats when needed."""
