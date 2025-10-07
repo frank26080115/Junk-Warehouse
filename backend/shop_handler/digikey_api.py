@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import re
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -11,6 +13,30 @@ from uuid import UUID
 import requests
 
 from sqlalchemy import text
+
+# When this module is executed as a standalone script we need to ensure the
+# repository root is available on sys.path so that the "backend" package can
+# be imported successfully.  The production server configures PYTHONPATH for
+# us, but a direct command-line invocation does not.
+def _ensure_repo_root_on_path() -> None:
+    """Add the repository root directory to sys.path when missing."""
+    script_path = Path(__file__).resolve()
+
+    repo_root = None
+    for candidate in script_path.parents:
+        potential_backend = candidate / "backend"
+        if potential_backend.exists():
+            repo_root = candidate
+            break
+
+    if repo_root is None:
+        repo_root = script_path.parent
+
+    resolved_root = str(repo_root)
+    if resolved_root not in sys.path:
+        sys.path.insert(0, resolved_root)
+
+_ensure_repo_root_on_path()
 
 from backend.app import config_loader
 from backend.app.db import session_scope
@@ -463,3 +489,111 @@ def get_item_details(digikey_product_number: str) -> Dict[str, str]:
             result["description"] = descriptor
 
     return result
+
+
+def _encode_salesorder(salesorder: int) -> bytes:
+    """Convert a sales order identifier into the stored byte representation."""
+
+    if not isinstance(salesorder, int):
+        raise ValueError("salesorder must be provided as an integer value")
+
+    # The digikey_seen table stores the identifier as a BYTEA column containing the ASCII digits.
+    digits = str(salesorder).strip()
+    if not digits:
+        raise ValueError("salesorder cannot be an empty value")
+
+    return digits.encode("utf-8")
+
+
+def _coerce_invoice_uuid(invoice_id: Optional[Union[UUID, str]]) -> Optional[UUID]:
+    """Normalise optional invoice identifiers into UUID objects or None."""
+
+    if invoice_id is None:
+        return None
+
+    if isinstance(invoice_id, UUID):
+        return invoice_id
+
+    candidate = str(invoice_id).strip()
+    if not candidate:
+        return None
+
+    try:
+        return UUID(candidate)
+    except Exception as exc:  # pragma: no cover - defensive validation
+        raise ValueError(f"invoice_id {invoice_id!r} is not a valid UUID") from exc
+
+# ---------------------------------------------------------------------------
+# Command-line helper utilities
+# ---------------------------------------------------------------------------
+
+
+def _non_empty_string(value: str) -> str:
+    """Return a stripped string and raise an argparse error when empty."""
+    cleaned_value = value.strip()
+    if not cleaned_value:
+        raise argparse.ArgumentTypeError(
+            "The provided value cannot be empty or whitespace."
+        )
+    return cleaned_value
+
+
+def _parse_cli_arguments(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    """Build the command-line parser for the local Digi-Key API smoke tests."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Query the Digi-Key API using the existing helper functions. "
+            "Provide either a sales order number to list all products or a "
+            "part number to inspect the metadata returned by Digi-Key."
+        )
+    )
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument(
+        "--sales-order",
+        dest="sales_order",
+        metavar="ORDER_ID",
+        type=_non_empty_string,
+        help="Fetch every product number contained in the specified Digi-Key sales order.",
+    )
+    group.add_argument(
+        "--part-number",
+        dest="part_number",
+        metavar="PART_NUMBER",
+        type=_non_empty_string,
+        help="Fetch descriptive metadata for the provided Digi-Key product number.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """Entry point used when exercising this module directly from the command line."""
+    args = _parse_cli_arguments(argv)
+
+    try:
+        if args.sales_order is not None:
+            items = get_all_items(args.sales_order)
+            print(
+                f"Sales order {args.sales_order} contains {len(items)} unique Digi-Key product number(s):"
+            )
+            for product_number in items:
+                print(f"- {product_number}")
+        else:
+            details = get_item_details(args.part_number)
+            print(f"Details for Digi-Key product '{args.part_number}':")
+            print(json.dumps(details, indent=2, sort_keys=True))
+    except DigiKeyConfigurationError as exc:
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        return 1
+    except DigiKeyAPIError as exc:
+        print(f"API error: {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # pragma: no cover - defensive CLI execution path
+        log.exception("Unexpected failure while executing the Digi-Key CLI helper.")
+        print(f"Unexpected error: {exc}", file=sys.stderr)
+        return 1
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
