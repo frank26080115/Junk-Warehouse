@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -17,8 +18,6 @@ from backend.app.db import session_scope
 __all__ = [
     "get_all_items",
     "get_item_details",
-    "has_seen_digikey_invoice",
-    "set_digikey_invoice_seen",
 ]
 
 log = logging.getLogger(__name__)
@@ -211,6 +210,106 @@ def _perform_get(url: str) -> Dict[str, Any]:
         raise DigiKeyAPIError("Digi-Key API response was not valid JSON.") from exc
 
 
+def _split_category_path(raw_value: Any) -> List[str]:
+    """Return a list of category name segments extracted from diverse inputs."""
+
+    if isinstance(raw_value, str):
+        cleaned = raw_value.strip()
+        if not cleaned:
+            return []
+
+        # Digi-Key payloads are not entirely consistent about delimiters.  The
+        # expression below accepts characters that commonly appear in the
+        # hierarchy strings and then trims any resulting whitespace.
+        segments = [segment.strip() for segment in re.split(r"\s*[>/\\|]+\s*", cleaned) if segment.strip()]
+        return segments
+
+    if isinstance(raw_value, dict):
+        # Attempt to locate a pre-built breadcrumb string before recursively
+        # descending into parent containers.
+        breadcrumb_keys = (
+            "CategoryPath",
+            "CategoryPathName",
+            "CategoryBreadcrumb",
+            "Breadcrumb",
+            "Breadcrumbs",
+        )
+        for key in breadcrumb_keys:
+            if key in raw_value:
+                segments = _split_category_path(raw_value.get(key))
+                if segments:
+                    return segments
+
+        # Some responses expose the hierarchy as a list of ancestor entries.
+        ancestor_keys = ("Ancestors", "Parents", "ParentCategories")
+        ancestor_segments: List[str] = []
+        for key in ancestor_keys:
+            raw_ancestors = raw_value.get(key)
+            if isinstance(raw_ancestors, list):
+                for ancestor in raw_ancestors:
+                    segments = _split_category_path(ancestor)
+                    if segments:
+                        ancestor_segments.extend(segments)
+                if ancestor_segments:
+                    break
+
+        # Finally, capture the local category name to append to the ancestor
+        # chain.  This is intentionally verbose to keep the decision making
+        # obvious and easy to adjust when Digi-Key changes their payloads.
+        name_keys = ("CategoryName", "Category", "Name", "Description")
+        local_name: Optional[str] = None
+        for key in name_keys:
+            candidate = raw_value.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                local_name = candidate.strip()
+                break
+
+        combined_segments = ancestor_segments[:]
+        if local_name:
+            combined_segments.append(local_name)
+
+        return combined_segments
+
+    if isinstance(raw_value, (list, tuple, set)):
+        for entry in raw_value:
+            segments = _split_category_path(entry)
+            if segments:
+                return segments
+
+    return []
+
+
+def _extract_category_path(payload: Dict[str, Any]) -> Optional[str]:
+    """Compile a human-readable product category path when data is available."""
+
+    candidate_keys = (
+        "ProductCategories",
+        "DefaultCategory",
+        "PrimaryCategory",
+        "Categories",
+        "Category",
+        "ProductCategory",
+    )
+
+    for key in candidate_keys:
+        if key not in payload:
+            continue
+        segments = _split_category_path(payload.get(key))
+        if segments:
+            # Remove duplicates while preserving order so the breadcrumb remains
+            # meaningful even if Digi-Key repeats ancestor names.
+            seen: set[str] = set()
+            ordered: List[str] = []
+            for segment in segments:
+                if segment not in seen:
+                    seen.add(segment)
+                    ordered.append(segment)
+            if ordered:
+                return " > ".join(ordered)
+
+    return None
+
+
 def get_all_items(salesOrderId: str) -> List[str]:
     """Return Digi-Key product numbers for every line item in a sales order."""
 
@@ -353,45 +452,14 @@ def get_item_details(digikey_product_number: str) -> Dict[str, str]:
     if image_url:
         result["img_url"] = image_url
 
+    category_path = _extract_category_path(payload)
+    if category_path:
+        # Present the category on a new line so it reads naturally underneath
+        # the detailed description without losing the original content.
+        descriptor = f"Product Category: {category_path}"
+        if result["description"]:
+            result["description"] = f"{result['description']}\r\n{descriptor}"
+        else:
+            result["description"] = descriptor
+
     return result
-
-
-
-
-
-
-
-
-
-def _encode_salesorder(salesorder: int) -> bytes:
-    """Convert a sales order identifier into the stored byte representation."""
-
-    if not isinstance(salesorder, int):
-        raise ValueError("salesorder must be provided as an integer value")
-
-    # The digikey_seen table stores the identifier as a BYTEA column containing the ASCII digits.
-    digits = str(salesorder).strip()
-    if not digits:
-        raise ValueError("salesorder cannot be an empty value")
-
-    return digits.encode("utf-8")
-
-
-
-def _coerce_invoice_uuid(invoice_id: Optional[Union[UUID, str]]) -> Optional[UUID]:
-    """Normalise optional invoice identifiers into UUID objects or None."""
-
-    if invoice_id is None:
-        return None
-
-    if isinstance(invoice_id, UUID):
-        return invoice_id
-
-    candidate = str(invoice_id).strip()
-    if not candidate:
-        return None
-
-    try:
-        return UUID(candidate)
-    except Exception as exc:  # pragma: no cover - defensive validation
-        raise ValueError(f"invoice_id {invoice_id!r} is not a valid UUID") from exc
