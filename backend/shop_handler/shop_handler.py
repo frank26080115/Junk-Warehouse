@@ -236,7 +236,7 @@ class ShopHandler:
         return None
 
     def guess_items(self) -> List[Dict[str, str]]:
-        # TODO: Implement store specific item extraction when structure is known.
+        # stub, should have been another class implementing this
         return []
 
     def build_auto_summary(self) -> str:
@@ -448,6 +448,7 @@ class GenericShopHandler(ShopHandler):
 
 class AiShopHandler(ShopHandler):
     def __init__(self, raw_html: str, sanitized_root: etree._Element, sanitized_html: str) -> None:
+        # TODO: validate this code below will work
         super().__init__(raw_html, sanitized_root, sanitized_html)
         from automation.ai_helpers import LlmAi
         self.ai = LlmAi("gpt-oss:20b")
