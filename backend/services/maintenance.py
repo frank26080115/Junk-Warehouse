@@ -612,6 +612,8 @@ def merge_two_items(
                 primary_uuid,
             )
 
+        # TODO: log the occurance in the history log
+
         update_summary = {
             key: (value.isoformat() if isinstance(value, datetime) else value)
             for key, value in updates.items()
