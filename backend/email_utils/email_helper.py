@@ -160,7 +160,7 @@ class EmailChecker:
         auto_summary = "[]"
         if html_body:
             try:
-                handler = ShopHandler.ingest_html(html_body)
+                handler = ShopHandler.ingest_html(html_body, subject = subject)
                 # Immediately check whether a human already completed work for this shop/order pair so we never duplicate effort.
                 candidate_order_number = (order_number or handler.get_order_number() or "").strip()
                 shop_name = (handler.get_shop_name() or "").strip()
