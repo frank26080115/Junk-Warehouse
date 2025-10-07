@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import base64
 import difflib
 import html as _html
@@ -966,3 +967,39 @@ def dict_to_tagged_text(
             # Preserve the original value text (including intentional spaces or newlines)
             parts.append(value_text)
     return chr(10).join(parts)  # Emit consistent LF separators so the parser can reliably split sections
+
+
+def build_callstack_string(skip: int = 0, limit: Optional[int] = None) -> str:
+    import traceback
+    """
+    Build a call stack string like:
+        "[file.py:func_name:123]/[other.py:handler:45]/[...]"
+
+    Frames are ordered oldest ➜ newest (left to right), which reads like a call-path.
+
+    Args:
+        skip:  Extra frames to drop from the newest end (on top of this function’s own frame).
+               Example: skip=0 hides just this function; skip=1 hides this + its caller, etc.
+        limit: If provided, only include the last `limit` remaining frames (still oldest ➜ newest).
+
+    Returns:
+        A slash-joined string of "[file:func:lineno]" segments, or "" if nothing remains.
+    """
+    stack = traceback.extract_stack()
+
+    # Drop this function's frame + user-requested extras from the newest end.
+    total_drop = 1 + max(0, skip)
+    cutoff = max(0, len(stack) - total_drop)
+    frames = stack[:cutoff]  # keep oldest ... up to the cutoff
+
+    if limit is not None and limit >= 0:
+        frames = frames[-limit:]  # keep only the last `limit` frames
+
+    parts = []
+    for f in frames:
+        file_name = os.path.basename(f.filename) if f.filename else "<unknown>"
+        func_name = f.name or "<unknown>"
+        line_no = f.lineno if (f.lineno is not None) else 0
+        parts.append(f"[{file_name}:{func_name}:{line_no}]")
+
+    return "/".join(parts)
