@@ -25,6 +25,9 @@ _PIN_OPEN_EXPIRY_DEFAULT_HOURS = 36
 
 _EMAIL_WHITELIST_CACHE: Optional[tuple[str, ...]] = None
 _EMAIL_WHITELIST_CACHE_READY = False
+_EMAIL_BLACKLIST_CACHE: Optional[tuple[str, ...]] = None
+_EMAIL_BLACKLIST_CACHE_READY = False
+
 
 def _read_json_file(path: Path) -> dict:
     """Read JSON from disk, returning an empty mapping on failure."""
@@ -38,12 +41,12 @@ def load_app_config() -> dict:
     """Return the raw JSON configuration for the application."""
     return _read_json_file(CONFIG_PATH)
 
-def _normalize_email_whitelist(raw_value: Any) -> tuple[str, ...]:
-    """Convert raw configuration values into a normalized whitelist tuple."""
+def _normalize_email_list(raw_value: Any) -> tuple[str, ...]:
+    """Convert raw configuration values into a normalized tuple of address fragments."""
     normalized_entries = []
 
     def _append_entry(candidate: Any) -> None:
-        """Add cleaned whitelist entries while ignoring invalid data types."""
+        """Add cleaned address fragments while ignoring invalid data types."""
         if not isinstance(candidate, str):
             return
         cleaned = candidate.strip().lower()
@@ -61,6 +64,16 @@ def _normalize_email_whitelist(raw_value: Any) -> tuple[str, ...]:
             _append_entry(item)
 
     return tuple(normalized_entries)
+
+
+def _normalize_email_whitelist(raw_value: Any) -> tuple[str, ...]:
+    """Convert raw configuration values into a normalized whitelist tuple."""
+    return _normalize_email_list(raw_value)
+
+
+def _normalize_email_blacklist(raw_value: Any) -> tuple[str, ...]:
+    """Convert raw configuration values into a normalized blacklist tuple."""
+    return _normalize_email_list(raw_value)
 
 def _coerce_positive_number(value: Any, fallback: int) -> int:
     """Convert unknown input into a positive integer number of hours."""
@@ -89,6 +102,24 @@ def get_email_whitelist(cfg: Optional[Mapping[str, Any]] = None) -> list[str]:
     _EMAIL_WHITELIST_CACHE = whitelist_tuple
     _EMAIL_WHITELIST_CACHE_READY = True
     return list(whitelist_tuple)
+
+def get_email_blacklist(cfg: Optional[Mapping[str, Any]] = None) -> list[str]:
+    """Return the cached list of denied email sender fragments."""
+    global _EMAIL_BLACKLIST_CACHE, _EMAIL_BLACKLIST_CACHE_READY
+    if _EMAIL_BLACKLIST_CACHE_READY:
+        return list(_EMAIL_BLACKLIST_CACHE or ())
+
+    if cfg is None:
+        cfg = load_app_config()
+
+    raw_value: Any = None
+    if isinstance(cfg, Mapping):
+        raw_value = cfg.get("email_blacklist")
+
+    blacklist_tuple = _normalize_email_blacklist(raw_value)
+    _EMAIL_BLACKLIST_CACHE = blacklist_tuple
+    _EMAIL_BLACKLIST_CACHE_READY = True
+    return list(blacklist_tuple)
 
 def get_pin_open_expiry_hours(cfg: Optional[Mapping[str, Any]] = None) -> int:
     """Resolve the configured window (in hours) for keeping pins open."""

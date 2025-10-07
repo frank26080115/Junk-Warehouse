@@ -135,9 +135,45 @@ class ShopHandler:
         sanitized_root = sanitize_dom(root)
 
         if email_subject:
-            # TODO: inject the email subject as a <h1> item as the first element of <body> or <html>
-            # if the email is not HTML then just insert it as text as the first line
-            pass
+            subject_text = str(email_subject).strip()
+            if subject_text:
+                target_parent = None
+                root_tag = sanitized_root.tag.lower() if isinstance(sanitized_root.tag, str) else ""
+                if root_tag == "html":
+                    body_candidate = sanitized_root.find("body")
+                    if isinstance(body_candidate, etree._Element):
+                        target_parent = body_candidate
+                    else:
+                        target_parent = sanitized_root
+                elif root_tag == "body":
+                    target_parent = sanitized_root
+                else:
+                    body_candidate = sanitized_root.find(".//body")
+                    if isinstance(body_candidate, etree._Element):
+                        target_parent = body_candidate
+                    else:
+                        html_candidate = sanitized_root.find(".//html")
+                        if isinstance(html_candidate, etree._Element):
+                            nested_body = html_candidate.find("body")
+                            target_parent = nested_body if isinstance(nested_body, etree._Element) else html_candidate
+                if target_parent is not None:
+                    should_insert_heading = True
+                    if len(target_parent):
+                        first_child = target_parent[0]
+                        if isinstance(first_child, etree._Element) and isinstance(first_child.tag, str):
+                            existing_text = (first_child.text or "").strip()
+                            if first_child.tag.lower() == "h1" and existing_text.lower() == subject_text.lower():
+                                should_insert_heading = False
+                    if should_insert_heading:
+                        heading = etree.Element("h1")
+                        heading.text = subject_text
+                        target_parent.insert(0, heading)
+                else:
+                    existing_text = sanitized_root.text or ""
+                    if existing_text:
+                        sanitized_root.text = f"{subject_text}\n{existing_text}"
+                    else:
+                        sanitized_root.text = subject_text
 
         sanitized_html = lxml_html.tostring(sanitized_root, encoding="unicode")
         normalized_text = sanitized_html.lower()
@@ -448,79 +484,178 @@ class GenericShopHandler(ShopHandler):
 
 class AiShopHandler(ShopHandler):
     def __init__(self, raw_html: str, sanitized_root: etree._Element, sanitized_html: str) -> None:
-        # TODO: validate this code below will work
+        """Leverage an LLM to extract structured invoice details from arbitrary HTML."""
         super().__init__(raw_html, sanitized_root, sanitized_html)
-        from automation.ai_helpers import LlmAi
-        self.ai = LlmAi("gpt-oss:20b")
+        self.shop_name: str = ""
+        self.order_id: str = ""
+        self.extracted_items: List[Dict[str, Any]] = []
+        self._ai_raw_response: Optional[Dict[str, Any]] = None
+        self.ai: Optional[Any] = None
+
+        try:
+            from automation.ai_helpers import LlmAi  # type: ignore
+        except Exception:
+            log.exception("AiShopHandler: unable to import LlmAi; continuing without AI assistance.")
+            return
+
+        try:
+            self.ai = LlmAi("gpt-oss:20b")
+        except Exception:
+            log.exception("AiShopHandler: failed to initialize the language model client.")
+            self.ai = None
+            return
+
         self.ai.make_tool(
             "Extract invoice fields from HTML email/webpage.",
             {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties":{
-                        "is_invoice": {"type": "boolean"},
-                        "store_name": {"type": "string"},
-                        "order_id":   {"type": "string"},
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "is_invoice": {"type": "boolean"},
+                    "store_name": {"type": "string"},
+                    "order_id": {"type": "string"},
+                    "items": {
+                        "type": "array",
                         "items": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "additionalProperties": False,
-                                "properties": {
-                                    "name":        {"type": "string"},
-                                    "part_number": {"type": "string"},
-                                    "product_url": {"type": "string", "format": "uri"}
-                                },
-                                "required": ["name"]
-                            }
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "name": {"type": "string"},
+                                "part_number": {"type": "string"},
+                                "product_url": {"type": "string", "format": "uri"},
+                                "quantity": {"type": "string"},
+                                "description": {"type": "string"},
+                                "notes": {"type": "string"}
+                            },
+                            "required": ["name"]
                         }
-                    },
-                    "required": ["is_invoice", "store_name", "order_id", "items"]
-                }
-            ,
-            required = ["is_invoice", "store_name", "order_id", "items"],
-            system_msg = (
+                    }
+                },
+                "required": ["is_invoice", "store_name", "order_id", "items"]
+            },
+            required=["is_invoice", "store_name", "order_id", "items"],
+            system_msg=(
                 "You are an information extraction engine. "
                 "Input is HTML for an email or webpage. "
-                "Determine if it is an invoice. If it is an invoice, set is_invoice=true."
+                "Determine if it is an invoice. If it is an invoice, set is_invoice=true. "
                 "If not an invoice, set is_invoice=false and return empty items. "
                 "If invoice-like, extract store name, a unique order/invoice/transaction ID, and line items. "
                 "Prefer explicit values in HTML over inferred ones. Be conservative with is_invoice=true."
             ),
-            name = "extract_invoice"
+            name="extract_invoice"
         )
-        log.debug("Begin AI assisted email parsing")
-        r = self.ai.query(self.sanitized_html)
-        # TODO: make sure the following is correct
-        if r["is_invoice"]:
-            log.debug("AI assisted email parsing success")
-            self.shop_name = r["store_name"]
-            self.order_id = r["order_id"]
-            self.extracted_items = r["items"]
+
+        log.debug("AiShopHandler: starting AI-assisted email parsing")
+        try:
+            response = self.ai.query(self.sanitized_html) if self.ai else None
+        except Exception:
+            log.exception("AiShopHandler: language model query failed; skipping AI results.")
+            return
+
+        if not isinstance(response, dict):
+            if response is not None:
+                log.warning("AiShopHandler: unexpected response type %s from AI tool.", type(response).__name__)
+            return
+
+        self._ai_raw_response = response
+        is_invoice = bool(response.get("is_invoice"))
+        if not is_invoice:
+            log.debug("AiShopHandler: AI determined the message is not an invoice.")
+            return
+
+        self.shop_name = str(response.get("store_name") or "").strip()
+        self.order_id = str(response.get("order_id") or "").strip()
+        items_payload = response.get("items")
+        if isinstance(items_payload, list):
+            self.extracted_items = items_payload
         else:
-            log.debug("AI assisted email parsing yielded no result")
-            self.shop_name = None
-            self.order_id = None
-            self.extracted_items = None
+            self.extracted_items = []
+            if items_payload not in (None, []):
+                log.debug("AiShopHandler: unexpected items payload type %s.", type(items_payload).__name__)
+
+        log.debug("AiShopHandler: AI-assisted parsing succeeded with %d extracted item(s).", len(self.extracted_items))
 
     def has_already_been_handled(self, shop_name: str, order_number: str) -> bool:
         """Generic handlers rely on the base human-processing check without changes."""
         return super().has_already_been_handled(shop_name, order_number)
 
-    # TODO: validate if this will work because the super class function is a classmethod
-    # maybe that needs to be changed?
     def get_shop_name(self) -> str:
-        return self.shop_name
+        """Return the AI-detected shop name when available."""
+        return str(self.shop_name or "").strip()
 
     def get_order_number(self) -> Optional[str]:
-        return self.order_id
+        """Return the AI-detected order identifier when available."""
+        candidate = str(self.order_id or "").strip()
+        return candidate or None
 
     def guess_items(self) -> List[Dict[str, str]]:
-        # TODO: the keys in self.extracted_items does not match the columns of the database table `items`
-        # there might be future additional extractions
-        # construct a list of new dicts, the new dicts have keys reflecting the database table `items`
-        # fill with data from self.extracted_items, and anticipate future keys for self.extracted_items
-        return
+        """Map AI-extracted items onto the schema expected by downstream consumers."""
+        normalized_items: List[Dict[str, str]] = []
+        if not isinstance(self.extracted_items, list):
+            return normalized_items
+
+        def _clean_text(value: Any) -> str:
+            if value is None:
+                return ""
+            text_value = str(value).replace("\r\n", "\n").replace("\r", "\n").strip()
+            return text_value
+
+        shop_source = self.get_shop_name()
+
+        for index, raw_item in enumerate(self.extracted_items, start=1):
+            if not isinstance(raw_item, dict):
+                continue
+
+            normalized: Dict[str, str] = {}
+            name_candidate = _clean_text(raw_item.get("name") or raw_item.get("title"))
+            if not name_candidate:
+                alt_names = [
+                    _clean_text(raw_item.get("description")),
+                    _clean_text(raw_item.get("part_number")),
+                    _clean_text(raw_item.get("product_url")),
+                ]
+                for candidate in alt_names:
+                    if candidate:
+                        name_candidate = candidate
+                        break
+            if not name_candidate:
+                name_candidate = f"Item {index}"
+            normalized["name"] = name_candidate
+
+            description_text = _clean_text(raw_item.get("description") or raw_item.get("details") or raw_item.get("text"))
+            if description_text:
+                normalized["description"] = description_text
+
+            remarks_text = _clean_text(raw_item.get("remarks") or raw_item.get("notes"))
+            if remarks_text:
+                normalized["remarks"] = remarks_text
+
+            quantity_text = _clean_text(raw_item.get("quantity"))
+            if quantity_text:
+                normalized["quantity"] = quantity_text
+
+            metatext_value = _clean_text(raw_item.get("metatext") or raw_item.get("metadata"))
+            if metatext_value:
+                normalized["metatext"] = metatext_value
+
+            product_code_text = _clean_text(raw_item.get("part_number") or raw_item.get("sku") or raw_item.get("product_code"))
+            if product_code_text:
+                normalized["product_code"] = product_code_text
+
+            product_url_text = _clean_text(raw_item.get("product_url") or raw_item.get("url"))
+            if product_url_text:
+                normalized["url"] = product_url_text
+
+            image_url_text = _clean_text(raw_item.get("image_url") or raw_item.get("image") or raw_item.get("thumbnail"))
+            if image_url_text:
+                normalized["img_url"] = image_url_text
+
+            if shop_source:
+                normalized.setdefault("source", shop_source)
+
+            normalized_items.append(normalized)
+
+        return normalized_items
 
 def _load_invoice_html(file_path: Path) -> str:
     """Return HTML text from the provided path, converting MIME formats when needed."""
