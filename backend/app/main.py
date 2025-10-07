@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, session
 from flask_cors import CORS
 from sqlalchemy import text
 from datetime import timedelta
@@ -115,3 +115,12 @@ def db_cleanup(_exc):
     """Release scoped database resources after every request."""
 
     db.db_cleanup(_exc)
+
+@app.before_request
+def set_actor_from_request():
+    from backend.automation.actor_context import as_user, as_system
+    user = session.get("user_id")
+    if user:
+        as_user(user, origin="ui:request")
+    else:
+        as_system(origin="api:anonymous", actor="anonymous")
