@@ -13,7 +13,7 @@ from sqlalchemy import text
 
 from automation.order_num_extract import extract_order_number, extract_order_number_and_url
 from shop_handler import GenericShopHandler, ShopHandler
-from app.config_loader import get_email_whitelist
+from app.config_loader import get_email_blacklist, get_email_whitelist
 from app.db import get_engine, update_db_row_by_dict, unwrap_db_result
 from app.history import log_history
 
@@ -198,14 +198,40 @@ class EmailChecker:
             if handler_order:
                 order_number = handler_order.strip()
         if handler is None or isinstance(handler, GenericShopHandler):
-            # Generic handlers can accidentally match marketing mail; only trust whitelisted senders.
+            # Generic handlers can accidentally match marketing mail; only trust configured sender rules.
             whitelist_entries = get_email_whitelist()
+            blacklist_entries = get_email_blacklist()
             normalized_sender = (sender_email or "").strip().lower()
-            sender_is_allowed = False
-            if normalized_sender:
-                sender_is_allowed = any(
-                    fragment in normalized_sender for fragment in whitelist_entries
+
+            def _matches_fragment(haystack: str, fragments: list[str]) -> bool:
+                """Return True when any configured fragment appears in the sender address."""
+                if not haystack:
+                    return False
+                for fragment in fragments:
+                    if fragment and fragment in haystack:
+                        return True
+                return False
+
+            if _matches_fragment(normalized_sender, blacklist_entries):
+                log.info(
+                    "Skipping invoice creation for %s message %s because sender %r matched the configured blacklist.",
+                    provider_label,
+                    message_id,
+                    sender_email,
                 )
+                return {
+                    "order_number": order_number,
+                    "invoice_id": None,
+                    "invoice_error": None,
+                    "status": "sender_blacklisted",
+                }
+
+            if whitelist_entries:
+                sender_is_allowed = _matches_fragment(normalized_sender, whitelist_entries)
+            else:
+                # When no whitelist is configured, accept any sender that is not blacklisted.
+                sender_is_allowed = True
+
             if not sender_is_allowed:
                 log.info(
                     "Skipping invoice creation for %s message %s because sender %r was not in the configured whitelist.",
