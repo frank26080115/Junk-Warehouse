@@ -7,5 +7,6 @@
     "pin_open_expiry_hours": 36,
     "meta_whitelist": "sony, apple, ece",
     "public_html_path": "<REPO_ROOT>/var/public_html",
-    "email_whitelist": "shopify;"
+    "email_whitelist": "shopify;",
+    "email_blacklist": "github;"
 }

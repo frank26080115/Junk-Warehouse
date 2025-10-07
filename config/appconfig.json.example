@@ -8,5 +8,6 @@
   "emb_model_offline": "all-mpnet-base-v2",
   "meta_whitelist": "sony, apple, ece",
   "pin_open_expiry_hours": 36,
-  "email_whitelist": "shopify;"
+  "email_whitelist": "shopify;",
+  "email_blacklist": "github;"
 }
