@@ -11,8 +11,9 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine, RowMapping
 
 from app.db import get_engine, get_or_create_session, update_db_row_by_dict
-from app.helpers import normalize_pg_uuid, coerce_identifier_to_uuid
+from app.helpers import normalize_pg_uuid, coerce_identifier_to_uuid, build_callstack_string
 from .user_login import login_required
+from automation.actor_context import get_actor_ctx
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +45,10 @@ def _resolve_username() -> Optional[str]:
     a username explicitly.
     """
 
+    if get_actor_ctx():
+        ctx = get_actor_ctx()
+        if ctx["display"]:
+            return ctx["display"]
     if has_request_context():
         raw_username = session.get("user_id")  # type: ignore[index]
         if isinstance(raw_username, str):
@@ -191,6 +196,9 @@ def log_history(
             # to specific operators. Leaving the column out keeps database
             # defaults intact for automated jobs that lack user context.
             payload["username"] = resolved_username
+
+        callstack = build_callstack_string(1)
+        payload["callstack"] = callstack
 
         # Delegate the actual insert to the established helper so that error handling and
         # RETURNING behaviour stay consistent with the rest of the codebase.
