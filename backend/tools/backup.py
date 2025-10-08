@@ -84,12 +84,23 @@ def _should_skip_relative(relative_path: Path, ignored_roots: Optional[Set[str]]
     return relative_path.parts[0] in ignored_roots
 
 
-def mirror_directory(source: Path, destination: Path, ignored_roots: Optional[Set[str]] = None) -> None:
-    """Copy source into destination while preserving timestamps and skipping ignored folders."""
+def mirror_directory(source: Path, destination: Path, ignored_roots: Optional[Set[str]] = None) -> bool:
+    """Copy source into destination while preserving timestamps and skipping ignored folders.
+
+    The function returns True when the mirror successfully runs. When the source directory is
+    missing, the function logs a warning and returns False so the caller can make decisions such
+    as skipping downstream git status checks that would otherwise fail.
+    """
 
     if not source.exists():
         log.warning("Source directory %s does not exist, skipping copy.", source)
-        return
+        return False
+
+    # Track the relative paths that were encountered so we can remove stale content from the
+    # destination. This keeps backups aligned with the live directories when files are deleted
+    # from the origin.
+    seen_directories: Set[Path] = {Path('.')}
+    seen_files: Set[Path] = set()
     for root_dir, dir_names, file_names in os.walk(source):
         root_path = Path(root_dir)
         relative_root = root_path.relative_to(source)
@@ -105,6 +116,7 @@ def mirror_directory(source: Path, destination: Path, ignored_roots: Optional[Se
         dir_names[:] = filtered_dirs
         target_root = destination / relative_root
         target_root.mkdir(parents=True, exist_ok=True)
+        seen_directories.add(relative_root)
         for file_name in file_names:
             candidate_relative = relative_root / file_name
             if _should_skip_relative(candidate_relative, ignored_roots):
@@ -112,6 +124,26 @@ def mirror_directory(source: Path, destination: Path, ignored_roots: Optional[Se
             source_file = root_path / file_name
             destination_file = target_root / file_name
             shutil.copy2(str(source_file), str(destination_file))
+            seen_files.add(candidate_relative)
+
+    # Remove files and directories that no longer exist in the source. We iterate from the deepest
+    # paths upward so that directories are only removed after their children have been evaluated.
+    if destination.exists():
+        for existing_path in sorted(destination.rglob("*"), key=lambda path: len(path.relative_to(destination).parts), reverse=True):
+            relative_existing = existing_path.relative_to(destination)
+            if _should_skip_relative(relative_existing, ignored_roots):
+                continue
+            try:
+                if existing_path.is_file():
+                    if relative_existing not in seen_files:
+                        existing_path.unlink()
+                else:
+                    if relative_existing not in seen_directories and relative_existing != Path('.'):
+                        existing_path.rmdir()
+            except OSError as exc:
+                log.warning("Unable to remove outdated item %s: %s", existing_path, exc)
+
+    return True
 
 
 def run_pg_dumps(database_dir: Path) -> None:
@@ -197,20 +229,29 @@ def run_backup(backup_location: Optional[Path | str] = None) -> Dict[str, bool]:
 
     changed_flags: Dict[str, bool] = {"config": False, "private": False, "public_html": False, "database": False}
 
-    mirror_directory(repo_config_dir, target_dir / "config")
-    changed_flags["config"] = git_status_has_changes(target_dir, Path("config"))
+    config_synchronized = mirror_directory(repo_config_dir, target_dir / "config")
+    if config_synchronized:
+        changed_flags["config"] = git_status_has_changes(target_dir, Path("config"))
+    else:
+        log.warning("Config directory was not mirrored; skipping git status check.")
 
     if private_source_raw:
         private_source = Path(private_source_raw)
-        mirror_directory(private_source, target_dir / "private", {"tmp"})
-        changed_flags["private"] = git_status_has_changes(target_dir, Path("private"))
+        private_synchronized = mirror_directory(private_source, target_dir / "private", {"tmp"})
+        if private_synchronized:
+            changed_flags["private"] = git_status_has_changes(target_dir, Path("private"))
+        else:
+            log.info("Skipped git status check for private backup because mirroring was skipped.")
     else:
         log.warning("Private directory path is not configured; skipping private backup.")
 
     if public_source_raw:
         public_source = Path(public_source_raw)
-        mirror_directory(public_source, target_dir / "public_html", {"tmp"})
-        changed_flags["public_html"] = git_status_has_changes(target_dir, Path("public_html"))
+        public_synchronized = mirror_directory(public_source, target_dir / "public_html", {"tmp"})
+        if public_synchronized:
+            changed_flags["public_html"] = git_status_has_changes(target_dir, Path("public_html"))
+        else:
+            log.info("Skipped git status check for public_html backup because mirroring was skipped.")
     else:
         log.warning("Public HTML directory path is not configured; skipping public_html backup.")
 
