@@ -302,7 +302,10 @@ CREATE TABLE history (
     event TEXT NOT NULL DEFAULT '',
 
     -- additional details as JSON/text
-    meta TEXT NOT NULL DEFAULT ''
+    meta TEXT NOT NULL DEFAULT '',
+
+    -- python callstack string
+    callstack TEXT NOT NULL DEFAULT ''
 );
 
 
