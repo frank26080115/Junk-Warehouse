@@ -7,7 +7,7 @@ ConditionPathExists=!/root/.jw_dev_disabled
 
 [Service]
 Type=simple
-User=deploy
+User=root
 WorkingDirectory=/root/Junk-Warehouse
 EnvironmentFile=-/etc/default/jw_dev_boot
 # Run through a login shell so nvm etc. work if you use them

@@ -16,7 +16,9 @@ And a systemd service **`jw_dev_boot.service`** to run/stop it.
 * 🔁 restart: `sudo systemctl restart jw_dev_boot`
 * 📜 logs: `journalctl -u jw_dev_boot -f`
 * 🚫 skip on next boot: `touch /root/.jw_dev_disabled && sudo systemctl stop jw_dev_boot`
-* ✅ re-enable on boot: `rm -f /root/.jw_dev_disabled && sudo systemctl start jw_dev_boot`
+* 🔁 re-enable on boot: `rm -f /root/.jw_dev_disabled && sudo systemctl start jw_dev_boot`
+* ✅ check status: `sudo systemctl status jw_dev_boot`
+* 🔁 daemon reload: `sudo systemctl daemon-reload` then `sudo systemctl restart jw_dev_boot`
 
 ## 🛠️ `jw_dev_boot.sh` (put in `/root/Junk-Warehouse/scripts/jw_dev_boot.sh`) 🧪
 
