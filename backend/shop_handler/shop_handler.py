@@ -507,34 +507,34 @@ class AiShopHandler(ShopHandler):
             self.ai = None
             return
 
+        # Define the properties that describe the structure returned by the AI tool.
+        invoice_properties: Dict[str, Any] = {
+            "is_invoice": {"type": "boolean"},
+            "store_name": {"type": "string"},
+            "order_id": {"type": "string"},
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "name": {"type": "string"},
+                        "part_number": {"type": "string"},
+                        "product_url": {"type": "string", "format": "uri"},
+                        "quantity": {"type": "string"},
+                        "description": {"type": "string"},
+                        "notes": {"type": "string"}
+                    },
+                    "required": ["name"]
+                }
+            }
+        }
+
+        # Build the tool using the shorthand dictionary above so the helper can
+        # expand it into a valid JSON schema for the OpenAI function interface.
         self.ai.make_tool(
             "Extract invoice fields from HTML email/webpage.",
-            {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "is_invoice": {"type": "boolean"},
-                    "store_name": {"type": "string"},
-                    "order_id": {"type": "string"},
-                    "items": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "properties": {
-                                "name": {"type": "string"},
-                                "part_number": {"type": "string"},
-                                "product_url": {"type": "string", "format": "uri"},
-                                "quantity": {"type": "string"},
-                                "description": {"type": "string"},
-                                "notes": {"type": "string"}
-                            },
-                            "required": ["name"]
-                        }
-                    }
-                },
-                "required": ["is_invoice", "store_name", "order_id", "items"]
-            },
+            invoice_properties,
             required=["is_invoice", "store_name", "order_id", "items"],
             system_msg=(
                 "You are an information extraction engine. "
@@ -544,7 +544,7 @@ class AiShopHandler(ShopHandler):
                 "If invoice-like, extract store name, a unique order/invoice/transaction ID, and line items. "
                 "Prefer explicit values in HTML over inferred ones. Be conservative with is_invoice=true."
             ),
-            name="extract_invoice"
+            name="extract_invoice",
         )
 
         log.debug("AiShopHandler: starting AI-assisted email parsing")

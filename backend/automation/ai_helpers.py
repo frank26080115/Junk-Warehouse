@@ -4,6 +4,7 @@ import os
 import sys
 from pathlib import Path
 import json
+import copy  # Used for defensive copies of schema dictionaries
 import requests
 import math
 from typing import List, Union, Optional
@@ -239,7 +240,7 @@ class LlmAi(object):
     def remove_tool(self):
         self.tool = None
 
-    def make_tool(self, desc: str, param_props, system_msg:str = None, required="all", name: str = "return_tool"):
+    def make_tool(self, desc: str, param_props, system_msg: str = None, required="all", name: str = "return_tool"):
         """
         example of param_props:
         {
@@ -249,30 +250,56 @@ class LlmAi(object):
         }
         """
 
-        # it is unlikely a user is going to define a tool without knowing what to say as a system message
+        # Update the system message when the caller supplies one so subsequent
+        # invocations inherit the same guidance by default.
         if system_msg:
             self.system_msg = system_msg
+
+        if not isinstance(param_props, dict):
+            raise TypeError("param 'param_props' must be a dict describing the tool schema.")
+
+        # Work on a defensive copy so that downstream adjustments never mutate
+        # a dictionary that might be reused by the caller.
+        schema_source = copy.deepcopy(param_props)
+
+        # Detect whether the caller already supplied a full JSON schema object
+        # (with keys such as 'type' and 'properties') versus a shorthand map of
+        # property names to their definitions.
+        has_schema_shape = (
+            isinstance(schema_source, dict)
+            and "type" in schema_source
+            and any(key in schema_source for key in ("properties", "oneOf", "anyOf", "allOf", "items", "required"))
+        )
+
+        if has_schema_shape:
+            parameters_definition = schema_source
+            if not parameters_definition.get("type"):
+                parameters_definition["type"] = "object"
+            parameters_definition.setdefault("properties", {})
+            parameters_definition.setdefault("additionalProperties", False)
+        else:
+            parameters_definition = {
+                "type": "object",
+                "properties": schema_source,
+                "additionalProperties": False
+            }
 
         self.tool = {
             "type": "function",
             "function": {
                 "name": name,
                 "description": desc,
-                "parameters": {
-                    "type": "object",
-                    "properties": param_props,
-                    "additionalProperties": False
-                }
+                "parameters": parameters_definition
             }
         }
         if required:
             params = self.tool["function"]["parameters"]
             if required == "all":
-                # copy all keys from properties into required
-                props = params.get("properties", {}) or {}
-                params["required"] = list(props.keys())
+                if "required" not in params:
+                    props = params.get("properties", {}) or {}
+                    params["required"] = list(props.keys())
             elif isinstance(required, list):
-                params["required"] = required
+                params["required"] = list(required)
             else:
                 raise TypeError(f"param 'required' must be a list of strings, but it is '{type(required)}'")
 
