@@ -111,7 +111,8 @@ class ImapChecker(EmailChecker):
         engine = get_engine()
         try:
             with engine.connect() as conn:
-                result = conn.execute(text("SELECT email_uuid FROM imail_seen"))
+                # Order by date_seen to prioritise the most recently processed IMAP entries.
+                result = conn.execute(text("SELECT email_uuid FROM imail_seen ORDER BY date_seen DESC"))
                 seen: List[str] = []
                 for row in result:
                     hex_value = bytea_to_hex_str(row[0])
