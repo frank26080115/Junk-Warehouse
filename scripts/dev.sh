@@ -1,49 +1,43 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# =====================================
+# Launch full Junk-Warehouse dev stack
+# =====================================
+set -e  # Exit immediately on errors
 
-TARGET="${1:-all}"
+# Move to project root (one up from scripts)
+cd "$(dirname "$0")/.."
 
-if [[ "$TARGET" == "backend" || "$TARGET" == "all" ]]; then
-  # Ensure venv & deps
-  if [[ ! -d ".venv" ]]; then python -m venv .venv; fi
+# ---------- Helper: cleanup ----------
+cleanup() {
+  echo
+  echo "🧹 Cleaning up background processes..."
+  # Kill background jobs (npm, etc.)
+  jobs -p | xargs -r kill
+  echo "✅ All stopped."
+}
+trap cleanup EXIT
+
+# ---------- Activate Python venv ----------
+if [ -d ".venv" ]; then
+  echo "🐍 Activating virtual environment..."
+  # shellcheck disable=SC1091
   source .venv/bin/activate
-  python -m pip install -U pip
-  if [[ -f backend/pyproject.toml ]]; then
-    python -m pip install poetry
-    (cd backend && poetry install)
-  else
-    (cd backend && pip install -r requirements.txt)
-  fi
-fi
-
-if [[ "$TARGET" == "frontend" || "$TARGET" == "all" ]]; then
-  (cd frontend && npm install)
-fi
-
-# Start DB
-docker compose up -d db
-
-if [[ "$TARGET" == "backend" ]]; then
-  (cd backend && FLASK_APP=app/main.py flask --app app/main run --host 127.0.0.1 --port 5000 --debug)
-elif [[ "$TARGET" == "frontend" ]]; then
-  (cd frontend && npm run dev)
 else
-  # run both with tmux/gnu-screen fallback
-  (cd backend && FLASK_APP=app/main.py flask --app app/main run --host 127.0.0.1 --port 5000 --debug) &
-  BACK_PID=$!
-  (cd frontend && npm run dev) &
-  FRONT_PID=$!
-  wait $BACK_PID $FRONT_PID
+  echo "⚠️  No .venv directory found in project root."
+  echo "    Run 'python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt'"
+  exit 1
 fi
 
-# python
-if ! cmp --silent requirements.txt .deps/requirements.txt.cache; then
-  python -m pip install -r requirements.txt
-  mkdir -p .deps && cp requirements.txt .deps/requirements.txt.cache
-fi
+# ---------- Start npm processes ----------
+echo "🚀 Starting frontend build..."
+npm run -w frontend build &
 
-# node
-if ! cmp --silent package-lock.json .deps/package-lock.json.cache; then
-  npm ci
-  mkdir -p .deps && cp package-lock.json .deps/package-lock.json.cache
-fi
+echo "⚡ Starting frontend dev server..."
+npm run -w frontend dev &
+
+# ---------- Start Flask backend ----------
+echo "🔥 Starting Flask backend..."
+cd backend
+
+# Make Flask discoverable via host 0.0.0.0
+python -m flask --app app.main:app --debug run --host=0.0.0.0 --port=5000
