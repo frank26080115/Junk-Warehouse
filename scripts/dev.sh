@@ -4,6 +4,9 @@
 # =====================================
 set -e  # Exit immediately on errors
 
+# kill zombie servers hogging the port
+kill -9 $(lsof -t -i:5173)
+
 # Move to project root (one up from scripts)
 cd "$(dirname "$0")/.."
 
