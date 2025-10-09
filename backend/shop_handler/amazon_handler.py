@@ -84,7 +84,7 @@ class AmazonHandler(ShopHandler):
             )
 
             final_name = prod_name
-            ai = LlmAi("offline")
+            ai = LlmAi("online")
 
             try:
                 ai_name = ai.query([prod_name], "You will be given the product name of an item available on Amazon, it will have some useless information that can be removed, reply with a concise name for the object without any SEO info or quantity information. This is not a conversation, please reply with only the final concise name.")

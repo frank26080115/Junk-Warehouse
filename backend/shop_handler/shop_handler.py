@@ -499,7 +499,7 @@ class AiShopHandler(ShopHandler):
             return
 
         try:
-            self.ai = LlmAi("gpt-oss:20b")
+            self.ai = LlmAi("online")
         except Exception:
             log.exception("AiShopHandler: failed to initialize the language model client.")
             self.ai = None
