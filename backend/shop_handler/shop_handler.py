@@ -213,7 +213,6 @@ class ShopHandler:
             ("digikey_handler", "DigiKeyHandler"),
             ("mcmastercarr_handler", "McMasterCarrHandler"),
             ("ebay_handler", "EbayHandler"),
-            ("ai_shop_handler", "AiShopHandler"),
         )
 
         handler_package = cls._determine_handler_package()
@@ -224,6 +223,9 @@ class ShopHandler:
             module = importlib.import_module(module_path)
             handler_type = getattr(module, class_name)
             resolved_handlers.append(handler_type)
+
+        # AiShopHandler is defined in this module, so we append it directly without importing.
+        resolved_handlers.append(AiShopHandler)
 
         return tuple(resolved_handlers)
 
