@@ -237,11 +237,9 @@ class GmailChecker(EmailChecker):
             return cleaned_source
         cleaned = cleaned_source.strip()
         hex_candidate = cleaned.replace("-", "")
-        hex_chars = set("0123456789abcdefABCDEF")
-        if 16 <= len(hex_candidate) <= 32 and set(hex_candidate).issubset(hex_chars):
-            padded = hex_candidate.rjust(32, "0")
-            return padded
-        return cleaned
+        padded = hex_candidate.rjust(16, "0")
+        result = padded.lower()
+        return result
 
     @staticmethod
     def gmail_date_x_days_query(days: int) -> str:

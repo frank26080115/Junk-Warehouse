@@ -82,6 +82,11 @@ def bytea_to_int(data: Optional[Union[bytes, bytearray, memoryview, str]], expec
     Convert raw bytea values retrieved from PostgreSQL into an integer.
     Internally uses bytea_to_hex_str() for consistent zero-padded hex normalization.
     """
+    if isinstance(data, str):
+        try:
+            return int(data, 16)
+        except ValueError:
+            pass
     hex_str = bytea_to_hex_str(data, expected_str_length)
     if not hex_str:  # empty string means data was None
         return 0
