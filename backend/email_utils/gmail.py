@@ -11,7 +11,7 @@ import uuid
 from email.utils import parseaddr
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Union
 
 # We need both the repository root and the backend package directory on sys.path so that
 # absolute imports work when the file is executed directly from different directories.
@@ -27,7 +27,7 @@ from sqlalchemy import text
 
 from backend.app.config_loader import get_private_dir_path
 from app.db import get_engine, update_db_row_by_dict, unwrap_db_result
-from app.helpers import normalize_pg_uuid, hex_str_to_bytea, bytea_to_hex_str, bytea_to_int
+from app.helpers import normalize_pg_uuid, hex_str_to_bytea, bytea_to_hex_str
 
 try:
     from .email_helper import EmailChecker
@@ -198,24 +198,51 @@ class GmailChecker(EmailChecker):
         return build("gmail", "v1", credentials=creds)
 
     @staticmethod
-    def _fetch_seen_ids() -> set[int]:
-        """Retrieve Gmail message identifiers that were already processed."""
+    def _message_identifier_bytes(
+        message_id: Optional[Union[str, bytes]],
+        normalized_id: Optional[str] = None,
+    ) -> bytes:
+        """Convert a Gmail message identifier into the canonical byte form stored in the database."""
+        canonical_source: Optional[str] = normalized_id
+        if canonical_source is None:
+            canonical_source = GmailChecker._normalize_gmail_id(message_id)
+        if not canonical_source:
+            if isinstance(message_id, bytes):
+                canonical_source = message_id.decode("utf-8", errors="ignore")
+            elif isinstance(message_id, str):
+                canonical_source = message_id
+            else:
+                canonical_source = ""
+        canonical_source = (canonical_source or "").strip()
+        if not canonical_source:
+            return b""
+        return hex_str_to_bytea(canonical_source)
+
+    @staticmethod
+    def _has_seen_identifier(identifier_bytes: bytes) -> bool:
+        """Determine whether the supplied identifier already exists in gmail_seen."""
+        if not identifier_bytes:
+            return False
         engine = get_engine()
         try:
             with engine.connect() as conn:
-                # Order by date_seen so the newest processed messages appear first for downstream usage.
-
-                result = conn.execute(text("SELECT email_uuid FROM gmail_seen ORDER BY date_seen DESC"))
-                # Convert stored bytea values back into canonical hexadecimal strings for comparison.
-                seen_ids: set[int] = set()
-                for row in result:
-                    int_value = bytea_to_int(row[0])
-                    seen_ids.add(int_value)
-                log.debug("Loaded %d previously seen Gmail message identifiers.", len(seen_ids))
-                return seen_ids
+                row = conn.execute(
+                    text("SELECT 1 FROM gmail_seen WHERE email_uuid = :email_uuid LIMIT 1"),
+                    {"email_uuid": identifier_bytes},
+                ).first()
         except Exception:
-            log.exception("Failed to load gmail_seen entries; treating as empty set")
-            return set()
+            log.exception(
+                "Failed to check gmail_seen for identifier %s; assuming the message has not been processed.",
+                bytea_to_hex_str(identifier_bytes),
+            )
+            return False
+        already_seen = row is not None
+        log.debug(
+            "Gmail identifier %s already processed=%s",
+            bytea_to_hex_str(identifier_bytes),
+            already_seen,
+        )
+        return already_seen
 
     @staticmethod
     def _normalize_gmail_id(message_id: Optional[Union[str, bytes]]) -> Optional[str]:
@@ -333,7 +360,10 @@ class GmailChecker(EmailChecker):
 
 
     @staticmethod
-    def _handle_gmail_message(msg: Dict[str, Any]) -> Dict[str, Any]:
+    def _handle_gmail_message(
+        msg: Dict[str, Any],
+        precomputed_identifier: Optional[bytes] = None,
+    ) -> Dict[str, Any]:
         """Process a Gmail API message and create or update invoice rows."""
         log.debug("Handling Gmail message with id %s", msg.get("id"))
         headers = {
@@ -362,10 +392,14 @@ class GmailChecker(EmailChecker):
             None,
             sender_email
         )
-        raw_identifier = normalized_id or message_id or ""
         # Gmail message identifiers arrive as hexadecimal strings that need to live in the bytea column as raw bytes.
-        # Converting through hex_str_to_bytea preserves zero padding so Gmail URLs remain stable.
-        email_uuid_bytes = hex_str_to_bytea(raw_identifier) if raw_identifier else b""
+        # Converting through the helper ensures consistent normalization while allowing the caller to reuse a cached
+        # byte representation when the identifier has already been prepared for a deduplication check.
+        email_uuid_bytes = (
+            GmailChecker._message_identifier_bytes(message_id, normalized_id)
+            if precomputed_identifier is None
+            else precomputed_identifier
+        )
         gmail_payload: Dict[str, Any] = {
             "email_uuid": email_uuid_bytes,
             "date_seen": email_date,
@@ -460,24 +494,50 @@ class GmailChecker(EmailChecker):
                 ok=False,
                 error=str(exc),
             )
-        seen_ids = GmailChecker._fetch_seen_ids()
-        log.debug(
-            "Identified %d total Gmail ids already processed.",
-            len(seen_ids),
-        )
-        new_ids: List[str] = []
-        for mid in message_ids:
-            int_val = bytea_to_int(mid)
-            if int_val in seen_ids:
-                continue
-            new_ids.append(mid)
-        log.debug(
-            "Found %d new Gmail messages out of %d retrieved.",
-            len(new_ids),
-            len(message_ids),
-        )
+        # Track processing details while performing a fresh database lookup for each identifier. This slightly
+        # increases the number of queries but avoids races caused by reusing a cached snapshot of gmail_seen.
         processed: List[Dict[str, Any]] = []
-        for mid in new_ids:
+        new_ids: List[str] = []
+        seen_identifier_bytes: set[bytes] = set()
+        seen_message_ids: set[str] = set()
+        for mid in message_ids:
+            if mid in seen_message_ids:
+                log.debug(
+                    "Skipping duplicate Gmail message id %s encountered during listing.",
+                    mid,
+                )
+                continue
+            seen_message_ids.add(mid)
+            identifier_bytes: Optional[bytes] = None
+            try:
+                identifier_bytes = GmailChecker._message_identifier_bytes(mid)
+            except Exception:
+                log.exception(
+                    "Failed to normalize Gmail message identifier %s prior to processing; continuing without database deduplication.",
+                    mid,
+                )
+                identifier_bytes = None
+            already_processed = False
+            if identifier_bytes:
+                if identifier_bytes in seen_identifier_bytes:
+                    log.debug(
+                        "Skipping Gmail message id %s because it already appeared earlier in this run.",
+                        mid,
+                    )
+                    already_processed = True
+                elif GmailChecker._has_seen_identifier(identifier_bytes):
+                    log.debug(
+                        "Database indicates Gmail message id %s (canonical %s) was already processed; skipping.",
+                        mid,
+                        bytea_to_hex_str(identifier_bytes),
+                    )
+                    seen_identifier_bytes.add(identifier_bytes)
+                    already_processed = True
+            if already_processed:
+                continue
+            if identifier_bytes:
+                seen_identifier_bytes.add(identifier_bytes)
+            new_ids.append(mid)
             try:
                 msg = GmailChecker.get_full_message(service, mid)
             except Exception as exc:
@@ -491,7 +551,7 @@ class GmailChecker(EmailChecker):
                 )
                 continue
             try:
-                result = GmailChecker._handle_gmail_message(msg)
+                result = GmailChecker._handle_gmail_message(msg, identifier_bytes)
                 processed.append(result)
                 log.debug(
                     "Successfully processed Gmail message %s with status %s",
@@ -508,7 +568,9 @@ class GmailChecker(EmailChecker):
                     }
                 )
         log.debug(
-            "Gmail processing completed. Total processed entries: %d",
+            "Gmail processing completed. Checked=%d, newly processed=%d, results=%d",
+            len(message_ids),
+            len(new_ids),
             len(processed),
         )
         return EmailChecker.build_summary(
