@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from email import message_from_bytes
 from email.header import decode_header, make_header
 from email.utils import parseaddr
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 # Ensure repository imports function when executing the file directly.
 from pathlib import Path
@@ -125,6 +125,7 @@ class ImapChecker(EmailChecker):
                     text("SELECT 1 FROM imail_seen WHERE email_uuid = :email_uuid LIMIT 1"),
                     {"email_uuid": uid_bytes},
                 ).first()
+        except Exception:
             log.exception(
                 "Failed to check imail_seen for UID %s; assuming the message is new.",
                 bytea_to_hex_str(uid_bytes),
@@ -137,8 +138,6 @@ class ImapChecker(EmailChecker):
             already_seen,
         )
         return already_seen
-            log.exception("Failed to load imail_seen entries; treating as empty set")
-            return []
 
     @staticmethod
     def _decode_header_value(raw_value: Optional[str]) -> str:
@@ -173,17 +172,8 @@ class ImapChecker(EmailChecker):
                     decoded = payload.decode(charset, errors="replace")
                 except Exception:
                     decoded = payload.decode("utf-8", errors="replace")
-    def _handle_imap_message(
-        uid: str,
-        msg_bytes: bytes,
-        precomputed_uid_bytes: Optional[bytes] = None,
-    ) -> Dict[str, Any]:
-        uid_bytes = (
-            ImapChecker._uid_to_bytes(uid)
-            if precomputed_uid_bytes is None
-            else precomputed_uid_bytes
-        )
-            "email_uuid": uid_bytes,
+                content_type = part.get_content_type()
+                if content_type == "text/html" and not html_body:
                     html_body = decoded
                 elif content_type == "text/plain" and not text_body:
                     text_body = decoded
@@ -207,7 +197,11 @@ class ImapChecker(EmailChecker):
         return html_body, text_body
 
     @staticmethod
-    def _handle_imap_message(uid: str, msg_bytes: bytes) -> Dict[str, Any]:
+    def _handle_imap_message(
+        uid: str,
+        msg_bytes: bytes,
+        precomputed_uid_bytes: Optional[bytes] = None,
+    ) -> Dict[str, Any]:
         """Process a raw IMAP message payload."""
         log.debug("Handling IMAP message with UID %s", uid)
         msg = message_from_bytes(msg_bytes)
@@ -228,9 +222,15 @@ class ImapChecker(EmailChecker):
             None,
             sender_email,
         )
-        # Persist the canonical hexadecimal UID as raw bytes so the bytea column stays consistent.
+        uid_bytes = (
+            ImapChecker._uid_to_bytes(uid)
+            if precomputed_uid_bytes is None
+            else precomputed_uid_bytes
+        )
+        if not uid_bytes:
+            uid_bytes = b""
         payload: Dict[str, Any] = {
-            "email_uuid": hex_str_to_bytea(uid) if uid else b"",
+            "email_uuid": uid_bytes,
             "date_seen": email_date,
         }
         invoice_id = ingestion.get("invoice_id")
@@ -302,12 +302,38 @@ class ImapChecker(EmailChecker):
                 ok=False,
                 error=str(exc),
             )
-        # Perform per-message deduplication so that each fetch consults the latest database state, even if other
-        # workers are inserting rows concurrently.
+        try:
+            status, data = client.uid("search", None, query)
+            if status != "OK":
+                raise RuntimeError(f"IMAP search failed with status {status}")
+            raw_ids = data[0].split() if data and data[0] else []
+            uids = [uid.decode("utf-8", errors="ignore") for uid in raw_ids]
+            log.debug(
+                "IMAP search returned %d raw ids for query %s", len(uids), query
+            )
+        except Exception as exc:
+            log.exception("Unable to list IMAP messages for query %s", query)
+            try:
+                client.logout()
+            except Exception:
+                log.debug("IMAP logout raised an exception after search failure", exc_info=True)
+            return EmailChecker.build_summary(
+                "imap",
+                lookback_days,
+                query,
+                0,
+                0,
+                [],
+                ok=False,
+                error=str(exc),
+            )
+        # Track per-run processing state to avoid redundant work and to build an informative summary.
         processed: List[Dict[str, Any]] = []
         new_uids: List[str] = []
-        seen_uid_bytes: set[bytes] = set()
-        seen_raw_uids: set[str] = set()
+        previously_seen_uids: Set[str] = set()
+        processed_uid_bytes: Set[bytes] = set()
+        seen_raw_uids: Set[str] = set()
+        for uid in uids:
             if uid in seen_raw_uids:
                 log.debug(
                     "Skipping duplicate raw IMAP UID %s encountered during listing.",
@@ -316,8 +342,10 @@ class ImapChecker(EmailChecker):
                 continue
             seen_raw_uids.add(uid)
             uid_bytes: Optional[bytes] = None
+            canonical_uid: str = ""
             try:
                 uid_bytes = ImapChecker._uid_to_bytes(uid)
+                canonical_uid = bytea_to_hex_str(uid_bytes) if uid_bytes else ""
             except Exception:
                 log.exception(
                     "Failed to normalize IMAP UID %s before processing; continuing without database deduplication.",
@@ -326,56 +354,27 @@ class ImapChecker(EmailChecker):
                 uid_bytes = None
             already_processed = False
             if uid_bytes:
-                if uid_bytes in seen_uid_bytes:
+                if uid_bytes in processed_uid_bytes:
                     log.debug(
                         "Skipping IMAP UID %s because it already appeared earlier in this run.",
+                        uid,
+                    )
                     already_processed = True
                 elif ImapChecker._has_seen_uid(uid_bytes):
                     log.debug(
                         "Database indicates IMAP UID %s (canonical %s) was already processed; skipping.",
                         uid,
-                        bytea_to_hex_str(uid_bytes),
+                        canonical_uid,
                     )
-                    seen_uid_bytes.add(uid_bytes)
+                    processed_uid_bytes.add(uid_bytes)
+                    if canonical_uid:
+                        previously_seen_uids.add(canonical_uid)
                     already_processed = True
             if already_processed:
                 continue
             if uid_bytes:
-                seen_uid_bytes.add(uid_bytes)
+                processed_uid_bytes.add(uid_bytes)
             new_uids.append(uid)
-                result = ImapChecker._handle_imap_message(uid, msg_bytes, uid_bytes)
-        log.debug(
-            "IMAP processing completed. Checked=%d, newly processed=%d, results=%d",
-            len(uids),
-            len(new_uids),
-            len(processed),
-        )
-        log.debug("Found %d previously seen IMAP UIDs", len(seen_uids))
-        # Translate each server-provided UID into the canonical hexadecimal form stored in the database.
-        uid_pairs: List[Tuple[str, str]] = []
-        for uid in uids:
-            canonical_uid = ""
-            if uid:
-                try:
-                    canonical_uid = bytea_to_hex_str(hex_str_to_bytea(uid))
-                except ValueError:
-                    log.error(
-                        "IMAP UID %s could not be interpreted as hexadecimal; skipping for deduplication.",
-                        uid,
-                    )
-                    canonical_uid = ""
-            uid_pairs.append((uid, canonical_uid))
-        new_uid_pairs = [
-            (uid, canonical)
-            for uid, canonical in uid_pairs
-            if canonical and canonical not in seen_uids
-        ]
-        new_uids = [uid for uid, _ in new_uid_pairs]
-        # Update the in-memory seen set so duplicates later in the list are ignored during this run as well.
-        seen_uids.update(canonical for _, canonical in new_uid_pairs)
-        log.debug("Identified %d new IMAP UIDs to process", len(new_uids))
-        processed: List[Dict[str, Any]] = []
-        for uid in new_uids:
             try:
                 status, data = client.uid("fetch", uid, "(RFC822)")
                 if status != "OK" or not data:
@@ -395,7 +394,7 @@ class ImapChecker(EmailChecker):
                 )
                 continue
             try:
-                result = ImapChecker._handle_imap_message(uid, msg_bytes)
+                result = ImapChecker._handle_imap_message(uid, msg_bytes, uid_bytes)
                 processed.append(result)
                 log.debug(
                     "Successfully processed IMAP UID %s with status %s",
@@ -415,7 +414,13 @@ class ImapChecker(EmailChecker):
             client.logout()
         except Exception:
             log.debug("IMAP logout raised an exception", exc_info=True)
-        log.debug("IMAP processing completed with %d processed messages", len(processed))
+        log.debug(
+            "IMAP processing completed. Checked=%d, newly processed=%d, results=%d",
+            len(uids),
+            len(new_uids),
+            len(processed),
+        )
+        log.debug("Found %d previously seen IMAP UIDs", len(previously_seen_uids))
         return EmailChecker.build_summary(
             "imap",
             lookback_days,
