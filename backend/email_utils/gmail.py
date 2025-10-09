@@ -202,7 +202,8 @@ class GmailChecker(EmailChecker):
         engine = get_engine()
         try:
             with engine.connect() as conn:
-                result = conn.execute(text("SELECT email_uuid FROM gmail_seen"))
+                # Order by date_seen so the newest processed messages appear first for downstream usage.
+                result = conn.execute(text("SELECT email_uuid FROM gmail_seen ORDER BY date_seen DESC"))
                 # Convert stored bytea values back into canonical hexadecimal strings for comparison.
                 seen_ids: set[int] = set()
                 for row in result:
