@@ -2,13 +2,13 @@
 set -euo pipefail
 
 # === Config (override via environment or /etc/default/jw_dev_boot) ===
-FRONTEND_DIR="${FRONTEND_DIR:/root/Junk-Warehouse/frontend}"
-BACKEND_DIR="${BACKEND_DIR:/root/Junk-Warehouse/backend}"
+FRONTEND_DIR="${FRONTEND_DIR:-/root/Junk-Warehouse/frontend}"
+BACKEND_DIR="${BACKEND_DIR:-/root/Junk-Warehouse/backend}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
 
 # If you have a venv for backend, set it here; otherwise leave empty.
-BACKEND_VENV="${BACKEND_VENV:/root/Junk-Warehouse/.venv}"
+BACKEND_VENV="${BACKEND_VENV:-/root/Junk-Warehouse/.venv}"
 
 # Command to start backend (edit to match your app entrypoint)
 # Examples:

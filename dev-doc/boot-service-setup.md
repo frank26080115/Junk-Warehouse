@@ -46,6 +46,31 @@ systemctl status jw_dev_boot
 
 ---
 
+## Directory Permission Issue
+
+```
+# show perms/owners for each level
+stat -c '%A %U:%G %n' /root /root/Junk-Warehouse
+
+# confirm the script is executable by deploy
+stat -c '%A %U:%G %n' /root/Junk-Warehouse/scripts/jw_dev_boot.sh
+
+# wanted:
+# drwxr-xr-x root:root /root
+# drwxr-xr-x deploy:deploy /root/Junk-Warehouse
+# -rwxr-xr-x deploy:deploy /root/Junk-Warehouse/scripts/jw_dev_boot.sh
+
+
+# Ensure directories are traversable
+sudo chmod 755 /root
+sudo chmod -R u+rwX,go+rX /root/Junk-Warehouse
+
+# Ensure the boot script is executable
+sudo chmod +x /root/Junk-Warehouse/scripts/jw_dev_boot.sh
+```
+
+---
+
 ## 🧯 Notes & tips
 
 * Frontend **always builds** on start; cached deps make it quick. 🧱
