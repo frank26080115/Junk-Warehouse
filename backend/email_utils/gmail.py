@@ -324,10 +324,6 @@ class GmailChecker(EmailChecker):
                 text_content = GmailChecker._decode_part_body(part)
             elif part_type == "text/html" and not html_content:
                 html_content = GmailChecker._decode_part_body(part)
-        from_header = headers.get("from", "")
-        # Extract just the mailbox portion so downstream consumers receive a normalized sender identity.
-        sender_email = parseaddr(from_header)[1] or None
-            sender_email,
             elif part.get("parts"):
                 nested = GmailChecker._extract_text_content(part)
                 if not text_content:
@@ -354,6 +350,9 @@ class GmailChecker(EmailChecker):
         text_body = content.get("text") or ""
         email_date = EmailChecker.parse_email_date(headers.get("date"))
         gmail_link = f"https://mail.google.com/mail/u/0/#all/{message_id}" if message_id else None
+        from_header = headers.get("from", "")
+        # Extract just the mailbox portion so downstream consumers receive a normalized sender identity.
+        sender_email = parseaddr(from_header)[1] or None
         ingestion = EmailChecker.ingest_invoice_from_email(
             "gmail",
             message_id,
@@ -363,6 +362,7 @@ class GmailChecker(EmailChecker):
             text_body,
             gmail_link,
             None,
+            sender_email
         )
         raw_identifier = normalized_id or message_id or ""
         # Gmail message identifiers arrive as hexadecimal strings that need to live in the bytea column as raw bytes.
