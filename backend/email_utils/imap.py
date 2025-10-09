@@ -23,7 +23,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from sqlalchemy import text
 
-from app.db import get_engine, update_db_row_by_dict, unwrap_db_result
+from app.db import get_engine
 from app.helpers import bytea_to_hex_str, hex_str_to_bytea
 
 from .email_helper import EmailChecker
@@ -117,7 +117,17 @@ class ImapChecker(EmailChecker):
     def _has_seen_uid(uid_bytes: bytes) -> bool:
         """Return True when the UID already exists in imail_seen."""
         if not uid_bytes:
+            log.warning(
+                "IMAP UID check invoked without a valid 8-byte value; received %r.",
+                uid_bytes,
+            )
             return False
+        if len(uid_bytes) != 8:
+            log.warning(
+                "IMAP UID check expected exactly 8 bytes but received %d bytes for value %s.",
+                len(uid_bytes),
+                bytea_to_hex_str(uid_bytes),
+            )
         engine = get_engine()
         try:
             with engine.connect() as conn:
@@ -237,20 +247,52 @@ class ImapChecker(EmailChecker):
         if invoice_id is not None:
             payload["invoice_id"] = invoice_id
         engine = get_engine()
-        (
-            imap_status,
-            imap_failed,
-            _imap_reply,
-            _imap_row,
-            _imap_pk,
-            imap_message,
-        ) = unwrap_db_result(
-            update_db_row_by_dict(engine, "imail_seen", "new", payload, fuzzy=False)
-        )
-        if imap_failed:
-            log.error("Failed to insert imail_seen row for UID %s: %s", uid, imap_message)
-        else:
-            log.debug("Inserted imail_seen row for UID %s with status %s", uid, imap_status)
+        # Issue a direct upsert so the deduplication marker is stored without the generic helper's column guessing.
+        imap_status = "upserted"
+        try:
+            uid_length = len(uid_bytes)
+            # Surface suspicious UID lengths immediately; the mailbox should provide exactly eight bytes for consistency.
+            if uid_length != 8:
+                log.warning(
+                    "imail_seen insertion for UID %s is using %d bytes for email_uuid; expected exactly 8 bytes.",
+                    uid,
+                    uid_length,
+                )
+            with engine.begin() as conn:
+                db_result = conn.execute(
+                    text(
+                        "INSERT INTO imail_seen (email_uuid, date_seen, invoice_id) "
+                        "VALUES (:email_uuid, :date_seen, :invoice_id) "
+                        "ON CONFLICT (email_uuid) DO UPDATE "
+                        "SET date_seen = EXCLUDED.date_seen, "
+                        "    invoice_id = COALESCE(EXCLUDED.invoice_id, imail_seen.invoice_id)"
+                    ),
+                    {
+                        "email_uuid": payload["email_uuid"],
+                        "date_seen": payload["date_seen"],
+                        "invoice_id": payload.get("invoice_id"),
+                    },
+                )
+            affected_rows = getattr(db_result, "rowcount", 0)
+            if affected_rows == 0:
+                imap_status = "unchanged"
+                log.debug(
+                    "No imail_seen row was inserted or updated for UID %s; rowcount=%s",
+                    uid,
+                    affected_rows,
+                )
+            else:
+                log.debug(
+                    "Upserted imail_seen row for UID %s; affected_rows=%s",
+                    uid,
+                    affected_rows,
+                )
+        except Exception:
+            imap_status = "error"
+            log.exception(
+                "Failed to upsert imail_seen row for UID %s.",
+                uid,
+            )
         log.debug(
             "Finished handling IMAP UID %s with invoice id %s", uid, invoice_id
         )

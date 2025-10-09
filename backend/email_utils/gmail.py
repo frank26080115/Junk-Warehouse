@@ -26,7 +26,7 @@ for _path_string in (str(_BACKEND_PACKAGE_ROOT), str(_PROJECT_ROOT)):
 from sqlalchemy import text
 
 from backend.app.config_loader import get_private_dir_path
-from app.db import get_engine, update_db_row_by_dict, unwrap_db_result
+from app.db import get_engine
 from app.helpers import normalize_pg_uuid, hex_str_to_bytea, bytea_to_hex_str
 
 try:
@@ -222,7 +222,17 @@ class GmailChecker(EmailChecker):
     def _has_seen_identifier(identifier_bytes: bytes) -> bool:
         """Determine whether the supplied identifier already exists in gmail_seen."""
         if not identifier_bytes:
+            log.warning(
+                "Gmail identifier check invoked without a valid 8-byte value; received %r.",
+                identifier_bytes,
+            )
             return False
+        if len(identifier_bytes) != 8:
+            log.warning(
+                "Gmail identifier check expected exactly 8 bytes but received %d bytes for value %s.",
+                len(identifier_bytes),
+                bytea_to_hex_str(identifier_bytes),
+            )
         engine = get_engine()
         try:
             with engine.connect() as conn:
@@ -400,36 +410,60 @@ class GmailChecker(EmailChecker):
             if precomputed_identifier is None
             else precomputed_identifier
         )
+        invoice_id = ingestion.get("invoice_id")
         gmail_payload: Dict[str, Any] = {
             "email_uuid": email_uuid_bytes,
             "date_seen": email_date,
         }
-        if ingestion.get("invoice_id"):
-            gmail_payload["invoice_id"] = ingestion["invoice_id"]
+        if invoice_id is not None:
+            gmail_payload["invoice_id"] = invoice_id
         engine = get_engine()
-        (
-            gmail_status,
-            gmail_failed,
-            _gmail_reply,
-            _gmail_row,
-            _gmail_pk,
-            gmail_message,
-        ) = unwrap_db_result(
-            update_db_row_by_dict(engine, "gmail_seen", "new", gmail_payload, fuzzy=False)
-        )
-        if gmail_failed:
-            log.error(
-                "Failed to insert gmail_seen row for message %s: %s",
+        # Persist the deduplication marker directly with a deterministic upsert rather than relying on the generic helper.
+        gmail_status = "upserted"
+        try:
+            email_uuid_length = len(email_uuid_bytes)
+            # Alert whenever the identifier deviates from the expected eight-byte size so potential upstream issues are visible.
+            if email_uuid_length != 8:
+                log.warning(
+                    "gmail_seen insertion for message %s is using %d bytes for email_uuid; expected exactly 8 bytes.",
+                    message_id,
+                    email_uuid_length,
+                )
+            with engine.begin() as conn:
+                db_result = conn.execute(
+                    text(
+                        "INSERT INTO gmail_seen (email_uuid, date_seen, invoice_id) "
+                        "VALUES (:email_uuid, :date_seen, :invoice_id) "
+                        "ON CONFLICT (email_uuid) DO UPDATE "
+                        "SET date_seen = EXCLUDED.date_seen, "
+                        "    invoice_id = COALESCE(EXCLUDED.invoice_id, gmail_seen.invoice_id)"
+                    ),
+                    {
+                        "email_uuid": gmail_payload["email_uuid"],
+                        "date_seen": gmail_payload["date_seen"],
+                        "invoice_id": gmail_payload.get("invoice_id"),
+                    },
+                )
+            affected_rows = getattr(db_result, "rowcount", 0)
+            if affected_rows == 0:
+                gmail_status = "unchanged"
+                log.debug(
+                    "No gmail_seen row was inserted or updated for message %s; rowcount=%s",
+                    message_id,
+                    affected_rows,
+                )
+            else:
+                log.debug(
+                    "Upserted gmail_seen row for message %s; affected_rows=%s",
+                    message_id,
+                    affected_rows,
+                )
+        except Exception:
+            gmail_status = "error"
+            log.exception(
+                "Failed to upsert gmail_seen row for message %s.",
                 message_id,
-                gmail_message,
             )
-        else:
-            log.debug(
-                "Inserted gmail_seen row for message %s with status %s",
-                message_id,
-                gmail_status,
-            )
-        invoice_id = ingestion.get("invoice_id")
         log.debug(
             "Finished handling Gmail message %s: normalized=%s, invoice_id=%s",
             message_id,
