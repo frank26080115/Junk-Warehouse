@@ -7,8 +7,9 @@ export default defineConfig({
   publicDir: 'public',
   build: { minify: false, copyPublicDir: true },
   server: {
-    host: '0.0.0.0',        // bind to all interfaces so LAN devices can reach Vite
+    host: '127.0.0.1',        // bind to all interfaces so LAN devices can reach Vite
     port: 5173,             // development server port (change if you like)
+    hmr: { protocol: 'wss', host: 'junkwarehouse.eleccelerator.com', clientPort: 443 },
     // strictPort: true,    // uncomment to fail if 5173 is taken
     proxy: {
       '/api': {
