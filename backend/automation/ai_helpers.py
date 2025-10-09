@@ -217,11 +217,12 @@ class LlmAi(object):
         # Map convenience aliases
         if self.model == "online":
             self.model = self.appconfig["llm_model_online"]
+            self.is_online = True
         elif self.model == "offline":
             self.model = self.appconfig["llm_model_offline"]
-
-        # IMPORTANT: decide online/offline based on the resolved model
-        self.is_online = is_model_online(self.model)
+            self.is_online = False
+        else:
+            self.is_online = is_model_online(self.model)
 
         if not self.is_online:
             ensure_ollama_up()
