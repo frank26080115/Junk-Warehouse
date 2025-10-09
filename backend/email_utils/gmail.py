@@ -257,7 +257,6 @@ class GmailChecker(EmailChecker):
     @staticmethod
     def _normalize_gmail_id(message_id: Optional[Union[str, bytes]]) -> Optional[str]:
         """Convert Gmail message identifiers into canonical UUID format when possible."""
-        log.debug("Normalizing Gmail message id: %s", message_id)
         if message_id is None:
             return None
         if isinstance(message_id, bytes):
@@ -289,7 +288,7 @@ class GmailChecker(EmailChecker):
         query_parts.append(f"newer_than:{days}d")
         query_parts.append(f"after:{after_date}")
         query = " ".join(query_parts)
-        log.debug("Constructed Gmail query for %d day lookback: %s", days, query)
+        #log.debug("Constructed Gmail query for %d day lookback: %s", days, query)
         return query
 
     @staticmethod
@@ -298,7 +297,7 @@ class GmailChecker(EmailChecker):
         message_ids: List[str] = []
         request = service.users().messages().list(userId="me", q=query, maxResults=100)
         page_count = 0
-        log.debug("Starting Gmail message listing for query %s with max_page=%d", query, max_page)
+        #log.debug("Starting Gmail message listing for query %s with max_page=%d", query, max_page)
         while request is not None and page_count < max_page:
             response = request.execute()
             message_ids.extend([
@@ -311,14 +310,14 @@ class GmailChecker(EmailChecker):
                 previous_response=response,
             )
             page_count += 1
-            log.debug("Processed Gmail message page %d; cumulative ids=%d", page_count, len(message_ids))
+            #log.debug("Processed Gmail message page %d; cumulative ids=%d", page_count, len(message_ids))
         log.debug("Completed Gmail message listing; total ids collected=%d", len(message_ids))
         return message_ids
 
     @staticmethod
     def get_full_message(service: Any, message_id: str) -> Dict[str, Any]:
         """Fetch the full Gmail message resource for downstream processing."""
-        log.debug("Fetching full Gmail message for id %s", message_id)
+        #log.debug("Fetching full Gmail message for id %s", message_id)
         return service.users().messages().get(userId="me", id=message_id, format="full").execute()
 
     @staticmethod
@@ -326,12 +325,12 @@ class GmailChecker(EmailChecker):
         """Decode a MIME part body using the Gmail base64 encoding."""
         data = part.get("body", {}).get("data")
         if not data:
-            log.debug("Encountered MIME part without data; returning empty string.")
+            #log.debug("Encountered MIME part without data; returning empty string.")
             return ""
         try:
             raw_bytes = base64.urlsafe_b64decode(data.encode("utf-8"))
         except Exception:
-            log.debug("Failed to decode MIME part data; returning an empty string.")
+            #log.debug("Failed to decode MIME part data; returning an empty string.")
             return ""
         try:
             return raw_bytes.decode("utf-8", errors="replace")
@@ -341,7 +340,7 @@ class GmailChecker(EmailChecker):
     @staticmethod
     def _extract_text_content(payload: Dict[str, Any]) -> Dict[str, str]:
         """Extract plain text and HTML content from the Gmail payload structure."""
-        log.debug("Extracting text content from payload with mimeType=%s", payload.get("mimeType"))
+        #log.debug("Extracting text content from payload with mimeType=%s", payload.get("mimeType"))
         if not payload:
             return {"text": "", "html": ""}
         mime_type = payload.get("mimeType", "")
@@ -365,7 +364,7 @@ class GmailChecker(EmailChecker):
                     text_content = nested.get("text", "")
                 if not html_content:
                     html_content = nested.get("html", "")
-        log.debug("Extracted text length=%d html length=%d", len(text_content), len(html_content))
+        #log.debug("Extracted text length=%d html length=%d", len(text_content), len(html_content))
         return {"text": text_content, "html": html_content}
 
 
@@ -445,7 +444,12 @@ class GmailChecker(EmailChecker):
                     },
                 )
             affected_rows = getattr(db_result, "rowcount", 0)
-            if affected_rows == 0:
+            if affected_rows == 1:
+                log.debug(
+                    "Upserted gmail_seen 1 row for message %s",
+                    message_id
+                )
+            elif affected_rows == 0:
                 gmail_status = "unchanged"
                 log.debug(
                     "No gmail_seen row was inserted or updated for message %s; rowcount=%s",
@@ -453,8 +457,8 @@ class GmailChecker(EmailChecker):
                     affected_rows,
                 )
             else:
-                log.debug(
-                    "Upserted gmail_seen row for message %s; affected_rows=%s",
+                log.error(
+                    "Upserted gmail_seen multiple rows for message %s; affected_rows=%s",
                     message_id,
                     affected_rows,
                 )
