@@ -62,7 +62,7 @@ def hex_str_to_bytea(hex_string: Optional[str], expected_str_length: int = 16) -
         raise
 
 
-def bytea_to_hex_str(data: Optional[Union[bytes, bytearray, memoryview]], expected_str_length: int = 16) -> str:
+def bytea_to_hex_str(data: Optional[Union[bytes, bytearray, memoryview, str]], expected_str_length: int = 16) -> str:
     """Convert raw bytea values retrieved from PostgreSQL into zero-padded hexadecimal strings."""
     if data is None:
         return ""
@@ -71,9 +71,24 @@ def bytea_to_hex_str(data: Optional[Union[bytes, bytearray, memoryview]], expect
     if isinstance(data, bytearray):
         data = bytes(data)
     if not isinstance(data, bytes):
-        return str(data).lstrip('0').zfill(expected_str_length)
+        return str(data).lstrip('0').zfill(expected_str_length).lower()
     hex_string = data.hex()
-    return hex_string.lstrip('0').zfill(expected_str_length)
+    return hex_string.lstrip('0').zfill(expected_str_length).lower()
+
+
+def bytea_to_int(data: Optional[Union[bytes, bytearray, memoryview, str]], expected_str_length: int = 16) -> int:
+    """
+    Convert raw bytea values retrieved from PostgreSQL into an integer.
+    Internally uses bytea_to_hex_str() for consistent zero-padded hex normalization.
+    """
+    hex_str = bytea_to_hex_str(data, expected_str_length)
+    if not hex_str:  # empty string means data was None
+        return 0
+    try:
+        return int(hex_str, 16)
+    except ValueError:
+        # If somehow the hex string isn't valid (e.g., weird chars), fall back gracefully
+        return 0
 
 
 def deduplicate_preserving_order(value: list, lev_limit: int = -1) -> Any:

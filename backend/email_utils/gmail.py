@@ -9,7 +9,6 @@ import logging
 import sys
 import uuid
 from datetime import datetime, timedelta
-from email.utils import parseaddr
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Union
 
@@ -27,7 +26,7 @@ from sqlalchemy import text
 
 from backend.app.config_loader import get_private_dir_path
 from app.db import get_engine, update_db_row_by_dict, unwrap_db_result
-from app.helpers import normalize_pg_uuid, hex_str_to_bytea, bytea_to_hex_str
+from app.helpers import normalize_pg_uuid, hex_str_to_bytea, bytea_to_hex_str, bytea_to_int
 
 try:
     from .email_helper import EmailChecker
@@ -198,22 +197,22 @@ class GmailChecker(EmailChecker):
         return build("gmail", "v1", credentials=creds)
 
     @staticmethod
-    def _fetch_seen_ids() -> Sequence[str]:
+    def _fetch_seen_ids() -> set[int]:
         """Retrieve Gmail message identifiers that were already processed."""
         engine = get_engine()
         try:
             with engine.connect() as conn:
                 result = conn.execute(text("SELECT email_uuid FROM gmail_seen"))
                 # Convert stored bytea values back into canonical hexadecimal strings for comparison.
-                seen_ids: List[str] = []
+                seen_ids: set[int] = set()
                 for row in result:
-                    hex_value = bytea_to_hex_str(row[0])
-                    seen_ids.append(hex_value)
+                    int_value = bytea_to_int(row[0])
+                    seen_ids.add(int_value)
                 log.debug("Loaded %d previously seen Gmail message identifiers.", len(seen_ids))
                 return seen_ids
         except Exception:
             log.exception("Failed to load gmail_seen entries; treating as empty set")
-            return []
+            return set()
 
     @staticmethod
     def _normalize_gmail_id(message_id: Optional[Union[str, bytes]]) -> Optional[str]:
@@ -340,7 +339,6 @@ class GmailChecker(EmailChecker):
             h.get("name", "").lower(): h.get("value", "")
             for h in msg.get("payload", {}).get("headers", [])
         }
-        sender_email = parseaddr(headers.get("from", ""))[1] or None
         subject = headers.get("subject", "")
         message_id = msg.get("id") or ""
         normalized_id = GmailChecker._normalize_gmail_id(message_id)
@@ -358,7 +356,6 @@ class GmailChecker(EmailChecker):
             text_body,
             gmail_link,
             None,
-            sender_email,
         )
         raw_identifier = normalized_id or message_id or ""
         # Gmail message identifiers arrive as hexadecimal strings that need to live in the bytea column as raw bytes.
@@ -458,19 +455,15 @@ class GmailChecker(EmailChecker):
                 ok=False,
                 error=str(exc),
             )
-        seen_ids = list(GmailChecker._fetch_seen_ids())
-        seen_normalized = {
-            GmailChecker._normalize_gmail_id(value) for value in seen_ids if value
-        }
+        seen_ids = GmailChecker._fetch_seen_ids()
         log.debug(
-            "Identified %d total Gmail ids (%d normalized) already processed.",
+            "Identified %d total Gmail ids already processed.",
             len(seen_ids),
-            len(seen_normalized),
         )
         new_ids: List[str] = []
         for mid in message_ids:
-            normalized = GmailChecker._normalize_gmail_id(mid)
-            if mid in seen_ids or (normalized and normalized in seen_normalized):
+            int_val = bytea_to_int(mid)
+            if int_val in seen_ids:
                 continue
             new_ids.append(mid)
         log.debug(
