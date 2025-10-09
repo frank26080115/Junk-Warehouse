@@ -8,6 +8,7 @@ import json
 import logging
 import sys
 import uuid
+from email.utils import parseaddr
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Union
@@ -202,7 +203,8 @@ class GmailChecker(EmailChecker):
         engine = get_engine()
         try:
             with engine.connect() as conn:
-                # Order by date_seen so the newest processed messages appear first for downstream usage.
+                # Order by date_seen so the newest processed messages appear first for downstream usage.
+
                 result = conn.execute(text("SELECT email_uuid FROM gmail_seen ORDER BY date_seen DESC"))
                 # Convert stored bytea values back into canonical hexadecimal strings for comparison.
                 seen_ids: set[int] = set()
@@ -322,6 +324,10 @@ class GmailChecker(EmailChecker):
                 text_content = GmailChecker._decode_part_body(part)
             elif part_type == "text/html" and not html_content:
                 html_content = GmailChecker._decode_part_body(part)
+        from_header = headers.get("from", "")
+        # Extract just the mailbox portion so downstream consumers receive a normalized sender identity.
+        sender_email = parseaddr(from_header)[1] or None
+            sender_email,
             elif part.get("parts"):
                 nested = GmailChecker._extract_text_content(part)
                 if not text_content:
