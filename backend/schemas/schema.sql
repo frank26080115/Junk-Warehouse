@@ -2,7 +2,6 @@
 -- PostgreSQL database dump
 --
 
-\restrict Vn3Tma4R5cSORuitMQRwDnwpybkqB5Ggzd10I7TMikC4IPgl3UffNENslgyi8k9
 
 -- Dumped from database version 17.6 (Ubuntu 17.6-1.pgdg22.04+1)
 -- Dumped by pg_dump version 17.6 (Ubuntu 17.6-1.pgdg22.04+1)
@@ -10,7 +9,7 @@
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
-SET transaction_timeout = 0;
+--SET transaction_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
 SELECT pg_catalog.set_config('search_path', '', false);
@@ -163,7 +162,7 @@ CREATE TABLE public.invoice_items (
 --
 
 CREATE TABLE public.invoices (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
     date timestamp with time zone DEFAULT now() NOT NULL,
     order_number text DEFAULT ''::text NOT NULL,
     shop_name text DEFAULT ''::text NOT NULL,
@@ -197,7 +196,7 @@ CREATE TABLE public.item_images (
 --
 
 CREATE TABLE public.items (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
     short_id integer DEFAULT 0,
     name text NOT NULL,
     description text DEFAULT ''::text NOT NULL,
@@ -285,7 +284,7 @@ CREATE TABLE public.imail_seen (
 );
 
 
-CREATE TABLE history (
+CREATE TABLE public.history (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
     -- timestamp when event was logged
@@ -295,8 +294,8 @@ CREATE TABLE history (
     username TEXT NOT NULL DEFAULT '',
 
     -- optional references to items
-    item_id_1 UUID NULL REFERENCES items(id) ON DELETE SET NULL,
-    item_id_2 UUID NULL REFERENCES items(id) ON DELETE SET NULL,
+    item_id_1 UUID NULL REFERENCES public.items(id) ON DELETE SET NULL,
+    item_id_2 UUID NULL REFERENCES public.items(id) ON DELETE SET NULL,
 
     -- event type/description
     event TEXT NOT NULL DEFAULT '',
@@ -337,8 +336,8 @@ ALTER TABLE ONLY public.invoice_items
 -- Name: invoices invoices_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.invoices
-    ADD CONSTRAINT invoices_pkey PRIMARY KEY (id);
+-- ALTER TABLE ONLY public.invoices
+--     ADD CONSTRAINT invoices_pkey PRIMARY KEY (id);
 
 
 --
@@ -361,8 +360,8 @@ ALTER TABLE ONLY public.item_images
 -- Name: items items_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.items
-    ADD CONSTRAINT items_pkey PRIMARY KEY (id);
+-- ALTER TABLE ONLY public.items
+--     ADD CONSTRAINT items_pkey PRIMARY KEY (id);
 
 
 --
