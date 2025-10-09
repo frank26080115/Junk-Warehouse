@@ -1,3 +1,5 @@
+WARNING: this was never used
+
 ## Short answer 🚦
 
 Yep! Run everything on your **GPU desktop at home** and let the tiny droplet act as a **public reverse proxy** (and optionally a CDN for static files). You’ve got a few good patterns—pick the one that fits your comfort level.
