@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import platform
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set
@@ -22,7 +23,11 @@ from backend.app.static_server import get_public_html_path
 from backend.app.db import _build_db_url
 from backend.app.history import log_history
 
-DEFAULT_BACKUP_DIR = Path(r"C:\junkwarehouse\backups")
+if platform.system() == "Windows":
+    DEFAULT_BACKUP_DIR = Path(r"C:\junkwarehouse\backups")
+else:
+    DEFAULT_BACKUP_DIR = Path("/home/junkwarehouse/backups")
+
 ZIP_DIR_NAME = "zips"
 GITIGNORE_ZIPS_RULE = "zips/"
 # Build canonical newline markers once so we can reuse them for gitignore updates.
