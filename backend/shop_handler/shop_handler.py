@@ -502,7 +502,7 @@ class AiShopHandler(ShopHandler):
             return
 
         try:
-            self.ai = LlmAi("online")
+            self.ai = LlmAi("platform")
         except Exception:
             log.exception("AiShopHandler: failed to initialize the language model client.")
             self.ai = None

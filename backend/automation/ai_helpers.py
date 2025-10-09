@@ -7,6 +7,7 @@ import json
 import copy  # Used for defensive copies of schema dictionaries
 import requests
 import math
+import platform
 from typing import List, Union, Optional
 
 # Guarantee that the repository root is discoverable on sys.path when this
@@ -83,7 +84,11 @@ def list_ollama_models(host: str = OLLAMA_HOST_URL) -> list[str]:
     """
     Return a list of available Ollama model names.
     """
-    ensure_ollama_up(host)
+    try:
+        ensure_ollama_up(host)
+    except Exception:
+        log.exception(f"Error calling ensure_ollama_up")
+        return []
     url = f"{host}/api/tags"
     try:
         resp = requests.get(url, timeout=5)
@@ -91,7 +96,7 @@ def list_ollama_models(host: str = OLLAMA_HOST_URL) -> list[str]:
         data = resp.json()
         return [m["name"] for m in data.get("models", [])]
     except Exception as e:
-        print(f"Error fetching models: {e}")
+        log.exception(f"Error fetching models")
         return []
 
 
@@ -216,6 +221,12 @@ class LlmAi(object):
         self.appconfig = load_app_config()
 
         # Map convenience aliases
+        if self.model == "platform":
+            if platform.system() == "Windows":
+                self.model = "offline"
+            else:
+                self.model = "online"
+
         if self.model == "online":
             self.model = self.appconfig["llm_model_online"]
             self.is_online = True
@@ -371,6 +382,13 @@ class EmbeddingAi(object):
         self.appconfig = load_app_config()
 
         # Map convenience aliases
+        if self.model == "platform":
+            if platform.system() == "Windows":
+                self.model = "offline"
+            else:
+                #self.model = "online"
+                self.model = "offline"
+
         if self.model == "online":
             self.is_online = True
             self.model = self.appconfig["emb_model_online"]
