@@ -25,6 +25,7 @@ import app.helpers as helpers
 import app.db as db
 from app.db import bp as bp_dbstatus
 from app.config_loader import CONFIG_PATH, initialize_app_config
+from automation.ai_helpers import EmbeddingAi, LlmAi
 
 # Load backend/.env explicitly (does nothing if file doesn't exist)
 DOTENV_PATH = Path(__file__).resolve().parents[1] / ".env"
@@ -38,6 +39,14 @@ log = logging.getLogger(__name__)
 
 def create_app():
     """Instantiate and fully configure the Flask application instance."""
+
+    # Use the AI just once to load the model
+    em_ai = EmbeddingAi()
+    if not em_ai.is_online:
+        em_ai.build_embedding_vector("test")
+    llm_ai = LlmAi("platform")
+    if not llm_ai.is_online:
+        llm_ai.query("test")
 
     # The explicit module name here gives Flask the correct import context for
     # locating static assets and templates when they are requested at runtime.
