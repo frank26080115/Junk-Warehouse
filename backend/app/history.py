@@ -45,10 +45,13 @@ def _resolve_username() -> Optional[str]:
     a username explicitly.
     """
 
-    if get_actor_ctx():
-        ctx = get_actor_ctx()
-        if ctx["display"]:
-            return ctx["display"]
+    actor_context = get_actor_ctx()
+    if isinstance(actor_context, Mapping):
+        display_value = actor_context.get("display")
+        if display_value is not None:
+            candidate = str(display_value).strip()
+            if candidate:
+                return candidate
     if has_request_context():
         raw_username = session.get("user_id")  # type: ignore[index]
         if isinstance(raw_username, str):
