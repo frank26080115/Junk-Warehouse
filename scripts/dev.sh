@@ -5,7 +5,23 @@
 set -e  # Exit immediately on errors
 
 # kill zombie servers hogging the port
-kill -9 $(lsof -t -i:5173)
+PORT=5173
+echo "🔍 Checking for processes using port $PORT..."
+
+# Loop until the port is free
+while lsof -i :$PORT >/dev/null 2>&1; do
+    PIDS=$(lsof -t -i :$PORT)
+    echo "⚠️  Port $PORT in use by PID(s): $PIDS"
+    for PID in $PIDS; do
+        echo "💀 Killing PID $PID..."
+        kill -9 "$PID" 2>/dev/null || echo "   (PID $PID already gone)"
+    done
+
+    echo "⏳ Waiting for port $PORT to be released..."
+    sleep 1
+done
+
+echo "✅ Port $PORT is now free and clear!"
 
 # Move to project root (one up from scripts)
 cd "$(dirname "$0")/.."
