@@ -15,6 +15,7 @@ from decimal import Decimal
 from typing import Any, Optional, Tuple, Union
 
 from lxml import etree
+from bs4 import BeautifulSoup
 
 # Use a single module-level logger so helper routines can emit consistent, testable messages.
 log = logging.getLogger(__name__)
@@ -1018,3 +1019,52 @@ def build_callstack_string(skip: int = 0, limit: Optional[int] = None) -> str:
         parts.append(f"[{file_name}:{func_name}:{line_no}]")
 
     return "/".join(parts)
+
+
+# Normalize whitespace:
+# - Converts various NBSP-like chars to a regular space
+# - Collapses runs of spaces/tabs/newlines into a single space
+def normalize_whitespace(text: str) -> str:
+    if not text:
+        return ""
+    # Map common non-breaking / special spaces to regular space
+    special_spaces = {
+        "\u00A0": " ",  # NBSP
+        "\u202F": " ",  # Narrow NBSP
+        "\u2007": " ",  # Figure space
+        "\u2009": " ",  # Thin space (often appears in prices)
+        "\u2060": " ",  # Word joiner (rare, but can sneak in)
+    }
+    for ch, repl in special_spaces.items():
+        text = text.replace(ch, repl)
+    # Collapse spaces, tabs, newlines, and other ASCII whitespace
+    text = re.sub(r"[ \t\r\n\f\v]+", " ", text)
+    return text.strip()
+
+
+def simplify_html_for_ai(html: str) -> str:
+    """
+    Simplify HTML for LLM ingestion:
+      • Removes <script>, <style>, <meta>, <link>
+      • Keeps only attributes whose names are: 'href', 'src', 'source'
+        or contain 'src' / 'source' (case-insensitive)
+      • Returns normalized plain text (tabs/newlines/NBSPs collapsed)
+    """
+    soup = BeautifulSoup(html, "html.parser")
+
+    # Remove noise tags
+    for tag in soup(["script", "style", "meta", "link"]):
+        tag.decompose()
+
+    # Preserve only link/source-ish attributes
+    for tag in soup.find_all(True):
+        keep = {}
+        for k, v in tag.attrs.items():
+            kl = k.lower()
+            if kl in ("href", "src", "source") or ("src" in kl) or ("source" in kl):
+                keep[k] = v
+        tag.attrs = keep
+
+    # Join text with spaces, trim ends, then normalize all whitespace variants
+    raw = soup.get_text(" ", strip=True)
+    return normalize_whitespace(raw)

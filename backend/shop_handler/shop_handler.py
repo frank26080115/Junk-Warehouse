@@ -38,6 +38,7 @@ from app.helpers import (
     DOM_WHITESPACE_NORMALIZATION_PATTERN,
     clean_dom_text_fragment,
     dict_to_tagged_text,
+    simplify_html_for_ai,
 )
 from app.db import get_engine, session_scope
 from app.search import find_code_matched_items
@@ -521,7 +522,7 @@ class AiShopHandler(ShopHandler):
                         "name": {"type": "string"},
                         "part_number": {"type": "string"},
                         "product_url": {"type": "string", "format": "uri"},
-                        "quantity": {"type": "string"},
+                        #"quantity": {"type": "string"},
                         "description": {"type": "string"},
                         "notes": {"type": "string"}
                     },
@@ -547,9 +548,11 @@ class AiShopHandler(ShopHandler):
             name="extract_invoice",
         )
 
+        token_efficient_html = simplify_html_for_ai(self.sanitized_html)
+
         log.debug("AiShopHandler: starting AI-assisted email parsing")
         try:
-            response = self.ai.query(self.sanitized_html) if self.ai else None
+            response = self.ai.query(token_efficient_html) if self.ai else None
         except Exception:
             log.exception("AiShopHandler: language model query failed; skipping AI results.")
             return
@@ -632,9 +635,9 @@ class AiShopHandler(ShopHandler):
             if remarks_text:
                 normalized["remarks"] = remarks_text
 
-            quantity_text = _clean_text(raw_item.get("quantity"))
-            if quantity_text:
-                normalized["quantity"] = quantity_text
+            #quantity_text = _clean_text(raw_item.get("quantity"))
+            #if quantity_text:
+            #    normalized["quantity"] = quantity_text
 
             metatext_value = _clean_text(raw_item.get("metatext") or raw_item.get("metadata"))
             if metatext_value:
