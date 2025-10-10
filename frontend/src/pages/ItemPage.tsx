@@ -259,8 +259,13 @@ const ItemPage: React.FC = () => {
     let ignore = false;
     async function load() {
       if (isNewFromUrl) {
-        setItem((prev) => ({ ...EMPTY_ITEM, ...prev, is_staging: true }));
+        // Reset the working copy entirely so a request for a brand new item never inherits stale identifiers.
+        setError("");
+        setLoading(false);
+        setItem({ ...EMPTY_ITEM, is_staging: true });
         setIsReadOnly(false);
+        setRefreshToken(0);
+        setContainmentRefreshToken(0);
         return;
       }
       try {
