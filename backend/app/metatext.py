@@ -244,10 +244,11 @@ def _fetch_nearest_tag_words(
 
     vector_literal = _format_vector_literal(vector_list)
     # Cast the literal in SQL so both sides of the operator are explicit vectors and avoid the array versus vector mismatch.
+    # Using CAST instead of the shorthand :: syntax keeps SQLAlchemy from merging the type name into the bind parameter.
 
     sql = text(
         f"""
-SELECT word, vec, (vec <=> :needle_vec::vector) AS embedding_distance
+SELECT word, vec, (vec <=> CAST(:needle_vec AS vector)) AS embedding_distance
 FROM public.{table_name}
 WHERE vec IS NOT NULL
 ORDER BY embedding_distance ASC
