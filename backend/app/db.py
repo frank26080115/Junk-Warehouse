@@ -17,7 +17,7 @@ from sqlalchemy import create_engine, MetaData, Table, select, text
 from sqlalchemy.engine import Engine, Connection
 from sqlalchemy.orm import Session, scoped_session, sessionmaker
 from sqlalchemy.exc import NoSuchTableError
-import app.helpers as helpers
+from . import helpers  # Use a relative import so standalone tools can find helpers
 
 
 def _coerce_mapping(value: Any) -> Dict[str, Any]:

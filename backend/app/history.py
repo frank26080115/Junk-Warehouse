@@ -10,8 +10,8 @@ from flask import Blueprint, jsonify, has_request_context, session
 from sqlalchemy import text
 from sqlalchemy.engine import Engine, RowMapping
 
-from app.db import get_engine, get_or_create_session, update_db_row_by_dict
-from app.helpers import normalize_pg_uuid, coerce_identifier_to_uuid, build_callstack_string
+from .db import get_engine, get_or_create_session, update_db_row_by_dict  # Local import keeps tooling paths reliable
+from .helpers import normalize_pg_uuid, coerce_identifier_to_uuid, build_callstack_string  # Local import keeps tooling paths reliable
 from .user_login import login_required
 from automation.actor_context import get_actor_ctx
 
