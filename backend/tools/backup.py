@@ -3,6 +3,7 @@ from __future__ import annotations
 """Create filesystem and database backups for Junk Warehouse."""
 
 import logging
+import importlib
 import os
 import shutil
 import subprocess
@@ -16,6 +17,33 @@ CURRENT_FILE = Path(__file__).resolve()
 REPO_ROOT = CURRENT_FILE.parent.parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+def ensure_legacy_package_aliases() -> None:
+    """Keep backwards-compatible import paths such as `import app.helpers` available.
+
+    When this backup tool runs as a standalone script the real packages live under
+    the `backend` namespace. Older modules still reference the shorter package
+    names, so we register aliases in sys.modules before importing them."""
+
+    alias_map = {
+        "app": "backend.app",
+        "automation": "backend.automation",
+    }
+    for alias_name, target_package in alias_map.items():
+        if alias_name in sys.modules:
+            continue
+        try:
+            module_obj = importlib.import_module(target_package)
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                f"Unable to import '{target_package}' to satisfy legacy imports that expect '{alias_name}'."
+            ) from exc
+        sys.modules[alias_name] = module_obj
+
+# Some application modules still reference the historical package names (for example
+# `import app.helpers`), so we create aliases to the modern package namespaces before
+# importing them.
+ensure_legacy_package_aliases()
 
 from backend.app import logging_setup
 from backend.app.config_loader import get_private_dir_path
