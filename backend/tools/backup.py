@@ -261,7 +261,7 @@ def run_pg_dumps(database_dir: Path) -> None:
             "relationships",
             "item_images",
             #"invoice_items",
-            "history",
+            #"history",
             "gmail_seen",
             "imail_seen",
         ]
