@@ -425,12 +425,13 @@ def update_metatext(input: str, check_closest_n: int = 3) -> str:
 
             vector_literal = _format_vector_literal(vector)
             # Cast the stored literal so the pgvector column receives the correct type and avoids the array versus vector mismatch.
+            # Using CAST rather than the shorthand :: syntax keeps SQLAlchemy from merging the type name into the bind parameter.
 
             conn.execute(
                 text(
                     f"""
 INSERT INTO public.{table_name} (word, vec)
-VALUES (:word, :vec::vector)
+VALUES (:word, CAST(:vec AS vector))
 ON CONFLICT (word) DO UPDATE
 SET vec = EXCLUDED.vec,
     date_updated = now();
