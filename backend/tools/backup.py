@@ -269,7 +269,8 @@ def run_pg_dumps(database_dir: Path) -> None:
             subprocess.run(
                 ["pg_dump", "--data-only", "--column-inserts", "--no-owner", "--no-privileges",
                  "--no-comments", "--no-security-labels", "--no-publications", "--no-subscriptions",
-                 f"-t=public.{t}", *login_args],
+                 "-t", f"public.{t}",
+                 *login_args],
                 check=True,
                 stdout=dump_file,
                 env=env,
