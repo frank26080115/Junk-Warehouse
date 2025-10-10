@@ -162,6 +162,7 @@ def run_pg_dumps(database_dir: Path) -> None:
         raise
     schema_path = database_dir / "schema.sql"
     dump_path = database_dir / "database.dump"
+    dumptext_path = database_dir / "database_text.sql"
     log.info("Running pg_dump for schema to %s", schema_path)
     with open(schema_path, "w", encoding="utf-8", newline=LINE_FEED) as schema_file:
         subprocess.run(
@@ -172,10 +173,34 @@ def run_pg_dumps(database_dir: Path) -> None:
     log.info("Running pg_dump for full database to %s", dump_path)
     with open(dump_path, "wb") as dump_file:
         subprocess.run(
-            ["pg_dump", "--format=custom", "--compress=0", "--no-owner", "--no-privileges", db_url],
+            ["pg_dump", "--format=custom", "--compress=0", "--no-owner", "--no-privileges", 
+             "--no-comments", "--no-security-labels", "--no-publications", "--no-subscriptions",
+             db_url],
             check=True,
             stdout=dump_file,
         )
+    log.info("Running pg_dump for database as text SQL to %s", dumptext_path)
+    with open(dumptext_path, "w") as dump_file:
+        TABLES = [
+            "items",
+            "images",
+            "invoices",
+            "relationships",
+            "item_images",
+            "invoice_items",
+            "history",
+            "gmail_seen",
+            "imail_seen",
+        ]
+        for t in TABLES:
+            subprocess.run(
+                ["pg_dump", "--data-only", "--column-inserts", "--no-owner", "--no-privileges",
+                 "--no-comments", "--no-security-labels", "--no-publications", "--no-subscriptions",
+                 f"-t=public.{t}", db_url],
+                check=True,
+                stdout=dump_file,
+            )
+            dump_file.write('\n\n\n\n')
 
 
 def git_status_has_changes(backup_root: Path, relative_item: Path) -> bool:
