@@ -257,10 +257,10 @@ def run_pg_dumps(database_dir: Path) -> None:
         TABLES = [
             "items",
             "images",
-            "invoices",
+            #"invoices",
             "relationships",
             "item_images",
-            "invoice_items",
+            #"invoice_items",
             "history",
             "gmail_seen",
             "imail_seen",
