@@ -11,7 +11,8 @@ import sys
 import platform
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Set
+from typing import Dict, List, Optional, Sequence, Set, Tuple
+from urllib.parse import urlparse, unquote
 
 CURRENT_FILE = Path(__file__).resolve()
 REPO_ROOT = CURRENT_FILE.parent.parent.parent
@@ -179,6 +180,46 @@ def mirror_directory(source: Path, destination: Path, ignored_roots: Optional[Se
     return True
 
 
+def decompose_url_to_pg_dump_args(url: str) -> Tuple[List[str], str | None]:
+    """
+    Convert a PostgreSQL-style URL into pg_dump-compatible CLI args.
+
+    Supports URLs like:
+        postgresql://user:pass@host:port/dbname
+        postgresql+psycopg://user:pass@host/dbname
+
+    Returns:
+        (args, password)
+        where args is a list like:
+        ['-h', '127.0.0.1', '-p', '5432', '-U', 'myuser', '-d', 'mydb']
+    """
+    # Drop the optional "+psycopg" suffix
+    url = url.replace("postgresql+psycopg://", "postgresql://")
+
+    parsed = urlparse(url)
+    if parsed.scheme != "postgresql":
+        raise ValueError(f"Unsupported scheme: {parsed.scheme}")
+
+    # Decode URL-encoded credentials
+    username = unquote(parsed.username) if parsed.username else None
+    password = unquote(parsed.password) if parsed.password else None
+    host = parsed.hostname or "127.0.0.1"
+    port = str(parsed.port or 5432)
+    dbname = parsed.path.lstrip("/") if parsed.path else None
+
+    if not username or not dbname:
+        raise ValueError("Both username and database name are required in the URL.")
+
+    args = [
+        "-h", host,
+        "-p", port,
+        "-U", username,
+        "-d", dbname,
+    ]
+
+    return args, password
+
+
 def run_pg_dumps(database_dir: Path) -> None:
     """Execute pg_dump twice: once for the schema and once for the full database."""
 
@@ -191,21 +232,25 @@ def run_pg_dumps(database_dir: Path) -> None:
     schema_path = database_dir / "schema.sql"
     dump_path = database_dir / "database.dump"
     dumptext_path = database_dir / "database_text.sql"
+    login_args, pw = decompose_url_to_pg_dump_args(db_url)
+    env = {**os.environ, "PGPASSWORD": pw or ""}
     log.info("Running pg_dump for schema to %s", schema_path)
     with open(schema_path, "w", encoding="utf-8", newline=LINE_FEED) as schema_file:
         subprocess.run(
-            ["pg_dump", "--schema-only", "--no-owner", "--no-privileges", db_url],
+            ["pg_dump", "--schema-only", "--no-owner", "--no-privileges", *login_args],
             check=True,
             stdout=schema_file,
+            env=env,
         )
     log.info("Running pg_dump for full database to %s", dump_path)
     with open(dump_path, "wb") as dump_file:
         subprocess.run(
             ["pg_dump", "--format=custom", "--compress=0", "--no-owner", "--no-privileges", 
              "--no-comments", "--no-security-labels", "--no-publications", "--no-subscriptions",
-             db_url],
+             *login_args],
             check=True,
             stdout=dump_file,
+            env=env,
         )
     log.info("Running pg_dump for database as text SQL to %s", dumptext_path)
     with open(dumptext_path, "w") as dump_file:
@@ -224,9 +269,10 @@ def run_pg_dumps(database_dir: Path) -> None:
             subprocess.run(
                 ["pg_dump", "--data-only", "--column-inserts", "--no-owner", "--no-privileges",
                  "--no-comments", "--no-security-labels", "--no-publications", "--no-subscriptions",
-                 f"-t=public.{t}", db_url],
+                 f"-t=public.{t}", *login_args],
                 check=True,
                 stdout=dump_file,
+                env=env,
             )
             dump_file.write('\n\n\n\n')
 
